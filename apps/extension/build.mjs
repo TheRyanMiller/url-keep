@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname);
 const outdir = resolve(root, "dist");
+const assetsDir = resolve(root, "assets");
 const apiOrigin = process.env.URL_KEEP_API_ORIGIN ?? "http://localhost:8787";
 const appOrigin = process.env.URL_KEEP_APP_ORIGIN ?? "http://localhost:5173";
 
@@ -22,6 +23,11 @@ await build({
 
 cpSync(resolve(root, "src/popup.html"), resolve(outdir, "popup.html"));
 cpSync(resolve(root, "src/styles.css"), resolve(outdir, "styles.css"));
+cpSync(resolve(assetsDir, "url-keep-logo.png"), resolve(outdir, "url-keep-logo.png"));
+cpSync(resolve(assetsDir, "url-keep-icon-16.png"), resolve(outdir, "url-keep-icon-16.png"));
+cpSync(resolve(assetsDir, "url-keep-icon-32.png"), resolve(outdir, "url-keep-icon-32.png"));
+cpSync(resolve(assetsDir, "url-keep-icon-48.png"), resolve(outdir, "url-keep-icon-48.png"));
+cpSync(resolve(assetsDir, "url-keep-icon-128.png"), resolve(outdir, "url-keep-icon-128.png"));
 
 writeFileSync(
   resolve(outdir, "manifest.json"),
@@ -40,6 +46,16 @@ writeFileSync(
       action: {
         default_title: "url-keep",
         default_popup: "popup.html",
+        default_icon: {
+          16: "url-keep-icon-16.png",
+          32: "url-keep-icon-32.png",
+        },
+      },
+      icons: {
+        16: "url-keep-icon-16.png",
+        32: "url-keep-icon-32.png",
+        48: "url-keep-icon-48.png",
+        128: "url-keep-icon-128.png",
       },
       homepage_url: appOrigin,
     },

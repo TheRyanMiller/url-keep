@@ -70,6 +70,32 @@ input {
   padding-bottom: 12px;
 }
 
+.brand-mark {
+  display: inline-flex;
+  line-height: 0;
+  max-width: min(100%, 220px);
+  text-decoration: none;
+}
+
+.brand-logo {
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.page-heading-group {
+  display: grid;
+  gap: 8px;
+}
+
+.page-kicker {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
 .page-header h1 {
   margin: 0;
   font-size: 18px;

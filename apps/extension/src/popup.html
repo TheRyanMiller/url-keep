@@ -3,13 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="./url-keep-icon-32.png" />
     <title>url-keep</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main class="shell">
       <header class="header row-between">
-        <h1>url-keep</h1>
+        <div class="brand">
+          <img class="brand-logo" src="./url-keep-logo.png" alt="url-keep" />
+        </div>
         <button class="text-button" id="settings-toggle" type="button">settings</button>
       </header>
 
@@ -30,7 +33,7 @@
         <button class="button" id="action-button" type="button">save</button>
         <p class="muted state-row">
           <span id="state-note"></span>
-          <button class="text-link hidden" id="delete-link" type="button">delete</button>
+          <button class="text-link hidden" id="delete-link" type="button">remove</button>
         </p>
         <a
           class="text-action link-with-icon"
@@ -61,6 +64,10 @@
             inputmode="url"
             placeholder="https://app.example.com"
           />
+        </label>
+        <label class="field-row">
+          <input id="settings-quick-save" type="checkbox" />
+          <span>save on click</span>
         </label>
         <button class="button" type="submit">save settings</button>
         <button class="text-button left" id="reset-settings" type="button">use defaults</button>

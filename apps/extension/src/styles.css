@@ -50,6 +50,18 @@ input {
   padding-bottom: 8px;
 }
 
+.brand {
+  display: inline-flex;
+  line-height: 0;
+  max-width: 160px;
+}
+
+.brand-logo {
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
 .row-between {
   align-items: center;
   display: flex;
@@ -97,10 +109,24 @@ input {
 .button:disabled {
   cursor: default;
   opacity: 1;
+  color: var(--muted);
 }
 
-.button:disabled {
+.button--dimmed {
   color: var(--muted);
+  border-color: #d9d9d9;
+}
+
+.button--success {
+  color: #080;
+  border-color: #080;
+  animation: save-pop 0.3s ease-out;
+}
+
+@keyframes save-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.03); }
+  100% { transform: scale(1); }
 }
 
 .text-button {
@@ -157,6 +183,17 @@ input {
 
 .left {
   justify-self: start;
+}
+
+.field-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.field-row input[type="checkbox"] {
+  width: auto;
+  min-height: auto;
 }
 
 .hidden {

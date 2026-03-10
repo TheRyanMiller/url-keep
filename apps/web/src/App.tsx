@@ -71,6 +71,7 @@ function normalizeApiOrigin(value: string | undefined) {
 }
 
 const API_ORIGIN = normalizeApiOrigin(import.meta.env.VITE_API_ORIGIN);
+const BRAND_LOGO_URL = `${import.meta.env.BASE_URL}url-keep-logo.png`;
 
 function normalizeOptionalAbsoluteUrl(value: string | undefined) {
   const trimmed = value?.trim();
@@ -120,6 +121,14 @@ function getDomain(value: string) {
   } catch {
     return value;
   }
+}
+
+function BrandLogo() {
+  return (
+    <Link aria-label="url-keep home" className="brand-mark" to="/">
+      <img alt="url-keep" className="brand-logo" src={BRAND_LOGO_URL} />
+    </Link>
+  );
 }
 
 function AuthProvider({ children }: { children: ReactNode }) {
@@ -232,7 +241,7 @@ function LoginPage() {
   return (
     <div className="page narrow">
       <header className="page-header">
-        <h1>url-keep</h1>
+        <BrandLogo />
       </header>
       <form className="stack" onSubmit={onSubmit}>
         <label className="field">
@@ -510,7 +519,7 @@ function MainPage() {
   return (
     <div className="page">
       <header className="page-header row-between">
-        <h1>url-keep</h1>
+        <BrandLogo />
         <nav className="inline-actions">
           <Link className="text-action" to="/settings/tokens">
             tokens
@@ -593,7 +602,10 @@ function MobileSavePage() {
   return (
     <div className="page narrow">
       <header className="page-header">
-        <h1>save</h1>
+        <div className="page-heading-group">
+          <BrandLogo />
+          <p className="page-kicker">save</p>
+        </div>
       </header>
       <form className="stack" onSubmit={onSubmit}>
         <label className="field">
@@ -687,11 +699,12 @@ function TokensPage() {
   return (
     <div className="page narrow">
       <header className="page-header row-between">
-        <div>
+        <div className="page-heading-group">
           <Link className="text-action" to="/">
             ← back
           </Link>
-          <h1>tokens</h1>
+          <BrandLogo />
+          <p className="page-kicker">tokens</p>
         </div>
       </header>
 

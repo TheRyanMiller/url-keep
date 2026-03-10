@@ -6,6 +6,7 @@ declare const __APP_ORIGIN__: string;
 const TOKEN_KEY = "url_keep_token";
 const API_ORIGIN_KEY = "url_keep_api_origin";
 const APP_ORIGIN_KEY = "url_keep_app_origin";
+const QUICK_SAVE_KEY = "url_keep_quick_save";
 const DEFAULT_API_ORIGIN = __API_ORIGIN__;
 const DEFAULT_APP_ORIGIN = __APP_ORIGIN__;
 
@@ -29,6 +30,9 @@ const settingsAppOriginInput = document.getElementById(
 const resetSettingsButton = document.getElementById(
   "reset-settings",
 ) as HTMLButtonElement;
+const quickSaveCheckbox = document.getElementById(
+  "settings-quick-save",
+) as HTMLInputElement;
 const errorElement = document.getElementById("error") as HTMLElement;
 
 type ExtractedMetadata = {
@@ -52,6 +56,8 @@ type RuntimeSettings = {
 
 let currentToken: string | null = null;
 let popupState: PopupState | null = null;
+let quickSaveEnabled = false;
+let autoCloseTimer: ReturnType<typeof setTimeout> | null = null;
 let currentSettings: RuntimeSettings = {
   apiOrigin: DEFAULT_API_ORIGIN,
   appOrigin: DEFAULT_APP_ORIGIN,
@@ -231,24 +237,99 @@ async function extractMetadata(tabId: number): Promise<ExtractedMetadata> {
   return result?.result ?? {};
 }
 
+function resetButtonStyle() {
+  actionButton.classList.remove("button--dimmed", "button--success");
+}
+
 function renderState(state: PopupState) {
   popupState = state;
   showBookmarkView();
   showError(null);
   domainElement.textContent = new URL(state.url).hostname;
   actionButton.disabled = false;
+  resetButtonStyle();
 
   if (state.checking) {
+    actionButton.textContent = "save";
     setCheckingState();
     return;
   }
 
   if (state.saved) {
+    actionButton.textContent = "saved";
+    actionButton.classList.add("button--dimmed");
     setDeleteState();
     return;
   }
 
+  actionButton.textContent = "save";
   clearInlineState();
+}
+
+async function loadQuickSave(): Promise<boolean> {
+  const result = await chrome.storage.local.get(QUICK_SAVE_KEY);
+  return result[QUICK_SAVE_KEY] === true;
+}
+
+async function quickSave() {
+  const tab = await getCurrentTab();
+  if (!tab?.id || !tab.url || !isSupportedUrl(tab.url)) {
+    showBookmarkView();
+    domainElement.textContent = "";
+    setUnsupportedState();
+    return;
+  }
+
+  showBookmarkView();
+  domainElement.textContent = new URL(tab.url).hostname;
+  actionButton.disabled = true;
+  actionButton.textContent = "saving...";
+  resetButtonStyle();
+  clearInlineState();
+  showError(null);
+
+  const title = tab.title ?? tab.url;
+  let metadata: ExtractedMetadata = {};
+  try {
+    metadata = await extractMetadata(tab.id);
+  } catch {
+    // best-effort
+  }
+
+  popupState = {
+    saved: false,
+    checking: false,
+    url: tab.url,
+    title: metadata.title ?? title,
+    metadata,
+  };
+
+  try {
+    await client.saveBookmark({
+      url: tab.url,
+      title: metadata.title ?? title,
+      image_url: metadata.image_url,
+      site_name: metadata.site_name,
+      saved_via: "extension",
+    });
+
+    popupState = { ...popupState, saved: true };
+    actionButton.disabled = true;
+    actionButton.textContent = "\u2713 saved";
+    actionButton.classList.add("button--success");
+    deleteLink.classList.remove("hidden");
+    stateNoteElement.textContent = "";
+    autoCloseTimer = setTimeout(() => window.close(), 1500);
+  } catch (caught) {
+    if (caught instanceof ApiError && caught.status === 401) {
+      await setToken(null);
+      showLogin();
+      return;
+    }
+    actionButton.disabled = false;
+    actionButton.textContent = "save";
+    showError(getRequestErrorMessage(caught, "save failed"));
+  }
 }
 
 async function loadBookmarkState() {
@@ -357,26 +438,39 @@ settingsForm.addEventListener("submit", async (event) => {
       appOrigin: normalizeOrigin(settingsAppOriginInput.value),
     };
 
+    const originsChanged =
+      nextSettings.apiOrigin !== currentSettings.apiOrigin ||
+      nextSettings.appOrigin !== currentSettings.appOrigin;
+
     await chrome.storage.local.set({
       [API_ORIGIN_KEY]: nextSettings.apiOrigin,
       [APP_ORIGIN_KEY]: nextSettings.appOrigin,
+      [QUICK_SAVE_KEY]: quickSaveCheckbox.checked,
     });
 
+    quickSaveEnabled = quickSaveCheckbox.checked;
     setSettings(nextSettings);
-    popupState = null;
-    await setToken(null);
-    showLogin();
+
+    if (originsChanged) {
+      popupState = null;
+      await setToken(null);
+      showLogin();
+    } else {
+      restoreMainView();
+    }
   } catch (caught) {
     showError(caught instanceof Error ? caught.message : "invalid settings");
   }
 });
 
 resetSettingsButton.addEventListener("click", async () => {
-  await chrome.storage.local.remove([API_ORIGIN_KEY, APP_ORIGIN_KEY]);
+  await chrome.storage.local.remove([API_ORIGIN_KEY, APP_ORIGIN_KEY, QUICK_SAVE_KEY]);
   setSettings({
     apiOrigin: DEFAULT_API_ORIGIN,
     appOrigin: DEFAULT_APP_ORIGIN,
   });
+  quickSaveEnabled = false;
+  quickSaveCheckbox.checked = false;
   popupState = null;
   await setToken(null);
   showLogin();
@@ -389,6 +483,8 @@ actionButton.addEventListener("click", async () => {
   }
 
   actionButton.disabled = true;
+  actionButton.textContent = "saving...";
+  resetButtonStyle();
   showError(null);
 
   try {
@@ -400,9 +496,15 @@ actionButton.addEventListener("click", async () => {
       saved_via: "extension",
     });
 
-    window.close();
+    actionButton.textContent = "\u2713 saved";
+    actionButton.classList.add("button--success");
+    setTimeout(() => window.close(), 700);
   } catch (caught) {
     actionButton.disabled = false;
+    actionButton.textContent = popupState.saved ? "saved" : "save";
+    if (popupState.saved) {
+      actionButton.classList.add("button--dimmed");
+    }
     showError(getRequestErrorMessage(caught, "request failed"));
   }
 });
@@ -412,8 +514,13 @@ deleteLink.addEventListener("click", async () => {
     return;
   }
 
+  if (autoCloseTimer) {
+    clearTimeout(autoCloseTimer);
+    autoCloseTimer = null;
+  }
+
   deleteLink.disabled = true;
-  stateNoteElement.textContent = "deleting...";
+  stateNoteElement.textContent = "removing...";
   showError(null);
 
   try {
@@ -437,14 +544,20 @@ deleteLink.addEventListener("click", async () => {
 
 async function init() {
   await loadSettings();
+  quickSaveEnabled = await loadQuickSave();
+  quickSaveCheckbox.checked = quickSaveEnabled;
   currentToken = await getToken();
   if (!currentToken) {
     showLogin();
     return;
   }
 
-  showBookmarkView();
-  await loadBookmarkState();
+  if (quickSaveEnabled) {
+    await quickSave();
+  } else {
+    showBookmarkView();
+    await loadBookmarkState();
+  }
 }
 
 void init();
