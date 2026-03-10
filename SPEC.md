@@ -825,13 +825,22 @@ UI:
 - create token form
 - revoke token action
 - one-time display area for newly created token
-- short instructions for iOS Shortcut setup
+- dedicated `iphone shortcut` setup section
+- `create iphone token` action
+- `copy token` action for the newly created token
+- `install shortcut` link when configured
+- short first-run instructions for iPhone setup
 
 Behavior:
 
 - `GET /v1/tokens` on load
 - `POST /v1/tokens` to create named tokens
 - `DELETE /v1/tokens/:id` to revoke non-current tokens
+- if `VITE_IOS_SHORTCUT_URL` is configured, show an install link for the published Shortcut template
+- the install flow should assume Version A:
+  - user installs a shared Shortcut template
+  - first run prompts for the token once
+  - later share-sheet saves require no additional setup
 
 ### 12.7 Visual style
 
@@ -1006,11 +1015,22 @@ Rules:
 
 ### 14.1 Setup
 
-The user creates a token in `/settings/tokens`, then adds that token to the Shortcut.
+The preferred v1 setup is Version A:
+
+- the web app exposes an `iphone shortcut` setup section
+- the user creates a token in `/settings/tokens`
+- the user copies that token
+- the user taps `install shortcut`
+- the installed Shortcut prompts for the token on first run
+- later runs reuse the stored token automatically
 
 Suggested token name:
 
 - `iphone shortcut`
+
+The web app may expose the Shortcut install link through a frontend environment variable such as:
+
+- `VITE_IOS_SHORTCUT_URL`
 
 ### 14.2 Shortcut input
 
@@ -1054,6 +1074,8 @@ If iOS provides title text, the Shortcut may include:
 
 - on success, show `saved`
 - on failure, show the API error message if available
+- on first run, if no token is stored, prompt the user to paste the token once
+- after first-run setup, the Shortcut should be usable directly from the iOS share sheet
 
 ## 15. Deployment Specification
 
@@ -1083,6 +1105,7 @@ Notes:
 Runtime config:
 
 - `VITE_API_ORIGIN`
+- `VITE_IOS_SHORTCUT_URL` (optional)
 
 ### 15.3 CORS
 

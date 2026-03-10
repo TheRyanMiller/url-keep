@@ -197,6 +197,7 @@ Recommended Vercel project settings:
 - Build Command: `npm run build --workspace @url-keep/web`
 - Output Directory: `apps/web/dist`
 - Environment Variable: `VITE_API_ORIGIN=https://api.example.com`
+- Optional Environment Variable: `VITE_IOS_SHORTCUT_URL=https://www.icloud.com/shortcuts/...`
 
 `VITE_API_ORIGIN` must be a full absolute origin, including the protocol.
 
@@ -208,6 +209,8 @@ Incorrect:
 
 - `api.url-keep.com`
 - `/api.url-keep.com`
+
+`VITE_IOS_SHORTCUT_URL` is optional. If you publish a shared iCloud Shortcut link, setting this env var enables an `install shortcut` button in the token settings page.
 
 You can deploy through the Vercel dashboard by importing the repo, or with the CLI:
 
@@ -230,7 +233,16 @@ If you later move the API or web app to a new domain, you can update the extensi
 
 ### 8. Create your iOS Shortcut token
 
-Once the web app is live, log in, create a token under `/settings/tokens`, and use that token in your Shortcut against:
+Once the web app is live:
+
+1. open `https://url-keep.com/settings/tokens`
+2. in the `iphone shortcut` section, tap `create iphone token`
+3. tap `copy token`
+4. tap `install shortcut`
+
+The token is only shown once.
+
+Your Shortcut will send requests to:
 
 ```text
 POST https://api.url-keep.com/v1/bookmarks
@@ -238,16 +250,125 @@ POST https://api.url-keep.com/v1/bookmarks
 
 ## iOS Shortcut
 
-Create a token in the web app under `/settings/tokens`, then configure an iOS Shortcut to:
+The easiest setup is a share-sheet Shortcut that sends the current page URL directly to the API.
 
-1. accept a shared URL from the share sheet
-2. send `POST /v1/bookmarks`
-3. include `Authorization: Bearer <token>`
-4. send JSON:
+This repo supports the best v1 UX:
+
+- the app creates a token for you
+- the app can link out to your published Shortcut template
+- the Shortcut asks for the token once on first run
+- after that, you use it from the share sheet like a native action
+
+### What you are building
+
+From Safari or another app on your iPhone:
+
+1. tap `Share`
+2. tap your Shortcut
+3. the URL is sent to `url-keep`
+4. you see a simple `saved` confirmation
+
+### Step 1. Create the Shortcut
+
+On your iPhone:
+
+1. open the `Shortcuts` app
+2. tap `+` to create a new shortcut
+3. name it something like `Save to url-keep`
+
+### Step 2. Make it show up in the share sheet
+
+In the shortcut details/settings:
+
+1. turn on `Show in Share Sheet`
+2. set accepted input to `URLs`
+3. if your iPhone offers `Safari Web Pages` as an accepted type, enable that too
+
+The exact menu wording may vary slightly by iOS version, but the goal is:
+
+- the shortcut appears in the iPhone share sheet
+- it accepts shared links
+
+### Step 3. Add the actions
+
+Add these actions in this order:
+
+1. `Get URLs from Input`
+2. `Get Contents of URL`
+3. `Show Notification`
+
+If your iPhone shows `Shortcut Input` instead of `Input`, that is fine. They mean the same thing here.
+
+### Step 4. Configure `Get Contents of URL`
+
+Set the action up like this:
+
+- URL: `https://api.url-keep.com/v1/bookmarks`
+- Method: `POST`
+- Headers:
+  - `Authorization` = `Bearer YOUR_TOKEN_HERE`
+  - `Content-Type` = `application/json`
+- Request Body: `JSON`
+
+Then set the JSON body fields to:
 
 ```json
 {
-  "url": "<shared url>",
+  "url": "<output of Get URLs from Input>",
+  "saved_via": "ios_shortcut"
+}
+```
+
+In the Shortcuts UI, this means:
+
+- key `url` should use the variable produced by `Get URLs from Input`
+- key `saved_via` should be plain text: `ios_shortcut`
+
+### Step 5. Configure the success message
+
+For `Show Notification`, use something simple like:
+
+- `saved to url-keep`
+
+### Step 6. Test it
+
+On your iPhone:
+
+1. open a page in Safari
+2. tap `Share`
+3. tap `Save to url-keep`
+
+The first time, iOS may ask for permission to contact `api.url-keep.com`.
+Allow it.
+
+If everything is correct, you should see:
+
+- a `saved to url-keep` notification
+- the new bookmark in the web app
+
+### Troubleshooting
+
+If it does not work:
+
+- make sure the token is valid and copied exactly
+- make sure the API URL is exactly `https://api.url-keep.com/v1/bookmarks`
+- make sure the header is `Authorization: Bearer <token>`
+- make sure the JSON body key is `url`, not `link`
+- make sure `saved_via` is exactly `ios_shortcut`
+
+### Technical reference
+
+This is the request the Shortcut should make:
+
+```http
+POST https://api.url-keep.com/v1/bookmarks
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+```json
+{
+  "url": "https://example.com/article",
   "saved_via": "ios_shortcut"
 }
 ```

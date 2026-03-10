@@ -27,6 +27,7 @@ import {
 } from "react";
 
 const TOKEN_KEY = "url_keep_token";
+const IOS_SHORTCUT_TOKEN_NAME = "iphone shortcut";
 
 function normalizeApiOrigin(value: string | undefined) {
   const fallback = "http://localhost:8787";
@@ -50,6 +51,24 @@ function normalizeApiOrigin(value: string | undefined) {
 }
 
 const API_ORIGIN = normalizeApiOrigin(import.meta.env.VITE_API_ORIGIN);
+
+function normalizeOptionalAbsoluteUrl(value: string | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+const IOS_SHORTCUT_URL = normalizeOptionalAbsoluteUrl(
+  import.meta.env.VITE_IOS_SHORTCUT_URL,
+);
 
 type AuthState = {
   token: string | null;
@@ -546,9 +565,10 @@ function MobileSavePage() {
 function TokensPage() {
   const auth = useAuth();
   const [tokens, setTokens] = useState<TokenItem[]>([]);
-  const [name, setName] = useState("iphone shortcut");
+  const [name, setName] = useState(IOS_SHORTCUT_TOKEN_NAME);
   const [createdToken, setCreatedToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const loadTokens = async () => {
     try {
@@ -566,13 +586,41 @@ function TokensPage() {
   const onCreate = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
+    setCopied(false);
     try {
       const response = await auth.client.createToken({ name });
       setCreatedToken(response.token);
-      setName("iphone shortcut");
+      setName(IOS_SHORTCUT_TOKEN_NAME);
       await loadTokens();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "create failed");
+    }
+  };
+
+  const onCreateShortcutToken = async () => {
+    setError(null);
+    setCopied(false);
+    try {
+      const response = await auth.client.createToken({
+        name: IOS_SHORTCUT_TOKEN_NAME,
+      });
+      setCreatedToken(response.token);
+      await loadTokens();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "create failed");
+    }
+  };
+
+  const onCopyToken = async () => {
+    if (!createdToken) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(createdToken);
+      setCopied(true);
+    } catch {
+      setError("copy failed");
     }
   };
 
@@ -596,6 +644,37 @@ function TokensPage() {
         </div>
       </header>
 
+      <section className="shortcut-setup stack">
+        <div>
+          <h2 className="section-title">iphone shortcut</h2>
+          <p className="muted block-muted">
+            create a token, copy it, then install the shortcut. on first run,
+            the shortcut will ask for that token once and then save shared urls
+            directly to url-keep.
+          </p>
+        </div>
+        <div className="inline-actions">
+          <button className="button" onClick={() => void onCreateShortcutToken()} type="button">
+            create iphone token
+          </button>
+          {IOS_SHORTCUT_URL ? (
+            <a
+              className="button secondary-button"
+              href={IOS_SHORTCUT_URL}
+              rel="noreferrer noopener"
+              target="_blank"
+            >
+              install shortcut
+            </a>
+          ) : null}
+        </div>
+        <p className="muted block-muted">
+          {IOS_SHORTCUT_URL
+            ? "after install, run the shortcut once and paste the token when asked"
+            : "add VITE_IOS_SHORTCUT_URL to show an install shortcut link here"}
+        </p>
+      </section>
+
       <form className="stack" onSubmit={onCreate}>
         <label className="field">
           <span>name</span>
@@ -610,6 +689,21 @@ function TokensPage() {
         <section className="token-output">
           <p>copy this token now. it is shown once.</p>
           <code>{createdToken}</code>
+          <div className="inline-actions">
+            <button className="button" onClick={() => void onCopyToken()} type="button">
+              {copied ? "copied" : "copy token"}
+            </button>
+            {IOS_SHORTCUT_URL ? (
+              <a
+                className="button secondary-button"
+                href={IOS_SHORTCUT_URL}
+                rel="noreferrer noopener"
+                target="_blank"
+              >
+                install shortcut
+              </a>
+            ) : null}
+          </div>
         </section>
       ) : null}
 

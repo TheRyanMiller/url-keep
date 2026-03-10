@@ -101,6 +101,12 @@ input {
   font-size: 11px;
 }
 
+.block-muted {
+  display: block;
+  line-height: 1.5;
+  margin: 0;
+}
+
 .toolbar {
   display: grid;
   gap: 12px;
@@ -115,6 +121,14 @@ input {
 
 .button {
   padding: 0 12px;
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.secondary-button {
+  border-color: var(--subtle-border);
 }
 
 .bookmark-list {
@@ -240,6 +254,19 @@ input {
 .token-row {
   border-top: 1px solid var(--subtle-border);
   padding-top: 12px;
+}
+
+.shortcut-setup {
+  border-top: 1px solid var(--subtle-border);
+  border-bottom: 1px solid var(--subtle-border);
+  margin-bottom: 24px;
+  padding: 12px 0;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0 0 8px;
 }
 
 .token-output code {
