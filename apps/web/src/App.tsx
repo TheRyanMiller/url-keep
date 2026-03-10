@@ -155,6 +155,7 @@ function AuthProvider({ children }: { children: ReactNode }) {
       const response = await client.me();
       setUser(response.user);
     } catch (caught) {
+      console.error("[refreshMe]", caught);
       if (caught instanceof ApiError && caught.status === 401) {
         setToken(null);
       }
@@ -423,7 +424,12 @@ function MainPage() {
       });
       setBookmarks(response.items);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "load failed");
+      console.error("[loadBookmarks]", caught);
+      if (caught instanceof ApiError) {
+        setError(caught.message);
+      } else {
+        setError(caught instanceof Error ? caught.message : "load failed");
+      }
     } finally {
       setLoading(false);
     }
