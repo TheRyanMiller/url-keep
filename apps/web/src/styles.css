@@ -305,13 +305,39 @@ input {
   margin: 0;
 }
 
-.token-output,
-.token-row {
+.token-output {
   border-top: 1px solid var(--subtle-border);
   padding-top: 12px;
 }
 
+.token-list {
+  border-top: 1px solid var(--subtle-border);
+}
+
+.token-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--subtle-border);
+}
+
+.token-row > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-action-spacer {
+  width: 28px;
+  flex-shrink: 0;
+}
+
 .profile-section {
+  display: grid;
+  gap: 12px;
   margin-bottom: 24px;
 }
 

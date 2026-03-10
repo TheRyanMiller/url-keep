@@ -654,15 +654,58 @@ function MobileSavePage() {
   );
 }
 
+function TokenRow({
+  token,
+  onRevoke,
+}: {
+  token: TokenItem;
+  onRevoke: (id: string) => Promise<void>;
+}) {
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    if (!armed) return;
+    const id = setTimeout(() => setArmed(false), 3000);
+    return () => clearTimeout(id);
+  }, [armed]);
+
+  return (
+    <div className="token-row">
+      <span>{token.name}</span>
+      <span className="muted">{formatDate(token.created_at)}</span>
+      {token.current ? <span className="muted">current</span> : null}
+      {!token.current ? (
+        <button
+          aria-label={armed ? "confirm revoke" : "revoke token"}
+          className={`icon-action${armed ? " icon-action--danger" : ""}`}
+          onClick={() => {
+            if (armed) {
+              void onRevoke(token.id);
+            } else {
+              setArmed(true);
+            }
+          }}
+          title={armed ? "Confirm revoke" : "Revoke token"}
+          type="button"
+        >
+          <Trash2 aria-hidden="true" size={16} strokeWidth={armed ? 2.25 : 1.75} />
+        </button>
+      ) : <span className="icon-action-spacer" />}
+    </div>
+  );
+}
+
 function ProfilePage() {
   const auth = useAuth();
 
+  const [showPasswordForm, setShowPasswordForm] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
 
+  const [showTokenList, setShowTokenList] = useState(false);
   const [tokens, setTokens] = useState<TokenItem[]>([]);
   const [tokenName, setTokenName] = useState(IOS_SHORTCUT_TOKEN_NAME);
   const [createdToken, setCreatedToken] = useState<string | null>(null);
@@ -763,44 +806,53 @@ function ProfilePage() {
       <section className="profile-section">
         <h2 className="section-title">account</h2>
         <p>{auth.user?.email}</p>
-      </section>
-
-      <section className="profile-section">
-        <h2 className="section-title">change password</h2>
-        <form className="stack" onSubmit={onChangePassword}>
-          <label className="field">
-            <span>current password</span>
-            <input
-              autoComplete="current-password"
-              type="password"
-              value={currentPassword}
-              onChange={(event) => setCurrentPassword(event.target.value)}
-            />
-          </label>
-          <label className="field">
-            <span>new password</span>
-            <input
-              autoComplete="new-password"
-              type="password"
-              value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-            />
-          </label>
-          <label className="field">
-            <span>confirm new password</span>
-            <input
-              autoComplete="new-password"
-              type="password"
-              value={confirmPassword}
-              onChange={(event) => setConfirmPassword(event.target.value)}
-            />
-          </label>
-          <button className="button" type="submit">
-            update password
-          </button>
-          {passwordSuccess ? <p>password updated</p> : null}
-          {passwordError ? <p className="error">{passwordError}</p> : null}
-        </form>
+        <button
+          className="text-action"
+          onClick={() => {
+            setShowPasswordForm((v) => !v);
+            setPasswordError(null);
+            setPasswordSuccess(false);
+          }}
+          type="button"
+        >
+          {showPasswordForm ? "cancel" : "change password"}
+        </button>
+        {showPasswordForm ? (
+          <form className="stack" onSubmit={onChangePassword}>
+            <label className="field">
+              <span>current password</span>
+              <input
+                autoComplete="current-password"
+                type="password"
+                value={currentPassword}
+                onChange={(event) => setCurrentPassword(event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>new password</span>
+              <input
+                autoComplete="new-password"
+                type="password"
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>confirm new password</span>
+              <input
+                autoComplete="new-password"
+                type="password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+              />
+            </label>
+            <button className="button" type="submit">
+              update password
+            </button>
+            {passwordSuccess ? <p>password updated</p> : null}
+            {passwordError ? <p className="error">{passwordError}</p> : null}
+          </form>
+        ) : null}
       </section>
 
       <section className="profile-section">
@@ -868,28 +920,21 @@ function ProfilePage() {
 
         {tokenError ? <p className="error">{tokenError}</p> : null}
 
-        <section className="stack">
-          {tokens.map((token) => (
-            <div className="token-row" key={token.id}>
-              <div>
-                <p>{token.name}</p>
-                <p className="muted">
-                  {formatDate(token.created_at)}
-                  {token.current ? " / current" : ""}
-                </p>
-              </div>
-              {!token.current ? (
-                <button
-                  className="text-action"
-                  onClick={() => void onRevoke(token.id)}
-                  type="button"
-                >
-                  revoke
-                </button>
-              ) : null}
-            </div>
-          ))}
-        </section>
+        <button
+          className="text-action"
+          onClick={() => setShowTokenList((v) => !v)}
+          type="button"
+        >
+          {showTokenList ? "hide tokens" : `show all tokens (${tokens.length})`}
+        </button>
+
+        {showTokenList ? (
+          <section className="token-list">
+            {tokens.map((token) => (
+              <TokenRow key={token.id} token={token} onRevoke={onRevoke} />
+            ))}
+          </section>
+        ) : null}
       </section>
     </div>
   );
