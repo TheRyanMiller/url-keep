@@ -8,8 +8,9 @@
   </head>
   <body>
     <main class="shell">
-      <header class="header">
+      <header class="header row-between">
         <h1>url-keep</h1>
+        <button class="text-button" id="settings-toggle" type="button">settings</button>
       </header>
 
       <form class="stack" id="login-form">
@@ -32,6 +33,30 @@
           open app
         </a>
       </section>
+
+      <form class="stack hidden" id="settings-form">
+        <label class="field">
+          <span>api origin</span>
+          <input
+            id="settings-api-origin"
+            type="url"
+            inputmode="url"
+            placeholder="https://api.example.com"
+          />
+        </label>
+        <label class="field">
+          <span>app origin</span>
+          <input
+            id="settings-app-origin"
+            type="url"
+            inputmode="url"
+            placeholder="https://app.example.com"
+          />
+        </label>
+        <button class="button" type="submit">save settings</button>
+        <button class="text-button left" id="reset-settings" type="button">use defaults</button>
+        <p class="muted">changing servers signs you out</p>
+      </form>
 
       <p class="error" id="error"></p>
     </main>

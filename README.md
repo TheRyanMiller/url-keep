@@ -96,6 +96,13 @@ npm run build:extension
 
 Load [`apps/extension/dist`](/Users/wavey/code/url-keep/apps/extension/dist) as an unpacked extension in Chrome or Brave.
 
+The build-time origins only seed the defaults. The popup now includes a `settings` view where you can change:
+
+- API origin
+- app origin
+
+Those overrides are stored in `chrome.storage.local`, so you can repoint the extension to a different deployment without rebuilding it.
+
 After Chrome assigns an extension ID, add that origin to `ALLOWED_EXTENSION_ORIGINS` in [`apps/api/.dev.vars`](/Users/wavey/code/url-keep/apps/api/.dev.vars), for example:
 
 ```env
@@ -180,19 +187,20 @@ This inserts the single allowed user into the remote D1 database.
 
 ### 6. Deploy the web app to Vercel
 
-This repo includes [`apps/web/vercel.json`](/Users/wavey/code/url-keep/apps/web/vercel.json) so React Router deep links like `/login`, `/save`, and `/settings/tokens` work correctly on Vercel.
+This repo is an npm-workspaces monorepo, so the Vercel project should use the repo root, not `apps/web`, otherwise the web app cannot access shared workspace packages in [`packages/`](/Users/wavey/code/url-keep/packages).
+
+This repo includes [`vercel.json`](/Users/wavey/code/url-keep/vercel.json) so React Router deep links like `/login`, `/save`, and `/settings/tokens` work correctly on Vercel.
 
 Recommended Vercel project settings:
 
-- Root Directory: `apps/web`
-- Build Command: `npm run build`
-- Output Directory: `dist`
+- Root Directory: `.`
+- Build Command: `npm run build --workspace @url-keep/web`
+- Output Directory: `apps/web/dist`
 - Environment Variable: `VITE_API_ORIGIN=https://api.example.com`
 
 You can deploy through the Vercel dashboard by importing the repo, or with the CLI:
 
 ```sh
-cd apps/web
 vercel
 vercel --prod
 ```
@@ -206,6 +214,8 @@ npm run build:extension
 ```
 
 Load or publish the built extension, note its extension ID, then add that origin to `ALLOWED_EXTENSION_ORIGINS` and redeploy the API.
+
+If you later move the API or web app to a new domain, you can update the extension from its popup `settings` view instead of rebuilding it, as long as the target API allows the extension origin in `ALLOWED_EXTENSION_ORIGINS`.
 
 ### 8. Create your iOS Shortcut token
 

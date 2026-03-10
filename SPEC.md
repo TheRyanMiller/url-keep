@@ -894,6 +894,7 @@ No host permissions are required for v1.
 - unsupported page
 - saved
 - not saved
+- server settings
 - request in progress
 - error
 
@@ -912,6 +913,7 @@ The extension must refuse to operate on non-HTTP pages such as:
 - popup shows email + password form if no token
 - submit to `POST /v1/auth/login` with `client_name: "browser extension"`
 - store returned token in `chrome.storage.local`
+- login requests use the current configured API origin
 
 ### 13.5 Saved-state check
 
@@ -969,9 +971,35 @@ Minimal text UI only:
 - current saved state
 - one primary action button
 - link to open full web app
+- link or button to open server settings
 - optional error line
 
 The popup should also follow `STYLEGUIDE.md`, adapted to a tighter surface.
+
+### 13.10 Runtime server settings
+
+The extension must support runtime-editable server targets so it can be repointed without rebuilding.
+
+Build-time defaults:
+
+- `URL_KEEP_API_ORIGIN`
+- `URL_KEEP_APP_ORIGIN`
+
+Stored runtime overrides:
+
+- `api_origin`
+- `app_origin`
+
+Rules:
+
+- store overrides in `chrome.storage.local`
+- if no override is stored, use the build-time default
+- values must be valid absolute `http` or `https` origins
+- normalize stored values to `url.origin`
+- the popup must expose a minimal settings form for editing both origins
+- saving new server settings must update subsequent API requests and the `open app` link
+- saving new server settings should clear the stored bearer token and return the extension to the login state, because tokens are server-specific
+- the popup should also offer a way to revert to the build-time defaults
 
 ## 14. iOS Shortcut Specification
 
@@ -1037,16 +1065,13 @@ If iOS provides title text, the Shortcut may include:
 Required environment variables:
 
 - `APP_ORIGIN`
-- `API_ORIGIN`
-- `ADMIN_EMAIL`
-- `ADMIN_PASSWORD_HASH`
 - `TOKEN_PEPPER`
 - `ALLOWED_EXTENSION_ORIGINS`
 
 Notes:
 
-- `ADMIN_PASSWORD_HASH` is used by the bootstrap script to seed the single user
 - `ALLOWED_EXTENSION_ORIGINS` should be a comma-separated allowlist like `chrome-extension://abc123,chrome-extension://def456`
+- `APP_ORIGIN` may be a comma-separated allowlist if multiple web origins need access
 
 ### 15.2 Web app
 
@@ -1089,7 +1114,9 @@ Recommended approach:
 
 - provide a script in `apps/api/scripts`
 - script inserts the single admin row if absent
-- script uses `ADMIN_EMAIL` and `ADMIN_PASSWORD_HASH`
+- script prompts for a password
+- script accepts email as an argument
+- script can target local or remote D1
 
 ## 16. Security and Privacy
 
@@ -1140,6 +1167,7 @@ Must verify:
 - saved-state detection works
 - save works on a normal `https` page
 - un-save works
+- runtime API/app origins can be edited and persisted
 - popup auto-closes on success
 - unsupported-page state works
 
@@ -1164,10 +1192,11 @@ The implementation is complete for v1 when all of the following are true:
 9. The extension can detect whether the current page is already saved.
 10. The extension can save the current page in one click.
 11. The extension can un-save the current page in one click.
-12. The extension popup closes automatically after a successful save or un-save.
-13. The iOS Shortcut can save a shared URL directly to the API with a token.
-14. The UI stays black-and-white, monospace, and low-friction.
-15. No server-side remote metadata fetching exists anywhere in the v1 codepath.
+12. The extension server settings can be edited at runtime without rebuilding.
+13. The extension popup closes automatically after a successful save or un-save.
+14. The iOS Shortcut can save a shared URL directly to the API with a token.
+15. The UI stays black-and-white, monospace, and low-friction.
+16. No server-side remote metadata fetching exists anywhere in the v1 codepath.
 
 ## 19. Implementation Order
 

@@ -50,6 +50,13 @@ input {
   padding-bottom: 8px;
 }
 
+.row-between {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
 .header h1,
 .field span,
 .muted,
@@ -83,13 +90,29 @@ input {
   cursor: pointer;
 }
 
+.text-button {
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
 .text-action {
   color: inherit;
   text-decoration: none;
 }
 
-.text-action:hover {
+.text-action:hover,
+.text-button:hover {
   text-decoration: underline;
+}
+
+.left {
+  justify-self: start;
 }
 
 .hidden {

@@ -162,15 +162,25 @@ export class UrlKeepClient {
   ): Promise<T> {
     const token =
       options.token !== undefined ? options.token : this.getToken?.() ?? null;
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: options.method ?? "GET",
-      headers: {
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: options.signal ?? signal,
-    });
+    let response: Response;
+
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, {
+        method: options.method ?? "GET",
+        headers: {
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: options.signal ?? signal,
+      });
+    } catch (caught) {
+      throw new ApiError(
+        0,
+        "network_error",
+        caught instanceof Error ? caught.message : "Network request failed",
+      );
+    }
 
     if (response.status === 204) {
       return undefined as T;
