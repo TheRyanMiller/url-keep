@@ -29,6 +29,26 @@ import {
 const TOKEN_KEY = "url_keep_token";
 const IOS_SHORTCUT_TOKEN_NAME = "iphone shortcut";
 
+function readStoredToken(): string | null {
+  try {
+    return window.localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredToken(token: string | null) {
+  try {
+    if (token) {
+      window.localStorage.setItem(TOKEN_KEY, token);
+    } else {
+      window.localStorage.removeItem(TOKEN_KEY);
+    }
+  } catch {
+    // Keep the in-memory auth state even if storage is unavailable.
+  }
+}
+
 function normalizeApiOrigin(value: string | undefined) {
   const fallback = "http://localhost:8787";
   const trimmed = value?.trim();
@@ -103,9 +123,7 @@ function getDomain(value: string) {
 }
 
 function AuthProvider({ children }: { children: ReactNode }) {
-  const [token, setTokenState] = useState<string | null>(
-    window.localStorage.getItem(TOKEN_KEY),
-  );
+  const [token, setTokenState] = useState<string | null>(() => readStoredToken());
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -113,17 +131,15 @@ function AuthProvider({ children }: { children: ReactNode }) {
     () =>
       new UrlKeepClient({
         baseUrl: API_ORIGIN,
-        getToken: () => window.localStorage.getItem(TOKEN_KEY),
+        getToken: () => token,
       }),
-    [],
+    [token],
   );
 
   const setToken = (value: string | null) => {
     setTokenState(value);
-    if (value) {
-      window.localStorage.setItem(TOKEN_KEY, value);
-    } else {
-      window.localStorage.removeItem(TOKEN_KEY);
+    writeStoredToken(value);
+    if (!value) {
       setUser(null);
     }
   };
