@@ -1,6 +1,7 @@
 import {
   bookmarkListResponseSchema,
   bookmarkResponseSchema,
+  changePasswordRequestSchema,
   createBookmarkRequestSchema,
   createTokenRequestSchema,
   createTokenResponseSchema,
@@ -13,6 +14,7 @@ import {
   updateBookmarkTitleRequestSchema,
   type BookmarkListResponse,
   type BookmarkResponse,
+  type ChangePasswordRequest,
   type CreateBookmarkRequest,
   type CreateTokenRequest,
   type CreateTokenResponse,
@@ -175,6 +177,14 @@ export class UrlKeepClient {
       method: "PATCH",
       body,
       schema: bookmarkResponseSchema,
+    });
+  }
+
+  async changePassword(input: ChangePasswordRequest): Promise<void> {
+    const body = changePasswordRequestSchema.parse(input);
+    await this.request("/v1/auth/password", {
+      method: "PATCH",
+      body,
     });
   }
 

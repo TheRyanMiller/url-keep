@@ -1,6 +1,7 @@
 import { cors } from "hono/cors";
 import { Hono, type Context } from "hono";
 import {
+  changePasswordRequestSchema,
   createBookmarkRequestSchema,
   createTokenRequestSchema,
   loginRequestSchema,
@@ -399,6 +400,31 @@ export function createApp(options: { store?: Store } = {}) {
       user: { id: user.id, email: user.email },
       token_info: { id: token.id, name: token.name },
     });
+  });
+
+  app.patch("/v1/auth/password", async (c) => {
+    const { user } = c.get("auth");
+    const rawBody = await c.req.json().catch(() => null);
+    const parsed = changePasswordRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return errorResponse("validation_error", parsed.error.issues[0]?.message ?? "Invalid request", 400);
+    }
+
+    const store = c.get("store");
+    const fullUser = await store.getUserById(user.id);
+    if (!fullUser) {
+      return errorResponse("unauthorized", "Invalid user", 401);
+    }
+
+    const check = await verifyPassword(parsed.data.current_password, fullUser.passwordHash);
+    if (!check.valid) {
+      return errorResponse("unauthorized", "Current password is incorrect", 401);
+    }
+
+    const newHash = await hashPassword(parsed.data.new_password);
+    await store.updateUserPasswordHash(user.id, newHash);
+
+    return c.body(null, 204);
   });
 
   app.get("/v1/tokens", async (c) => {

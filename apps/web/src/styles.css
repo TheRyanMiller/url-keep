@@ -226,6 +226,17 @@ input {
   border: 1px solid var(--border);
 }
 
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-sep {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .inline-actions {
   display: flex;
   flex-wrap: wrap;
@@ -300,11 +311,19 @@ input {
   padding-top: 12px;
 }
 
-.shortcut-setup {
+.profile-section {
+  margin-bottom: 24px;
+}
+
+.profile-section + .profile-section {
   border-top: 1px solid var(--subtle-border);
+  padding-top: 20px;
+}
+
+.shortcut-setup {
   border-bottom: 1px solid var(--subtle-border);
   margin-bottom: 24px;
-  padding: 12px 0;
+  padding-bottom: 12px;
 }
 
 .section-title {

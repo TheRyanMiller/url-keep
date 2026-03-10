@@ -185,6 +185,60 @@ input {
   justify-self: start;
 }
 
+.success-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 0 4px;
+}
+
+.success-icon {
+  width: 56px;
+  height: 56px;
+}
+
+.success-circle {
+  fill: #080;
+  transform-origin: center;
+  animation: success-pop 0.45s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+}
+
+.success-check {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 36;
+  stroke-dashoffset: 36;
+  animation: success-draw 0.3s ease forwards 0.3s;
+}
+
+.success-label {
+  margin: 0;
+  color: #080;
+  font-size: 13px;
+  opacity: 0;
+  animation: success-fade 0.3s ease forwards 0.5s;
+}
+
+@keyframes success-pop {
+  0% { transform: scale(0); }
+  50% { transform: scale(1.15); }
+  75% { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+
+@keyframes success-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes success-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .field-row {
   align-items: center;
   display: flex;

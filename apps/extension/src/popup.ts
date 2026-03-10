@@ -33,6 +33,9 @@ const resetSettingsButton = document.getElementById(
 const quickSaveCheckbox = document.getElementById(
   "settings-quick-save",
 ) as HTMLInputElement;
+const successView = document.getElementById("success-view") as HTMLElement;
+const successDomain = document.getElementById("success-domain") as HTMLElement;
+const successRemove = document.getElementById("success-remove") as HTMLButtonElement;
 const errorElement = document.getElementById("error") as HTMLElement;
 
 type ExtractedMetadata = {
@@ -169,13 +172,24 @@ function showLogin() {
   settingsForm.classList.add("hidden");
   loginForm.classList.remove("hidden");
   bookmarkView.classList.add("hidden");
+  successView.classList.add("hidden");
   settingsToggleButton.textContent = "settings";
 }
 
 function showBookmarkView() {
   settingsForm.classList.add("hidden");
   loginForm.classList.add("hidden");
+  successView.classList.add("hidden");
   bookmarkView.classList.remove("hidden");
+  settingsToggleButton.textContent = "settings";
+}
+
+function showSuccessView(domain: string) {
+  loginForm.classList.add("hidden");
+  bookmarkView.classList.add("hidden");
+  settingsForm.classList.add("hidden");
+  successView.classList.remove("hidden");
+  successDomain.textContent = domain;
   settingsToggleButton.textContent = "settings";
 }
 
@@ -183,6 +197,7 @@ function showSettings() {
   showError(null);
   loginForm.classList.add("hidden");
   bookmarkView.classList.add("hidden");
+  successView.classList.add("hidden");
   settingsForm.classList.remove("hidden");
   settingsToggleButton.textContent = "back";
 }
@@ -314,12 +329,9 @@ async function quickSave() {
     });
 
     popupState = { ...popupState, saved: true };
-    actionButton.disabled = true;
-    actionButton.textContent = "\u2713 saved";
-    actionButton.classList.add("button--success");
-    deleteLink.classList.remove("hidden");
-    stateNoteElement.textContent = "";
-    autoCloseTimer = setTimeout(() => window.close(), 1500);
+    showSuccessView(new URL(tab.url).hostname);
+    showError(null);
+    autoCloseTimer = setTimeout(() => window.close(), 1800);
   } catch (caught) {
     if (caught instanceof ApiError && caught.status === 401) {
       await setToken(null);
@@ -420,12 +432,43 @@ loginForm.addEventListener("submit", async (event) => {
 });
 
 settingsToggleButton.addEventListener("click", () => {
+  if (autoCloseTimer) {
+    clearTimeout(autoCloseTimer);
+    autoCloseTimer = null;
+  }
+
   if (!settingsForm.classList.contains("hidden")) {
     restoreMainView();
     return;
   }
 
   showSettings();
+});
+
+successRemove.addEventListener("click", async () => {
+  if (!popupState) return;
+
+  if (autoCloseTimer) {
+    clearTimeout(autoCloseTimer);
+    autoCloseTimer = null;
+  }
+
+  showBookmarkView();
+  domainElement.textContent = new URL(popupState.url).hostname;
+  actionButton.disabled = true;
+  actionButton.textContent = "save";
+  resetButtonStyle();
+  stateNoteElement.textContent = "removing...";
+  deleteLink.classList.add("hidden");
+  showError(null);
+
+  try {
+    await client.deleteBookmarkByUrl(popupState.url);
+    renderState({ ...popupState, saved: false, checking: false });
+  } catch (caught) {
+    renderState({ ...popupState, saved: true, checking: false });
+    showError(getRequestErrorMessage(caught, "delete failed"));
+  }
 });
 
 settingsForm.addEventListener("submit", async (event) => {

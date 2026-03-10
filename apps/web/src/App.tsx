@@ -131,6 +131,21 @@ function BrandLogo() {
   );
 }
 
+function Nav() {
+  const auth = useAuth();
+  return (
+    <nav className="nav">
+      <Link className="text-action" to="/add">add url</Link>
+      <span className="nav-sep" aria-hidden="true">|</span>
+      <Link className="text-action" to="/profile">profile</Link>
+      <span className="nav-sep" aria-hidden="true">|</span>
+      <button className="text-action" onClick={() => void auth.logout()} type="button">
+        log out
+      </button>
+    </nav>
+  );
+}
+
 function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setTokenState] = useState<string | null>(() => readStoredToken());
   const [user, setUser] = useState<User | null>(null);
@@ -444,10 +459,8 @@ function BookmarkRow({
 function MainPage() {
   const auth = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [urlInput, setUrlInput] = useState("");
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const query = searchParams.get("q") ?? "";
 
@@ -474,21 +487,6 @@ function MainPage() {
   useEffect(() => {
     void loadBookmarks();
   }, [query]);
-
-  const onSave = async (event: FormEvent) => {
-    event.preventDefault();
-    setSaveError(null);
-    try {
-      await auth.client.saveBookmark({
-        url: urlInput,
-        saved_via: "web",
-      } as CreateBookmarkRequest);
-      setUrlInput("");
-      await loadBookmarks();
-    } catch (caught) {
-      setSaveError(caught instanceof ApiError ? caught.message : "save failed");
-    }
-  };
 
   const onDeleteConfirm = async (bookmark: Bookmark) => {
     try {
@@ -520,35 +518,16 @@ function MainPage() {
     <div className="page">
       <header className="page-header row-between">
         <BrandLogo />
-        <nav className="inline-actions">
-          <Link className="text-action" to="/settings/tokens">
-            tokens
-          </Link>
-          <button className="text-action" onClick={() => void auth.logout()} type="button">
-            log out
-          </button>
-        </nav>
+        <Nav />
       </header>
 
       <section className="toolbar">
-        <form className="row-form" onSubmit={onSave}>
-          <input
-            aria-label="url"
-            placeholder="paste a url"
-            value={urlInput}
-            onChange={(event) => setUrlInput(event.target.value)}
-          />
-          <button className="button" type="submit">
-            save
-          </button>
-        </form>
         <input
           aria-label="search"
           placeholder="search"
           value={query}
           onChange={(event) => onSearchChange(event.target.value)}
         />
-        {saveError ? <p className="error">{saveError}</p> : null}
       </section>
 
       {error ? <p className="error">{error}</p> : null}
@@ -564,6 +543,56 @@ function MainPage() {
           />
         ))}
       </section>
+    </div>
+  );
+}
+
+function AddPage() {
+  const auth = useAuth();
+  const [urlInput, setUrlInput] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  const onSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    setSaved(false);
+    try {
+      await auth.client.saveBookmark({
+        url: urlInput,
+        saved_via: "web",
+      } as CreateBookmarkRequest);
+      setSaved(true);
+      setUrlInput("");
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "save failed");
+    }
+  };
+
+  return (
+    <div className="page narrow">
+      <header className="page-header row-between">
+        <BrandLogo />
+        <Nav />
+      </header>
+      <form className="stack" onSubmit={onSubmit}>
+        <label className="field">
+          <span>url</span>
+          <input
+            placeholder="https://..."
+            value={urlInput}
+            onChange={(event) => {
+              setUrlInput(event.target.value);
+              setSaved(false);
+            }}
+          />
+        </label>
+        <button className="button" type="submit">
+          save
+        </button>
+        {saved ? <p>saved</p> : null}
+        {error ? <p className="error">{error}</p> : null}
+      </form>
     </div>
   );
 }
@@ -625,12 +654,19 @@ function MobileSavePage() {
   );
 }
 
-function TokensPage() {
+function ProfilePage() {
   const auth = useAuth();
+
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = useState(false);
+
   const [tokens, setTokens] = useState<TokenItem[]>([]);
-  const [name, setName] = useState(IOS_SHORTCUT_TOKEN_NAME);
+  const [tokenName, setTokenName] = useState(IOS_SHORTCUT_TOKEN_NAME);
   const [createdToken, setCreatedToken] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [tokenError, setTokenError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   const loadTokens = async () => {
@@ -638,7 +674,7 @@ function TokensPage() {
       const response = await auth.client.listTokens();
       setTokens(response.items);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "load failed");
+      setTokenError(caught instanceof ApiError ? caught.message : "load failed");
     }
   };
 
@@ -646,22 +682,46 @@ function TokensPage() {
     void loadTokens();
   }, []);
 
-  const onCreate = async (event: FormEvent) => {
+  const onChangePassword = async (event: FormEvent) => {
     event.preventDefault();
-    setError(null);
+    setPasswordError(null);
+    setPasswordSuccess(false);
+
+    if (newPassword !== confirmPassword) {
+      setPasswordError("passwords do not match");
+      return;
+    }
+
+    try {
+      await auth.client.changePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setPasswordSuccess(true);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+    } catch (caught) {
+      setPasswordError(caught instanceof ApiError ? caught.message : "update failed");
+    }
+  };
+
+  const onCreateToken = async (event: FormEvent) => {
+    event.preventDefault();
+    setTokenError(null);
     setCopied(false);
     try {
-      const response = await auth.client.createToken({ name });
+      const response = await auth.client.createToken({ name: tokenName });
       setCreatedToken(response.token);
-      setName(IOS_SHORTCUT_TOKEN_NAME);
+      setTokenName(IOS_SHORTCUT_TOKEN_NAME);
       await loadTokens();
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "create failed");
+      setTokenError(caught instanceof ApiError ? caught.message : "create failed");
     }
   };
 
   const onCreateShortcutToken = async () => {
-    setError(null);
+    setTokenError(null);
     setCopied(false);
     try {
       const response = await auth.client.createToken({
@@ -670,20 +730,17 @@ function TokensPage() {
       setCreatedToken(response.token);
       await loadTokens();
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "create failed");
+      setTokenError(caught instanceof ApiError ? caught.message : "create failed");
     }
   };
 
   const onCopyToken = async () => {
-    if (!createdToken) {
-      return;
-    }
-
+    if (!createdToken) return;
     try {
       await navigator.clipboard.writeText(createdToken);
       setCopied(true);
     } catch {
-      setError("copy failed");
+      setTokenError("copy failed");
     }
   };
 
@@ -692,70 +749,72 @@ function TokensPage() {
       await auth.client.revokeToken(id);
       await loadTokens();
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "revoke failed");
+      setTokenError(caught instanceof ApiError ? caught.message : "revoke failed");
     }
   };
 
   return (
     <div className="page narrow">
       <header className="page-header row-between">
-        <div className="page-heading-group">
-          <Link className="text-action" to="/">
-            ← back
-          </Link>
-          <BrandLogo />
-          <p className="page-kicker">tokens</p>
-        </div>
+        <BrandLogo />
+        <Nav />
       </header>
 
-      <section className="shortcut-setup stack">
-        <div>
-          <h2 className="section-title">iphone shortcut</h2>
+      <section className="profile-section">
+        <h2 className="section-title">account</h2>
+        <p>{auth.user?.email}</p>
+      </section>
+
+      <section className="profile-section">
+        <h2 className="section-title">change password</h2>
+        <form className="stack" onSubmit={onChangePassword}>
+          <label className="field">
+            <span>current password</span>
+            <input
+              autoComplete="current-password"
+              type="password"
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span>new password</span>
+            <input
+              autoComplete="new-password"
+              type="password"
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span>confirm new password</span>
+            <input
+              autoComplete="new-password"
+              type="password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+            />
+          </label>
+          <button className="button" type="submit">
+            update password
+          </button>
+          {passwordSuccess ? <p>password updated</p> : null}
+          {passwordError ? <p className="error">{passwordError}</p> : null}
+        </form>
+      </section>
+
+      <section className="profile-section">
+        <h2 className="section-title">tokens</h2>
+
+        <div className="shortcut-setup stack">
           <p className="muted block-muted">
             create a token, copy it, then install the shortcut. on first run,
             the shortcut will ask for that token once and then save shared urls
             directly to url-keep.
           </p>
-        </div>
-        <div className="inline-actions">
-          <button className="button" onClick={() => void onCreateShortcutToken()} type="button">
-            create iphone token
-          </button>
-          {IOS_SHORTCUT_URL ? (
-            <a
-              className="button secondary-button"
-              href={IOS_SHORTCUT_URL}
-              rel="noreferrer noopener"
-              target="_blank"
-            >
-              install shortcut
-            </a>
-          ) : null}
-        </div>
-        <p className="muted block-muted">
-          {IOS_SHORTCUT_URL
-            ? "after install, run the shortcut once and paste the token when asked"
-            : "add VITE_IOS_SHORTCUT_URL to show an install shortcut link here"}
-        </p>
-      </section>
-
-      <form className="stack" onSubmit={onCreate}>
-        <label className="field">
-          <span>name</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} />
-        </label>
-        <button className="button" type="submit">
-          create token
-        </button>
-      </form>
-
-      {createdToken ? (
-        <section className="token-output">
-          <p>copy this token now. it is shown once.</p>
-          <code>{createdToken}</code>
           <div className="inline-actions">
-            <button className="button" onClick={() => void onCopyToken()} type="button">
-              {copied ? "copied" : "copy token"}
+            <button className="button" onClick={() => void onCreateShortcutToken()} type="button">
+              create iphone token
             </button>
             {IOS_SHORTCUT_URL ? (
               <a
@@ -768,32 +827,69 @@ function TokensPage() {
               </a>
             ) : null}
           </div>
-        </section>
-      ) : null}
+          <p className="muted block-muted">
+            {IOS_SHORTCUT_URL
+              ? "after install, run the shortcut once and paste the token when asked"
+              : "add VITE_IOS_SHORTCUT_URL to show an install shortcut link here"}
+          </p>
+        </div>
 
-      {error ? <p className="error">{error}</p> : null}
+        <form className="stack" onSubmit={onCreateToken}>
+          <label className="field">
+            <span>name</span>
+            <input value={tokenName} onChange={(event) => setTokenName(event.target.value)} />
+          </label>
+          <button className="button" type="submit">
+            create token
+          </button>
+        </form>
 
-      <section className="stack">
-        {tokens.map((token) => (
-          <div className="token-row" key={token.id}>
-            <div>
-              <p>{token.name}</p>
-              <p className="muted">
-                {formatDate(token.created_at)}
-                {token.current ? " / current" : ""}
-              </p>
-            </div>
-            {!token.current ? (
-              <button
-                className="text-action"
-                onClick={() => void onRevoke(token.id)}
-                type="button"
-              >
-                revoke
+        {createdToken ? (
+          <section className="token-output">
+            <p>copy this token now. it is shown once.</p>
+            <code>{createdToken}</code>
+            <div className="inline-actions">
+              <button className="button" onClick={() => void onCopyToken()} type="button">
+                {copied ? "copied" : "copy token"}
               </button>
-            ) : null}
-          </div>
-        ))}
+              {IOS_SHORTCUT_URL ? (
+                <a
+                  className="button secondary-button"
+                  href={IOS_SHORTCUT_URL}
+                  rel="noreferrer noopener"
+                  target="_blank"
+                >
+                  install shortcut
+                </a>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
+
+        {tokenError ? <p className="error">{tokenError}</p> : null}
+
+        <section className="stack">
+          {tokens.map((token) => (
+            <div className="token-row" key={token.id}>
+              <div>
+                <p>{token.name}</p>
+                <p className="muted">
+                  {formatDate(token.created_at)}
+                  {token.current ? " / current" : ""}
+                </p>
+              </div>
+              {!token.current ? (
+                <button
+                  className="text-action"
+                  onClick={() => void onRevoke(token.id)}
+                  type="button"
+                >
+                  revoke
+                </button>
+              ) : null}
+            </div>
+          ))}
+        </section>
       </section>
     </div>
   );
@@ -812,6 +908,14 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/add"
+        element={
+          <RequireAuth>
+            <AddPage />
+          </RequireAuth>
+        }
+      />
+      <Route
         path="/save"
         element={
           <RequireAuth>
@@ -820,13 +924,14 @@ function AppRoutes() {
         }
       />
       <Route
-        path="/settings/tokens"
+        path="/profile"
         element={
           <RequireAuth>
-            <TokensPage />
+            <ProfilePage />
           </RequireAuth>
         }
       />
+      <Route path="/settings/tokens" element={<Navigate replace to="/profile" />} />
       <Route path="*" element={<Navigate replace to="/" />} />
     </Routes>
   );
