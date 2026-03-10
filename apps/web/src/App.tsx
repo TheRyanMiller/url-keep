@@ -1,4 +1,5 @@
 import { UrlKeepClient, ApiError } from "@url-keep/api-client";
+import { PencilLine, Trash2 } from "lucide-react";
 import type {
   Bookmark,
   CreateBookmarkRequest,
@@ -286,79 +287,81 @@ function BookmarkRow({
         <span>{bookmark.saved_via}</span>
       </div>
       <div className="bookmark-main">
-        {editing ? (
-          <div className="inline-edit">
-            <input
-              aria-label="title"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  void saveEdit();
-                }
-                if (event.key === "Escape") {
-                  setEditing(false);
-                  setTitle(bookmark.title);
-                }
-              }}
-            />
-            <div className="inline-actions">
-              <button className="text-action" disabled={busy} onClick={() => void saveEdit()} type="button">
-                save
-              </button>
-              <button
-                className="text-action"
-                onClick={() => {
-                  setEditing(false);
-                  setTitle(bookmark.title);
-                }}
-                type="button"
-              >
-                cancel
-              </button>
-            </div>
+        <div className={`bookmark-content${bookmark.image_url ? " has-image" : ""}`}>
+          <BookmarkImage alt={bookmark.title} src={bookmark.image_url} />
+          <div className="bookmark-copy">
+            {editing ? (
+              <div className="inline-edit">
+                <input
+                  aria-label="title"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      void saveEdit();
+                    }
+                    if (event.key === "Escape") {
+                      setEditing(false);
+                      setTitle(bookmark.title);
+                    }
+                  }}
+                />
+                <div className="inline-actions">
+                  <button className="text-action" disabled={busy} onClick={() => void saveEdit()} type="button">
+                    save
+                  </button>
+                  <button
+                    className="text-action"
+                    onClick={() => {
+                      setEditing(false);
+                      setTitle(bookmark.title);
+                    }}
+                    type="button"
+                  >
+                    cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <a
+                  className="bookmark-title"
+                  href={bookmark.url}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  {bookmark.title}
+                </a>
+                <p className="bookmark-domain">{getDomain(bookmark.url)}</p>
+              </>
+            )}
           </div>
-        ) : (
-          <>
-            <a
-              className="bookmark-title"
-              href={bookmark.url}
-              rel="noopener noreferrer"
-              target="_blank"
-            >
-              {bookmark.title}
-            </a>
-            <p className="bookmark-domain">{getDomain(bookmark.url)}</p>
-          </>
-        )}
+        </div>
         {error ? <p className="error">{error}</p> : null}
       </div>
       <div className="bookmark-side">
-        <BookmarkImage alt={bookmark.title} src={bookmark.image_url} />
-        <div className="inline-actions">
-          <a
-            className="text-action"
-            href={bookmark.url}
-            rel="noopener noreferrer"
-            target="_blank"
-          >
-            open
-          </a>
-          <button
-            className="text-action"
-            onClick={() => setEditing(true)}
-            type="button"
-          >
-            edit
-          </button>
-          <button
-            className="text-action"
-            onClick={() => void onDelete(bookmark)}
-            type="button"
-          >
-            delete
-          </button>
-        </div>
+        {!editing ? (
+          <div className="icon-actions">
+            <button
+              aria-label="edit title"
+              className="icon-action"
+              onClick={() => setEditing(true)}
+              title="Edit title"
+              type="button"
+            >
+              <PencilLine aria-hidden="true" size={16} strokeWidth={1.75} />
+            </button>
+            <button
+              aria-label="delete bookmark"
+              className="icon-action"
+              onClick={() => void onDelete(bookmark)}
+              title="Delete bookmark"
+              type="button"
+            >
+              <Trash2 aria-hidden="true" size={16} strokeWidth={1.75} />
+            </button>
+          </div>
+        ) : null}
       </div>
     </article>
   );

@@ -142,6 +142,20 @@ input {
   min-width: 0;
 }
 
+.bookmark-content {
+  display: grid;
+  gap: 12px;
+}
+
+.bookmark-content.has-image {
+  align-items: start;
+  grid-template-columns: 120px minmax(0, 1fr);
+}
+
+.bookmark-copy {
+  min-width: 0;
+}
+
 .bookmark-title {
   display: inline-block;
   margin: 0 0 6px;
@@ -160,10 +174,9 @@ input {
 }
 
 .bookmark-side {
-  display: grid;
-  justify-items: end;
-  gap: 8px;
-  min-width: 140px;
+  display: flex;
+  justify-content: flex-end;
+  min-width: 64px;
 }
 
 .bookmark-image {
@@ -180,6 +193,12 @@ input {
   align-items: center;
 }
 
+.icon-actions {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
 .text-action {
   padding: 0;
   border: 0;
@@ -187,6 +206,24 @@ input {
   color: inherit;
   text-decoration: none;
   min-height: auto;
+}
+
+.icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.icon-action:hover,
+.icon-action:focus-visible {
+  background: var(--hover);
 }
 
 .inline-edit {
@@ -216,12 +253,21 @@ input {
     min-height: auto;
   }
 
+  .bookmark-content.has-image {
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+
   .bookmark-side {
-    justify-items: start;
+    justify-content: flex-start;
     min-width: 0;
   }
 
   .row-between {
     flex-direction: column;
+  }
+
+  .bookmark-image {
+    width: 96px;
+    height: 64px;
   }
 }

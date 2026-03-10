@@ -177,10 +177,10 @@ After deploy, Wrangler will print the Worker URL. If you have not attached a cus
 
 ### 5. Bootstrap the production admin user
 
-Run the same admin bootstrap script without `--local`:
+Run the same admin bootstrap script with `--remote`:
 
 ```sh
-npm run bootstrap:admin -- you@example.com
+npm run bootstrap:admin -- you@example.com --remote
 ```
 
 This inserts the single allowed user into the remote D1 database.
@@ -233,7 +233,7 @@ If you later move the API or web app to a new domain, you can update the extensi
 Once the web app is live, log in, create a token under `/settings/tokens`, and use that token in your Shortcut against:
 
 ```text
-POST https://api.example.com/v1/bookmarks
+POST https://api.url-keep.com/v1/bookmarks
 ```
 
 ## iOS Shortcut

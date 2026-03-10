@@ -4,7 +4,9 @@ import { stdin, stdout } from "node:process";
 import { hashPassword, makeId, nowIso } from "../src/utils";
 
 function usage(): never {
-  console.error("Usage: npm run bootstrap:admin -- <email> [--local] [--db <binding-or-name>]");
+  console.error(
+    "Usage: npm run bootstrap:admin -- <email> [--local | --remote] [--db <binding-or-name>]",
+  );
   process.exit(1);
 }
 
@@ -20,6 +22,12 @@ async function main() {
   }
 
   const isLocal = args.includes("--local");
+  const isRemote = args.includes("--remote");
+  if (isLocal && isRemote) {
+    console.error("Choose either --local or --remote, not both.");
+    process.exit(1);
+  }
+
   const dbIndex = args.indexOf("--db");
   const databaseName =
     (dbIndex >= 0 ? args[dbIndex + 1] : undefined) ??
@@ -62,7 +70,7 @@ WHERE NOT EXISTS (
       databaseName,
       "--command",
       sql,
-      ...(isLocal ? ["--local"] : []),
+      ...(isLocal ? ["--local"] : ["--remote"]),
     ];
 
     execFileSync("npx", command, {
