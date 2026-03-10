@@ -968,9 +968,10 @@ Behavior:
 Minimal text UI only:
 
 - current domain
-- current saved state
-- one primary action button
-- link to open full web app
+- one primary action button that also carries the current page state
+- the save button must visually distinguish `saved`, `not saved`, and `unsupported` with a muted status treatment on the button itself
+- one short helper line below the button explaining the current state
+- link to open full web app with an outbound-link icon
 - link or button to open server settings
 - optional error line
 

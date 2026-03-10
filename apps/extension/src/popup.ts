@@ -16,9 +16,11 @@ const settingsToggleButton = document.getElementById("settings-toggle") as HTMLB
 const emailInput = document.getElementById("email") as HTMLInputElement;
 const passwordInput = document.getElementById("password") as HTMLInputElement;
 const domainElement = document.getElementById("domain") as HTMLElement;
-const stateLabel = document.getElementById("state-label") as HTMLElement;
 const actionButton = document.getElementById("action-button") as HTMLButtonElement;
+const actionLabel = document.getElementById("action-label") as HTMLElement;
+const stateNoteElement = document.getElementById("state-note") as HTMLElement;
 const openAppLink = document.getElementById("open-app-link") as HTMLAnchorElement;
+const actionIndicator = document.getElementById("action-indicator") as HTMLElement;
 const settingsApiOriginInput = document.getElementById(
   "settings-api-origin",
 ) as HTMLInputElement;
@@ -47,6 +49,8 @@ type RuntimeSettings = {
   apiOrigin: string;
   appOrigin: string;
 };
+
+type ActionVisualState = "saved" | "not-saved" | "loading" | "unsupported";
 
 let currentToken: string | null = null;
 let popupState: PopupState | null = null;
@@ -136,6 +140,19 @@ function getRequestErrorMessage(caught: unknown, fallback: string) {
   return fallback;
 }
 
+function setActionState(
+  state: ActionVisualState,
+  label: string,
+  note: string,
+  disabled: boolean,
+) {
+  actionButton.dataset.state = state;
+  actionButton.disabled = disabled;
+  actionLabel.textContent = label;
+  stateNoteElement.textContent = note;
+  actionIndicator.hidden = false;
+}
+
 function showLogin() {
   settingsForm.classList.add("hidden");
   loginForm.classList.remove("hidden");
@@ -213,8 +230,14 @@ function renderState(state: PopupState) {
   showBookmarkView();
   showError(null);
   domainElement.textContent = new URL(state.url).hostname;
-  stateLabel.textContent = state.saved ? "saved" : "not saved";
-  actionButton.textContent = state.saved ? "unsave" : "save";
+  setActionState(
+    state.saved ? "saved" : "not-saved",
+    state.saved ? "saved · remove" : "not saved · save",
+    state.saved
+      ? "this page is already in your list"
+      : "save the current tab to url-keep",
+    false,
+  );
 }
 
 async function loadBookmarkState() {
@@ -222,15 +245,26 @@ async function loadBookmarkState() {
   if (!tab?.id || !tab.url || !isSupportedUrl(tab.url)) {
     popupState = null;
     showBookmarkView();
-    showError("unsupported page");
+    showError(null);
     domainElement.textContent = "";
-    stateLabel.textContent = "unsupported";
-    actionButton.disabled = true;
-    actionButton.textContent = "save";
+    setActionState(
+      "unsupported",
+      "unsupported page",
+      "works only on normal http/https tabs",
+      true,
+    );
     return;
   }
 
-  actionButton.disabled = false;
+  showBookmarkView();
+  showError(null);
+  domainElement.textContent = new URL(tab.url).hostname;
+  setActionState(
+    "loading",
+    "checking…",
+    "checking whether this page is already saved",
+    true,
+  );
   const metadata = await extractMetadata(tab.id);
 
   try {
@@ -331,7 +365,12 @@ actionButton.addEventListener("click", async () => {
     return;
   }
 
-  actionButton.disabled = true;
+  setActionState(
+    popupState.saved ? "saved" : "not-saved",
+    popupState.saved ? "saved · remove" : "not saved · save",
+    popupState.saved ? "removing from your list…" : "saving this page…",
+    true,
+  );
   showError(null);
 
   try {

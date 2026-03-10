@@ -26,7 +26,29 @@ import {
 } from "react";
 
 const TOKEN_KEY = "url_keep_token";
-const API_ORIGIN = import.meta.env.VITE_API_ORIGIN ?? "http://localhost:8787";
+
+function normalizeApiOrigin(value: string | undefined) {
+  const fallback = "http://localhost:8787";
+  const trimmed = value?.trim();
+
+  if (!trimmed) {
+    return fallback;
+  }
+
+  const withProtocol = /^https?:\/\//i.test(trimmed)
+    ? trimmed
+    : /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(trimmed)
+      ? `http://${trimmed}`
+      : `https://${trimmed.replace(/^\/+/, "")}`;
+
+  try {
+    return new URL(withProtocol).origin;
+  } catch {
+    return fallback;
+  }
+}
+
+const API_ORIGIN = normalizeApiOrigin(import.meta.env.VITE_API_ORIGIN);
 
 type AuthState = {
   token: string | null;

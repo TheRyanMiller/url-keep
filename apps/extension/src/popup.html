@@ -27,10 +27,19 @@
 
       <section class="stack hidden" id="bookmark-view">
         <p class="muted" id="domain"></p>
-        <p id="state-label"></p>
-        <button class="button" id="action-button" type="button"></button>
-        <a class="text-action" id="open-app-link" rel="noreferrer noopener" target="_blank">
-          open app
+        <button class="button" id="action-button" type="button">
+          <span aria-hidden="true" class="button-indicator" id="action-indicator"></span>
+          <span id="action-label"></span>
+        </button>
+        <p class="muted" id="state-note"></p>
+        <a
+          class="text-action link-with-icon"
+          id="open-app-link"
+          rel="noreferrer noopener"
+          target="_blank"
+        >
+          <span>open app</span>
+          <span aria-hidden="true" class="link-icon">↗</span>
         </a>
       </section>
 

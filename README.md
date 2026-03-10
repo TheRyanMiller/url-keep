@@ -198,6 +198,17 @@ Recommended Vercel project settings:
 - Output Directory: `apps/web/dist`
 - Environment Variable: `VITE_API_ORIGIN=https://api.example.com`
 
+`VITE_API_ORIGIN` must be a full absolute origin, including the protocol.
+
+Correct:
+
+- `https://api.url-keep.com`
+
+Incorrect:
+
+- `api.url-keep.com`
+- `/api.url-keep.com`
+
 You can deploy through the Vercel dashboard by importing the repo, or with the CLI:
 
 ```sh
