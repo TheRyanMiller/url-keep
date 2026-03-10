@@ -240,6 +240,15 @@ input {
   background: var(--hover);
 }
 
+.icon-action--confirm {
+  color: #080;
+}
+
+.icon-action--confirm:hover,
+.icon-action--confirm:focus-visible {
+  background: rgba(0, 128, 0, 0.06);
+}
+
 .icon-action--danger {
   color: #c00;
 }

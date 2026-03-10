@@ -1,5 +1,5 @@
 import { UrlKeepClient, ApiError } from "@url-keep/api-client";
-import { PencilLine, Trash2 } from "lucide-react";
+import { Check, PencilLine, Trash2, X } from "lucide-react";
 import type {
   Bookmark,
   CreateBookmarkRequest,
@@ -350,21 +350,6 @@ function BookmarkRow({
                     }
                   }}
                 />
-                <div className="inline-actions">
-                  <button className="text-action" disabled={busy} onClick={() => void saveEdit()} type="button">
-                    save
-                  </button>
-                  <button
-                    className="text-action"
-                    onClick={() => {
-                      setEditing(false);
-                      setTitle(bookmark.title);
-                    }}
-                    type="button"
-                  >
-                    cancel
-                  </button>
-                </div>
               </div>
             ) : (
               <>
@@ -384,8 +369,19 @@ function BookmarkRow({
         {error ? <p className="error">{error}</p> : null}
       </div>
       <div className="bookmark-side">
-        {!editing ? (
-          <div className="icon-actions">
+        <div className="icon-actions">
+          {editing ? (
+            <button
+              aria-label="save title"
+              className="icon-action icon-action--confirm"
+              disabled={busy}
+              onClick={() => void saveEdit()}
+              title="Save title"
+              type="button"
+            >
+              <Check aria-hidden="true" size={16} strokeWidth={2.25} />
+            </button>
+          ) : (
             <button
               aria-label="edit title"
               className="icon-action"
@@ -398,6 +394,22 @@ function BookmarkRow({
             >
               <PencilLine aria-hidden="true" size={16} strokeWidth={1.75} />
             </button>
+          )}
+
+          {editing ? (
+            <button
+              aria-label="cancel edit"
+              className="icon-action"
+              onClick={() => {
+                setEditing(false);
+                setTitle(bookmark.title);
+              }}
+              title="Cancel edit"
+              type="button"
+            >
+              <X aria-hidden="true" size={16} strokeWidth={1.75} />
+            </button>
+          ) : (
             <button
               aria-label={deleteArmed ? "confirm delete" : "delete bookmark"}
               className={`icon-action${deleteArmed ? " icon-action--danger" : ""}`}
@@ -413,8 +425,8 @@ function BookmarkRow({
             >
               <Trash2 aria-hidden="true" size={16} strokeWidth={deleteArmed ? 2.25 : 1.75} />
             </button>
-          </div>
-        ) : null}
+          )}
+        </div>
       </div>
     </article>
   );
