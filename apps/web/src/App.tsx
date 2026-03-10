@@ -292,7 +292,7 @@ function BookmarkRow({
   onTitleUpdated: (bookmark: Bookmark, title: string) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  const [deleteArmed, setDeleteArmed] = useState(false);
   const [title, setTitle] = useState(bookmark.title);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -300,6 +300,12 @@ function BookmarkRow({
   useEffect(() => {
     setTitle(bookmark.title);
   }, [bookmark.title]);
+
+  useEffect(() => {
+    if (!deleteArmed) return;
+    const id = setTimeout(() => setDeleteArmed(false), 3000);
+    return () => clearTimeout(id);
+  }, [deleteArmed]);
 
   const saveEdit = async () => {
     if (!title.trim()) {
@@ -378,34 +384,34 @@ function BookmarkRow({
         {error ? <p className="error">{error}</p> : null}
       </div>
       <div className="bookmark-side">
-        {confirming ? (
-          <div className="inline-actions">
-            <button className="text-action" onClick={() => void onDelete(bookmark)} type="button">
-              delete
-            </button>
-            <button className="text-action" onClick={() => setConfirming(false)} type="button">
-              cancel
-            </button>
-          </div>
-        ) : !editing ? (
+        {!editing ? (
           <div className="icon-actions">
             <button
               aria-label="edit title"
               className="icon-action"
-              onClick={() => setEditing(true)}
+              onClick={() => {
+                setDeleteArmed(false);
+                setEditing(true);
+              }}
               title="Edit title"
               type="button"
             >
               <PencilLine aria-hidden="true" size={16} strokeWidth={1.75} />
             </button>
             <button
-              aria-label="delete bookmark"
-              className="icon-action"
-              onClick={() => setConfirming(true)}
-              title="Delete bookmark"
+              aria-label={deleteArmed ? "confirm delete" : "delete bookmark"}
+              className={`icon-action${deleteArmed ? " icon-action--danger" : ""}`}
+              onClick={() => {
+                if (deleteArmed) {
+                  void onDelete(bookmark);
+                } else {
+                  setDeleteArmed(true);
+                }
+              }}
+              title={deleteArmed ? "Confirm delete" : "Delete bookmark"}
               type="button"
             >
-              <Trash2 aria-hidden="true" size={16} strokeWidth={1.75} />
+              <Trash2 aria-hidden="true" size={16} strokeWidth={deleteArmed ? 2.25 : 1.75} />
             </button>
           </div>
         ) : null}

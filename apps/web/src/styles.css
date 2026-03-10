@@ -240,6 +240,15 @@ input {
   background: var(--hover);
 }
 
+.icon-action--danger {
+  color: #c00;
+}
+
+.icon-action--danger:hover,
+.icon-action--danger:focus-visible {
+  background: rgba(204, 0, 0, 0.06);
+}
+
 .inline-edit {
   display: grid;
   gap: 8px;
