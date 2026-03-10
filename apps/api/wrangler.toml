@@ -6,7 +6,7 @@ compatibility_date = "2026-03-09"
 APP_ORIGIN = "https://www.url-keep.com,https://url-keep.com"
 DEBUG_LOGS = "1"
 
-ALLOWED_EXTENSION_ORIGINS = "chrome-extension://elobaigomfoiaaegfnhddmlgfjdfmpbk"
+ALLOWED_EXTENSION_ORIGINS = "chrome-extension://pgldbhelglnjpgdmjhciahkcehmoopif"
 
 [[d1_databases]]
 binding = "DB"

@@ -34,6 +34,7 @@ writeFileSync(
   JSON.stringify(
     {
       manifest_version: 3,
+      key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuwKeLiYcJjHbiYhOWefXGy4fMhSt7oyL9D5yGymb48WzuF9lSvYImtvcsjCeqs574QFACY0qHkaKRnuoDeqEf/A5BTKvgmfvFwFZU2fppVmVyOtnZtmxodVM745bL9m1S3iFUYYQCsGBkMPD7aPT0F6pNZWVC1c+CQvUJ2yzlImODdVj+lXf3WU6aICaUJiJIYqp4HaT99tsna5FVQVfLtr8N47yIMSW8wzttEvp8Xaj3Yp3vUIluoXOIsIlDTvlYeU9B6w8nr7AyjxabTE3EjhkQSa3NlFY/sT3cfxKm31quHzNOBpDovNV27DyKXmR4udnFEI2FMDRh3kG07wixQIDAQAB",
       name: "url-keep",
       version: "0.0.1",
       description: "Save or un-save the current URL in url-keep.",
