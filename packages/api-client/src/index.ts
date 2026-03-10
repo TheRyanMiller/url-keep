@@ -35,6 +35,36 @@ export class ApiError extends Error {
   }
 }
 
+function describeUnknownError(caught: unknown, fallback: string): string {
+  if (caught instanceof Error && caught.message) {
+    return caught.message;
+  }
+
+  return fallback;
+}
+
+function describeSchemaError(caught: unknown, fallback: string): string {
+  if (
+    caught &&
+    typeof caught === "object" &&
+    "issues" in caught &&
+    Array.isArray((caught as { issues: unknown[] }).issues)
+  ) {
+    const issues = (caught as {
+      issues: Array<{ path?: Array<string | number>; message?: string }>;
+    }).issues;
+    const first = issues[0];
+    if (first) {
+      const path = Array.isArray(first.path) && first.path.length > 0
+        ? `${first.path.join(".")}: `
+        : "";
+      return `${fallback}: ${path}${first.message ?? "invalid payload"}`;
+    }
+  }
+
+  return describeUnknownError(caught, fallback);
+}
+
 type ClientOptions = {
   baseUrl: string;
   getToken?: () => string | null;
@@ -186,7 +216,16 @@ export class UrlKeepClient {
       return undefined as T;
     }
 
-    const data = await response.json();
+    let data: unknown;
+    try {
+      data = await response.json();
+    } catch (caught) {
+      throw new ApiError(
+        response.status,
+        "invalid_response",
+        describeUnknownError(caught, "Invalid JSON response from API"),
+      );
+    }
 
     if (!response.ok) {
       const parsedError = errorResponseSchema.safeParse(data);
@@ -201,6 +240,18 @@ export class UrlKeepClient {
       throw new ApiError(response.status, "unknown_error", "Unknown API error");
     }
 
-    return options.schema ? options.schema.parse(data) : (data as T);
+    if (!options.schema) {
+      return data as T;
+    }
+
+    try {
+      return options.schema.parse(data) as T;
+    } catch (caught) {
+      throw new ApiError(
+        response.status,
+        "invalid_response",
+        describeSchemaError(caught, "Invalid API response"),
+      );
+    }
   }
 }
