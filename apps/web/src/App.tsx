@@ -154,8 +154,10 @@ function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await client.me();
       setUser(response.user);
-    } catch {
-      setToken(null);
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 401) {
+        setToken(null);
+      }
     } finally {
       setLoading(false);
     }

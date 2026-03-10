@@ -241,6 +241,7 @@ export function createApp(options: { store?: Store } = {}) {
       },
       allowHeaders: ["Authorization", "Content-Type"],
       allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+      maxAge: 86400,
     }),
   );
 
