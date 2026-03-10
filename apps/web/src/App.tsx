@@ -292,6 +292,7 @@ function BookmarkRow({
   onTitleUpdated: (bookmark: Bookmark, title: string) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [title, setTitle] = useState(bookmark.title);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -377,7 +378,16 @@ function BookmarkRow({
         {error ? <p className="error">{error}</p> : null}
       </div>
       <div className="bookmark-side">
-        {!editing ? (
+        {confirming ? (
+          <div className="inline-actions">
+            <button className="text-action" onClick={() => void onDelete(bookmark)} type="button">
+              delete
+            </button>
+            <button className="text-action" onClick={() => setConfirming(false)} type="button">
+              cancel
+            </button>
+          </div>
+        ) : !editing ? (
           <div className="icon-actions">
             <button
               aria-label="edit title"
@@ -391,7 +401,7 @@ function BookmarkRow({
             <button
               aria-label="delete bookmark"
               className="icon-action"
-              onClick={() => void onDelete(bookmark)}
+              onClick={() => setConfirming(true)}
               title="Delete bookmark"
               type="button"
             >
@@ -453,13 +463,13 @@ function MainPage() {
     }
   };
 
-  const onDelete = async (bookmark: Bookmark) => {
-    if (!window.confirm("delete bookmark?")) {
-      return;
+  const onDeleteConfirm = async (bookmark: Bookmark) => {
+    try {
+      await auth.client.deleteBookmarkByUrl(bookmark.url);
+      setBookmarks((current) => current.filter((item) => item.id !== bookmark.id));
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "delete failed");
     }
-
-    await auth.client.deleteBookmarkByUrl(bookmark.url);
-    setBookmarks((current) => current.filter((item) => item.id !== bookmark.id));
   };
 
   const onTitleUpdated = async (bookmark: Bookmark, title: string) => {
@@ -522,7 +532,7 @@ function MainPage() {
           <BookmarkRow
             key={bookmark.id}
             bookmark={bookmark}
-            onDelete={onDelete}
+            onDelete={onDeleteConfirm}
             onTitleUpdated={onTitleUpdated}
           />
         ))}

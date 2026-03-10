@@ -199,7 +199,7 @@ function bookmarkSaveResponse(
   status: 200 | 201,
 ) {
   if (savedVia === "ios_shortcut") {
-    return c.body(null, 204);
+    return c.json({ ok: true }, 200);
   }
 
   return c.json({ item: bookmark }, status);
