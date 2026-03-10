@@ -32,6 +32,11 @@ writeFileSync(
       version: "0.0.1",
       description: "Save or un-save the current URL in url-keep.",
       permissions: ["activeTab", "scripting", "storage"],
+      host_permissions: [
+        "https://*/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+      ],
       action: {
         default_title: "url-keep",
         default_popup: "popup.html",

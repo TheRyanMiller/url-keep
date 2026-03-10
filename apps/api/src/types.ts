@@ -3,6 +3,7 @@ import type { InternalTitleSource, SavedVia } from "@url-keep/shared";
 export type Bindings = {
   DB: D1Database;
   APP_ORIGIN?: string;
+  DEBUG_LOGS?: string;
   API_ORIGIN?: string;
   ADMIN_EMAIL?: string;
   ADMIN_PASSWORD_HASH?: string;

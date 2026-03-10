@@ -26,7 +26,7 @@ describe("api", () => {
     user = {
       id: "user-1",
       email: "me@example.com",
-      passwordHash: hashPassword("secret"),
+      passwordHash: await hashPassword("secret"),
       createdAt: nowIso(),
     };
     await store.insertUser(user);
@@ -62,6 +62,35 @@ describe("api", () => {
     }, TEST_ENV);
 
     expect(failure.status).toBe(401);
+  });
+
+  it("migrates legacy scrypt password hashes after a successful login", async () => {
+    const legacyUser = {
+      id: "user-legacy",
+      email: "legacy@example.com",
+      passwordHash:
+        "scrypt$16384$8$1$000102030405060708090a0b0c0d0e0f$9544e48979da3c896dfb7f7f5bc015fb320e810f8372f88d66d9921da5a2aa65",
+      createdAt: nowIso(),
+    };
+    await store.insertUser(legacyUser);
+
+    const response = await app.request(
+      "http://localhost/v1/auth/login",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: legacyUser.email,
+          password: "secret",
+          client_name: "mobile web",
+        }),
+      },
+      TEST_ENV,
+    );
+
+    expect(response.status).toBe(200);
+    const migrated = await store.getUserById(legacyUser.id);
+    expect(migrated?.passwordHash.startsWith("pbkdf2_sha256$")).toBe(true);
   });
 
   it("returns CORS headers for login preflight when origin is allowed", async () => {
@@ -134,6 +163,30 @@ describe("api", () => {
     const upgraded = await json<{ item: { title: string; saved_via: string } }>(upgrade);
     expect(upgraded.item.title).toBe("Real Title");
     expect(upgraded.item.saved_via).toBe("web");
+  });
+
+  it("returns no content for ios shortcut saves", async () => {
+    const { token } = await login();
+
+    const response = await app.request(
+      "http://localhost/v1/bookmarks",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: "https://example.com/shortcut",
+          saved_via: "ios_shortcut",
+        }),
+      },
+      TEST_ENV,
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("content-type")).toBeNull();
+    expect(await response.text()).toBe("");
   });
 
   it("preserves user edited titles on later duplicate saves", async () => {

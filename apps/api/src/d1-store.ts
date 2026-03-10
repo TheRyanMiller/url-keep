@@ -114,6 +114,13 @@ export class D1Store implements Store {
       .run();
   }
 
+  async updateUserPasswordHash(userId: string, passwordHash: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+      .bind(passwordHash, userId)
+      .run();
+  }
+
   async getAccessTokenByHash(tokenHash: string): Promise<AccessTokenRecord | null> {
     const row = await this.db
       .prepare(

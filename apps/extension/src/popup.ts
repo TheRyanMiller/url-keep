@@ -17,10 +17,9 @@ const emailInput = document.getElementById("email") as HTMLInputElement;
 const passwordInput = document.getElementById("password") as HTMLInputElement;
 const domainElement = document.getElementById("domain") as HTMLElement;
 const actionButton = document.getElementById("action-button") as HTMLButtonElement;
-const actionLabel = document.getElementById("action-label") as HTMLElement;
 const stateNoteElement = document.getElementById("state-note") as HTMLElement;
+const deleteLink = document.getElementById("delete-link") as HTMLButtonElement;
 const openAppLink = document.getElementById("open-app-link") as HTMLAnchorElement;
-const actionIndicator = document.getElementById("action-indicator") as HTMLElement;
 const settingsApiOriginInput = document.getElementById(
   "settings-api-origin",
 ) as HTMLInputElement;
@@ -40,6 +39,7 @@ type ExtractedMetadata = {
 
 type PopupState = {
   saved: boolean;
+  checking: boolean;
   url: string;
   title: string;
   metadata: ExtractedMetadata;
@@ -49,8 +49,6 @@ type RuntimeSettings = {
   apiOrigin: string;
   appOrigin: string;
 };
-
-type ActionVisualState = "saved" | "not-saved" | "loading" | "unsupported";
 
 let currentToken: string | null = null;
 let popupState: PopupState | null = null;
@@ -140,17 +138,25 @@ function getRequestErrorMessage(caught: unknown, fallback: string) {
   return fallback;
 }
 
-function setActionState(
-  state: ActionVisualState,
-  label: string,
-  note: string,
-  disabled: boolean,
-) {
-  actionButton.dataset.state = state;
-  actionButton.disabled = disabled;
-  actionLabel.textContent = label;
-  stateNoteElement.textContent = note;
-  actionIndicator.hidden = false;
+function setCheckingState() {
+  stateNoteElement.textContent = "checking...";
+  deleteLink.classList.add("hidden");
+}
+
+function clearInlineState() {
+  stateNoteElement.textContent = "";
+  deleteLink.classList.add("hidden");
+}
+
+function setDeleteState() {
+  stateNoteElement.textContent = "";
+  deleteLink.classList.remove("hidden");
+}
+
+function setUnsupportedState() {
+  actionButton.disabled = true;
+  stateNoteElement.textContent = "unsupported page";
+  deleteLink.classList.add("hidden");
 }
 
 function showLogin() {
@@ -230,14 +236,19 @@ function renderState(state: PopupState) {
   showBookmarkView();
   showError(null);
   domainElement.textContent = new URL(state.url).hostname;
-  setActionState(
-    state.saved ? "saved" : "not-saved",
-    state.saved ? "saved · remove" : "not saved · save",
-    state.saved
-      ? "this page is already in your list"
-      : "save the current tab to url-keep",
-    false,
-  );
+  actionButton.disabled = false;
+
+  if (state.checking) {
+    setCheckingState();
+    return;
+  }
+
+  if (state.saved) {
+    setDeleteState();
+    return;
+  }
+
+  clearInlineState();
 }
 
 async function loadBookmarkState() {
@@ -247,41 +258,53 @@ async function loadBookmarkState() {
     showBookmarkView();
     showError(null);
     domainElement.textContent = "";
-    setActionState(
-      "unsupported",
-      "unsupported page",
-      "works only on normal http/https tabs",
-      true,
-    );
+    setUnsupportedState();
     return;
   }
 
+  const baseTitle = tab.title ?? tab.url;
+  popupState = {
+    saved: false,
+    checking: true,
+    url: tab.url,
+    title: baseTitle,
+    metadata: {},
+  };
   showBookmarkView();
   showError(null);
   domainElement.textContent = new URL(tab.url).hostname;
-  setActionState(
-    "loading",
-    "checking…",
-    "checking whether this page is already saved",
-    true,
-  );
-  const metadata = await extractMetadata(tab.id);
+  renderState(popupState);
+  void extractMetadata(tab.id)
+    .then((metadata) => {
+      if (!popupState || popupState.url !== tab.url) {
+        return;
+      }
+
+      popupState = {
+        ...popupState,
+        metadata,
+        title: popupState.title === tab.url && metadata.title ? metadata.title : popupState.title,
+      };
+    })
+    .catch(() => undefined);
 
   try {
     await client.getBookmarkByUrl(tab.url);
     renderState({
       saved: true,
+      checking: false,
       url: tab.url,
-      title: tab.title ?? metadata.title ?? tab.url,
-      metadata,
+      title: popupState.title,
+      metadata: popupState.metadata,
     });
   } catch (caught) {
     if (caught instanceof ApiError && caught.status === 404) {
       renderState({
         saved: false,
+        checking: false,
         url: tab.url,
-        title: tab.title ?? metadata.title ?? tab.url,
-        metadata,
+        title: popupState.title,
+        metadata: popupState.metadata,
       });
       return;
     }
@@ -361,35 +384,54 @@ resetSettingsButton.addEventListener("click", async () => {
 });
 
 actionButton.addEventListener("click", async () => {
-  if (!popupState) {
+  if (!popupState || actionButton.disabled) {
     return;
   }
 
-  setActionState(
-    popupState.saved ? "saved" : "not-saved",
-    popupState.saved ? "saved · remove" : "not saved · save",
-    popupState.saved ? "removing from your list…" : "saving this page…",
-    true,
-  );
+  actionButton.disabled = true;
   showError(null);
 
   try {
-    if (popupState.saved) {
-      await client.deleteBookmarkByUrl(popupState.url);
-    } else {
-      await client.saveBookmark({
-        url: popupState.url,
-        title: popupState.title,
-        image_url: popupState.metadata.image_url,
-        site_name: popupState.metadata.site_name,
-        saved_via: "extension",
-      });
-    }
+    await client.saveBookmark({
+      url: popupState.url,
+      title: popupState.title,
+      image_url: popupState.metadata.image_url,
+      site_name: popupState.metadata.site_name,
+      saved_via: "extension",
+    });
 
     window.close();
   } catch (caught) {
     actionButton.disabled = false;
     showError(getRequestErrorMessage(caught, "request failed"));
+  }
+});
+
+deleteLink.addEventListener("click", async () => {
+  if (!popupState || deleteLink.classList.contains("hidden")) {
+    return;
+  }
+
+  deleteLink.disabled = true;
+  stateNoteElement.textContent = "deleting...";
+  showError(null);
+
+  try {
+    await client.deleteBookmarkByUrl(popupState.url);
+    renderState({
+      ...popupState,
+      saved: false,
+      checking: false,
+    });
+  } catch (caught) {
+    if (popupState.saved) {
+      setDeleteState();
+    } else {
+      clearInlineState();
+    }
+    showError(getRequestErrorMessage(caught, "delete failed"));
+  } finally {
+    deleteLink.disabled = false;
   }
 });
 

@@ -33,6 +33,13 @@ export class MemoryStore implements Store {
     this.users.set(user.id, user);
   }
 
+  async updateUserPasswordHash(userId: string, passwordHash: string): Promise<void> {
+    const user = this.users.get(userId);
+    if (user) {
+      user.passwordHash = passwordHash;
+    }
+  }
+
   async getAccessTokenByHash(tokenHash: string): Promise<AccessTokenRecord | null> {
     for (const token of this.accessTokens.values()) {
       if (token.tokenHash === tokenHash) {

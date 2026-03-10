@@ -1,14 +1,60 @@
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
-import { scrypt } from "@noble/hashes/scrypt";
+import { scryptAsync } from "@noble/hashes/scrypt";
 import { sha256 } from "@noble/hashes/sha2";
 import type { BookmarkRecord } from "./types";
 
 const textEncoder = new TextEncoder();
 
-const SCRYPT_N = 1 << 14;
-const SCRYPT_R = 8;
-const SCRYPT_P = 1;
-const SCRYPT_DKLEN = 32;
+const PASSWORD_HASH_ALGO = "pbkdf2_sha256";
+const PBKDF2_ITERATIONS = 25_000;
+const PASSWORD_SALT_BYTES = 16;
+const PASSWORD_DKLEN = 32;
+
+type VerifiedPassword = {
+  valid: boolean;
+  needsRehash: boolean;
+};
+
+async function derivePbkdf2(
+  password: string,
+  salt: Uint8Array,
+  iterations: number,
+  dkLen: number,
+): Promise<Uint8Array> {
+  const passwordBytes = Uint8Array.from(textEncoder.encode(password));
+  const normalizedSalt = Uint8Array.from(salt);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    passwordBytes,
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      salt: normalizedSalt,
+      iterations,
+      hash: "SHA-256",
+    },
+    key,
+    dkLen * 8,
+  );
+  return new Uint8Array(bits);
+}
+
+function timingSafeEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  let mismatch = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    mismatch |= left[index] ^ right[index];
+  }
+
+  return mismatch === 0;
+}
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -28,26 +74,52 @@ export function hashToken(token: string, pepper: string): string {
   return bytesToHex(sha256(tokenBytes));
 }
 
-export function hashPassword(password: string): string {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const derived = scrypt(textEncoder.encode(password), salt, {
-    N: SCRYPT_N,
-    r: SCRYPT_R,
-    p: SCRYPT_P,
-    dkLen: SCRYPT_DKLEN,
-  });
+export async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_BYTES));
+  const derived = await derivePbkdf2(
+    password,
+    salt,
+    PBKDF2_ITERATIONS,
+    PASSWORD_DKLEN,
+  );
 
   return [
-    "scrypt",
-    String(SCRYPT_N),
-    String(SCRYPT_R),
-    String(SCRYPT_P),
+    PASSWORD_HASH_ALGO,
+    String(PBKDF2_ITERATIONS),
     bytesToHex(salt),
     bytesToHex(derived),
   ].join("$");
 }
 
-export function verifyPassword(password: string, storedHash: string): boolean {
+async function verifyPbkdf2Password(
+  password: string,
+  storedHash: string,
+): Promise<boolean> {
+  const parts = storedHash.split("$");
+  if (parts.length !== 4 || parts[0] !== PASSWORD_HASH_ALGO) {
+    return false;
+  }
+
+  const [, iterationsString, saltHex, hashHex] = parts;
+  const iterations = Number(iterationsString);
+  if (!Number.isInteger(iterations) || iterations < 1) {
+    return false;
+  }
+
+  const expected = hexToBytes(hashHex);
+  const derived = await derivePbkdf2(
+    password,
+    hexToBytes(saltHex),
+    iterations,
+    expected.length,
+  );
+  return timingSafeEqual(derived, expected);
+}
+
+async function verifyLegacyScryptPassword(
+  password: string,
+  storedHash: string,
+): Promise<boolean> {
   const parts = storedHash.split("$");
   if (parts.length !== 6 || parts[0] !== "scrypt") {
     return false;
@@ -55,23 +127,51 @@ export function verifyPassword(password: string, storedHash: string): boolean {
 
   const [, nString, rString, pString, saltHex, hashHex] = parts;
   const expected = hexToBytes(hashHex);
-  const derived = scrypt(textEncoder.encode(password), hexToBytes(saltHex), {
-    N: Number(nString),
-    r: Number(rString),
-    p: Number(pString),
-    dkLen: expected.length,
-  });
-
-  if (derived.length !== expected.length) {
+  const n = Number(nString);
+  const r = Number(rString);
+  const p = Number(pString);
+  if (
+    !Number.isInteger(n) ||
+    !Number.isInteger(r) ||
+    !Number.isInteger(p) ||
+    n < 2 ||
+    r < 1 ||
+    p < 1
+  ) {
     return false;
   }
 
-  let mismatch = 0;
-  for (let index = 0; index < derived.length; index += 1) {
-    mismatch |= derived[index] ^ expected[index];
+  const derived = await scryptAsync(
+    textEncoder.encode(password),
+    hexToBytes(saltHex),
+    {
+      N: n,
+      r,
+      p,
+      dkLen: expected.length,
+      asyncTick: 1,
+    },
+  );
+  return timingSafeEqual(derived, expected);
+}
+
+export async function verifyPassword(
+  password: string,
+  storedHash: string,
+): Promise<VerifiedPassword> {
+  if (storedHash.startsWith(`${PASSWORD_HASH_ALGO}$`)) {
+    return {
+      valid: await verifyPbkdf2Password(password, storedHash),
+      needsRehash: false,
+    };
   }
 
-  return mismatch === 0;
+  if (storedHash.startsWith("scrypt$")) {
+    const valid = await verifyLegacyScryptPassword(password, storedHash);
+    return { valid, needsRehash: valid };
+  }
+
+  return { valid: false, needsRehash: false };
 }
 
 export function normalizeUrl(input: string): string {

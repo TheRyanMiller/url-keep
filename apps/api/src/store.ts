@@ -10,6 +10,7 @@ export interface Store {
   getUserByEmail(email: string): Promise<UserRecord | null>;
   getUserById(id: string): Promise<UserRecord | null>;
   insertUser(user: UserRecord): Promise<void>;
+  updateUserPasswordHash(userId: string, passwordHash: string): Promise<void>;
   getAccessTokenByHash(tokenHash: string): Promise<AccessTokenRecord | null>;
   getAccessTokenById(
     userId: string,

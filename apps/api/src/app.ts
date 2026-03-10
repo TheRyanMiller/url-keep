@@ -12,6 +12,7 @@ import type { AuthContext, Bindings } from "./types";
 import {
   bookmarkToApi,
   deriveFallbackTitle,
+  hashPassword,
   hashToken,
   makeId,
   makeOpaqueToken,
@@ -36,6 +37,115 @@ function errorResponse(
   status: number,
 ): Response {
   return Response.json({ error: { code, message } }, { status });
+}
+
+function debugLogsEnabled(env: Bindings): boolean {
+  const value = env.DEBUG_LOGS?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function debugLog(
+  c: Context<AppEnv>,
+  event: string,
+  data: Record<string, unknown> = {},
+) {
+  if (!debugLogsEnabled(c.env)) {
+    return;
+  }
+
+  console.log(
+    JSON.stringify({
+      ts: nowIso(),
+      event,
+      method: c.req.method,
+      path: c.req.path,
+      status: c.res.status || null,
+      origin: c.req.header("origin") ?? null,
+      user_agent: c.req.header("user-agent") ?? null,
+      ...data,
+    }),
+  );
+}
+
+function summarizeUrlField(value: unknown) {
+  if (typeof value === "string") {
+    return {
+      kind: "string",
+      value,
+    };
+  }
+
+  if (Array.isArray(value)) {
+    return {
+      kind: "array",
+      length: value.length,
+      first: value[0] ?? null,
+    };
+  }
+
+  if (value === null) {
+    return { kind: "null" };
+  }
+
+  return { kind: typeof value };
+}
+
+function summarizeBookmarkBody(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      body_type: Array.isArray(value) ? "array" : typeof value,
+    };
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    body_type: "object",
+    keys: Object.keys(record).sort(),
+    url: summarizeUrlField(record.url),
+    saved_via:
+      typeof record.saved_via === "string" ? record.saved_via : typeof record.saved_via,
+    title_type: record.title === undefined ? "missing" : typeof record.title,
+    image_url_type: record.image_url === undefined ? "missing" : typeof record.image_url,
+    site_name_type: record.site_name === undefined ? "missing" : typeof record.site_name,
+  };
+}
+
+function summarizeLoginBody(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      body_type: Array.isArray(value) ? "array" : typeof value,
+    };
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    body_type: "object",
+    keys: Object.keys(record).sort(),
+    email: typeof record.email === "string" ? record.email : typeof record.email,
+    password_present: typeof record.password === "string" ? record.password.length > 0 : false,
+    client_name:
+      typeof record.client_name === "string" ? record.client_name : typeof record.client_name,
+  };
+}
+
+function summarizeAuthHeader(value: string | undefined) {
+  if (!value) {
+    return {
+      present: false,
+    };
+  }
+
+  const [scheme, token] = value.split(/\s+/, 2);
+  return {
+    present: true,
+    scheme: scheme ?? null,
+    token_present: Boolean(token),
+    token_length: token?.length ?? 0,
+  };
+}
+
+function summarizeTokenHash(value: string) {
+  return value.slice(0, 12);
 }
 
 function parseBearerToken(value: string | undefined): string | null {
@@ -82,6 +192,19 @@ function parseListQuery(c: Context<AppEnv>) {
   return { q, cursor, limit: parsedLimit };
 }
 
+function bookmarkSaveResponse(
+  c: Context<AppEnv>,
+  savedVia: string,
+  bookmark: ReturnType<typeof bookmarkToApi>,
+  status: 200 | 201,
+) {
+  if (savedVia === "ios_shortcut") {
+    return c.body(null, 204);
+  }
+
+  return c.json({ item: bookmark }, status);
+}
+
 function getAllowedOrigins(env: Bindings): string[] {
   const values = [env.APP_ORIGIN, env.ALLOWED_EXTENSION_ORIGINS]
     .flatMap((value) => (value ? value.split(",") : []))
@@ -96,6 +219,15 @@ export function createApp(options: { store?: Store } = {}) {
   app.use("*", async (c, next) => {
     c.set("store", options.store ?? new D1Store(c.env.DB));
     await next();
+  });
+
+  app.use("*", async (c, next) => {
+    const startedAt = Date.now();
+    await next();
+    debugLog(c, "request.complete", {
+      duration_ms: Date.now() - startedAt,
+      status: c.res.status,
+    });
   });
 
   app.use(
@@ -115,15 +247,48 @@ export function createApp(options: { store?: Store } = {}) {
   app.get("/health", (c) => c.json({ ok: true }));
 
   app.post("/v1/auth/login", async (c) => {
-    const parsed = await parseJsonBody(c, loginRequestSchema);
-    if (parsed instanceof Response) {
-      return parsed;
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      debugLog(c, "auth.login.invalid_json");
+      return errorResponse("invalid_request", "Invalid JSON body", 400);
     }
+
+    const parsedResult = loginRequestSchema.safeParse(rawBody);
+    if (!parsedResult.success) {
+      debugLog(c, "auth.login.invalid_request", {
+        body: summarizeLoginBody(rawBody),
+        issues: parsedResult.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          code: issue.code,
+          message: issue.message,
+        })),
+      });
+      return errorResponse("invalid_request", "Invalid request body", 400);
+    }
+
+    const parsed = parsedResult.data;
+    debugLog(c, "auth.login.attempt", {
+      body: summarizeLoginBody(rawBody),
+    });
 
     const store = c.get("store");
     const user = await store.getUserByEmail(parsed.email);
-    if (!user || !verifyPassword(parsed.password, user.passwordHash)) {
+    const passwordCheck = user
+      ? await verifyPassword(parsed.password, user.passwordHash)
+      : { valid: false, needsRehash: false };
+    if (!user || !passwordCheck.valid) {
+      debugLog(c, "auth.login.rejected", {
+        email: parsed.email,
+      });
       return errorResponse("unauthorized", "Invalid email or password", 401);
+    }
+
+    if (passwordCheck.needsRehash) {
+      const passwordHash = await hashPassword(parsed.password);
+      await store.updateUserPasswordHash(user.id, passwordHash);
+      user.passwordHash = passwordHash;
     }
 
     const pepper = c.env.TOKEN_PEPPER;
@@ -144,6 +309,12 @@ export function createApp(options: { store?: Store } = {}) {
     };
 
     await store.insertAccessToken(accessToken);
+
+    debugLog(c, "auth.login.success", {
+      email: user.email,
+      token_id: accessToken.id,
+      token_name: accessToken.name,
+    });
 
     return c.json({
       user: {
@@ -171,6 +342,9 @@ export function createApp(options: { store?: Store } = {}) {
 
     const bearer = parseBearerToken(c.req.header("authorization"));
     if (!bearer) {
+      debugLog(c, "auth.missing_bearer", {
+        auth_header: summarizeAuthHeader(c.req.header("authorization")),
+      });
       return errorResponse("unauthorized", "Missing bearer token", 401);
     }
 
@@ -178,11 +352,19 @@ export function createApp(options: { store?: Store } = {}) {
     const tokenHash = hashToken(bearer, pepper);
     const token = await store.getAccessTokenByHash(tokenHash);
     if (!token || token.revokedAt) {
+      debugLog(c, "auth.invalid_bearer", {
+        auth_header: summarizeAuthHeader(c.req.header("authorization")),
+        token_hash_prefix: summarizeTokenHash(tokenHash),
+        revoked: Boolean(token?.revokedAt),
+      });
       return errorResponse("unauthorized", "Invalid bearer token", 401);
     }
 
     const user = await store.getUserById(token.userId);
     if (!user) {
+      debugLog(c, "auth.missing_user_for_token", {
+        token_id: token.id,
+      });
       return errorResponse("unauthorized", "Invalid bearer token", 401);
     }
 
@@ -191,6 +373,14 @@ export function createApp(options: { store?: Store } = {}) {
       await store.updateAccessTokenLastUsed(token.id, now);
       token.lastUsedAt = now;
     }
+
+    debugLog(c, "auth.valid_bearer", {
+      auth_header: summarizeAuthHeader(c.req.header("authorization")),
+      token_hash_prefix: summarizeTokenHash(tokenHash),
+      token_id: token.id,
+      token_name: token.name,
+      auth_user_id: user.id,
+    });
 
     c.set("auth", { user, token });
     await next();
@@ -331,10 +521,33 @@ export function createApp(options: { store?: Store } = {}) {
   });
 
   app.post("/v1/bookmarks", async (c) => {
-    const parsed = await parseJsonBody(c, createBookmarkRequestSchema);
-    if (parsed instanceof Response) {
-      return parsed;
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      debugLog(c, "bookmark.save.invalid_json");
+      return errorResponse("invalid_request", "Invalid JSON body", 400);
     }
+
+    const parsedResult = createBookmarkRequestSchema.safeParse(rawBody);
+    if (!parsedResult.success) {
+      debugLog(c, "bookmark.save.invalid_request", {
+        auth_user_id: c.get("auth").user.id,
+        body: summarizeBookmarkBody(rawBody),
+        issues: parsedResult.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          code: issue.code,
+          message: issue.message,
+        })),
+      });
+      return errorResponse("invalid_request", "Invalid request body", 400);
+    }
+
+    const parsed = parsedResult.data;
+    debugLog(c, "bookmark.save.attempt", {
+      auth_user_id: c.get("auth").user.id,
+      body: summarizeBookmarkBody(rawBody),
+    });
 
     const { user } = c.get("auth");
     let normalizedUrl: string;
@@ -344,6 +557,11 @@ export function createApp(options: { store?: Store } = {}) {
       normalizedUrl = normalizeUrl(parsed.url);
       imageUrl = validateHttpsImageUrl(parsed.image_url);
     } catch (error) {
+      debugLog(c, "bookmark.save.invalid_bookmark_input", {
+        auth_user_id: user.id,
+        body: summarizeBookmarkBody(rawBody),
+        error: error instanceof Error ? error.message : "Invalid bookmark input",
+      });
       return errorResponse(
         "invalid_request",
         error instanceof Error ? error.message : "Invalid bookmark input",
@@ -373,7 +591,20 @@ export function createApp(options: { store?: Store } = {}) {
       } as const;
 
       await store.insertBookmark(bookmark);
-      return c.json({ item: bookmarkToApi(bookmark) }, 201);
+      const responseStatus = bookmark.savedVia === "ios_shortcut" ? 204 : 201;
+      debugLog(c, "bookmark.save.created", {
+        auth_user_id: user.id,
+        bookmark_id: bookmark.id,
+        normalized_url: normalizedUrl,
+        saved_via: bookmark.savedVia,
+        status: responseStatus,
+      });
+      return bookmarkSaveResponse(
+        c,
+        bookmark.savedVia,
+        bookmarkToApi(bookmark),
+        201,
+      );
     }
 
     const nextBookmark = { ...existing, updatedAt: now };
@@ -393,7 +624,20 @@ export function createApp(options: { store?: Store } = {}) {
     }
 
     await store.updateBookmark(nextBookmark);
-    return c.json({ item: bookmarkToApi(nextBookmark) });
+    const responseStatus = nextBookmark.savedVia === "ios_shortcut" ? 204 : 200;
+    debugLog(c, "bookmark.save.updated_existing", {
+      auth_user_id: user.id,
+      bookmark_id: nextBookmark.id,
+      normalized_url: normalizedUrl,
+      saved_via: nextBookmark.savedVia,
+      status: responseStatus,
+    });
+    return bookmarkSaveResponse(
+      c,
+      nextBookmark.savedVia,
+      bookmarkToApi(nextBookmark),
+      200,
+    );
   });
 
   app.patch("/v1/bookmarks/:id", async (c) => {

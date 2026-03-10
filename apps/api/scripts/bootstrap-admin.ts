@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { hashPassword, makeId, nowIso } from "../src/utils";
@@ -55,28 +58,34 @@ async function main() {
     }
 
     const now = nowIso();
+    const passwordHash = await hashPassword(password);
     const sql = `
 INSERT INTO users (id, email, password_hash, created_at)
-SELECT '${escapeSql(makeId())}', '${escapeSql(email)}', '${escapeSql(hashPassword(password))}', '${escapeSql(now)}'
-WHERE NOT EXISTS (
-  SELECT 1 FROM users WHERE email = '${escapeSql(email)}'
-);
+VALUES ('${escapeSql(makeId())}', '${escapeSql(email)}', '${escapeSql(passwordHash)}', '${escapeSql(now)}')
+ON CONFLICT(email) DO UPDATE SET password_hash = excluded.password_hash;
     `.trim();
+    const tempDir = mkdtempSync(join(tmpdir(), "url-keep-bootstrap-"));
+    const sqlFile = join(tempDir, "bootstrap-admin.sql");
+    writeFileSync(sqlFile, sql);
 
-    const command = [
-      "wrangler",
-      "d1",
-      "execute",
-      databaseName,
-      "--command",
-      sql,
-      ...(isLocal ? ["--local"] : ["--remote"]),
-    ];
+    try {
+      const command = [
+        "wrangler",
+        "d1",
+        "execute",
+        databaseName,
+        "--file",
+        sqlFile,
+        ...(isLocal ? ["--local"] : ["--remote"]),
+      ];
 
-    execFileSync("npx", command, {
-      stdio: "inherit",
-      cwd: new URL("..", import.meta.url),
-    });
+      execFileSync("npx", command, {
+        stdio: "inherit",
+        cwd: new URL("..", import.meta.url),
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   } finally {
     rl.close();
   }

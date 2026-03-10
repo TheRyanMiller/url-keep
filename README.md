@@ -283,11 +283,13 @@ In the shortcut details/settings:
 1. turn on `Show in Share Sheet`
 2. set accepted input to `URLs`
 3. if your iPhone offers `Safari Web Pages` as an accepted type, enable that too
+4. set `If there’s no input` to `Ask For`
 
 The exact menu wording may vary slightly by iOS version, but the goal is:
 
 - the shortcut appears in the iPhone share sheet
 - it accepts shared links
+- if you press `Play` in the editor, the shortcut can still ask you for a URL manually
 
 ### Step 3. Add the actions
 
@@ -310,7 +312,28 @@ Set the action up like this:
   - `Content-Type` = `application/json`
 - Request Body: `JSON`
 
-Then set the JSON body fields to:
+Important:
+
+- the top `URL` field in the action must be the API endpoint: `https://api.url-keep.com/v1/bookmarks`
+- do not put the blue `URLs` variable in that top `URL` field
+- the blue `URLs` variable belongs inside the JSON body, as the value for the `url` key
+
+If the action currently says `Get Contents of URLs`, that is not right for this app. It should say `Get Contents of https://api.url-keep.com/v1/bookmarks`.
+
+Then add two JSON body fields:
+
+1. Tap `Add new field`
+2. For the first field:
+   - key: `url`
+   - value: tap the value area and select `URLs`
+   - the value should appear as the blue `URLs` token
+3. Tap `Add new field` again
+4. For the second field:
+   - key: `saved_via`
+   - value: `ios_shortcut` as plain text
+   - this must be exactly `ios_shortcut`, not `ios`
+
+It should end up equivalent to:
 
 ```json
 {
@@ -321,8 +344,21 @@ Then set the JSON body fields to:
 
 In the Shortcuts UI, this means:
 
-- key `url` should use the variable produced by `Get URLs from Input`
-- key `saved_via` should be plain text: `ios_shortcut`
+- the request goes to `https://api.url-keep.com/v1/bookmarks`
+- the JSON field named `url` contains the shared page URL
+- the JSON field named `saved_via` contains the plain text `ios_shortcut`
+
+If you want to sanity-check your setup, the `Get Contents of URL` action should visually read like this:
+
+- top URL field: `https://api.url-keep.com/v1/bookmarks`
+- Method: `POST`
+- Headers:
+  - `Authorization` = `Bearer ...`
+  - `Content-Type` = `application/json`
+- Request Body: `JSON`
+- JSON fields:
+  - `url` = blue `URLs` variable
+  - `saved_via` = `ios_shortcut`
 
 ### Step 5. Configure the success message
 
@@ -346,15 +382,35 @@ If everything is correct, you should see:
 - a `saved to url-keep` notification
 - the new bookmark in the web app
 
+Do not rely on the editor `Play` button as your main test.
+
+This Shortcut is designed to receive a shared URL from the iPhone share sheet. If you press `Play` inside the editor, there may be no shared input yet.
+
+If you want to use `Play` anyway, set `If there’s no input` to `Ask For` in the `Receive` action. Then iOS will prompt you for a URL when there is no share-sheet input.
+
+If you want to test connectivity from inside the editor first, temporarily simplify the action:
+
+1. change the top URL to `https://api.url-keep.com/health`
+2. change Method to `GET`
+3. remove the headers
+4. remove the JSON request body
+5. press `Play`
+
+If that works, your phone can reach the API and the remaining issue is in the bookmark request setup, not DNS or SSL.
+
 ### Troubleshooting
 
 If it does not work:
 
+- open `https://api.url-keep.com/health` in Safari on the same iPhone
+- if Safari cannot load it either, the problem is network, DNS propagation, or TLS
 - make sure the token is valid and copied exactly
 - make sure the API URL is exactly `https://api.url-keep.com/v1/bookmarks`
 - make sure the header is `Authorization: Bearer <token>`
 - make sure the JSON body key is `url`, not `link`
 - make sure `saved_via` is exactly `ios_shortcut`
+- if the top URL field is correct and the JSON body looks right, test from the share sheet instead of the editor `Play` button
+- if Cloudflare shows the `POST` arriving but Shortcuts still errors, the most likely cause is a rejected request body, especially `saved_via` not being exactly `ios_shortcut`
 
 ### Technical reference
 
