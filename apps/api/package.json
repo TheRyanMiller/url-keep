@@ -1,0 +1,23 @@
+{
+  "name": "@url-keep/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local --test-scheduled",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "^0.4.3",
+    "@noble/hashes": "^1.7.1",
+    "@url-keep/shared": "0.0.0",
+    "hono": "^4.7.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250303.0",
+    "vitest": "^3.0.9",
+    "wrangler": "^4.3.0"
+  }
+}

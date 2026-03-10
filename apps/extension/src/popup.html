@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>url-keep</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <h1>url-keep</h1>
+      </header>
+
+      <form class="stack" id="login-form">
+        <label class="field">
+          <span>email</span>
+          <input id="email" type="email" autocomplete="email" />
+        </label>
+        <label class="field">
+          <span>password</span>
+          <input id="password" type="password" autocomplete="current-password" />
+        </label>
+        <button class="button" type="submit">log in</button>
+      </form>
+
+      <section class="stack hidden" id="bookmark-view">
+        <p class="muted" id="domain"></p>
+        <p id="state-label"></p>
+        <button class="button" id="action-button" type="button"></button>
+        <a class="text-action" id="open-app-link" rel="noreferrer noopener" target="_blank">
+          open app
+        </a>
+      </section>
+
+      <p class="error" id="error"></p>
+    </main>
+
+    <script type="module" src="./popup.js"></script>
+  </body>
+  </html>

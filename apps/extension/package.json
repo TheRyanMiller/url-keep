@@ -1,0 +1,18 @@
+{
+  "name": "@url-keep/extension",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ./build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@url-keep/api-client": "0.0.0",
+    "@url-keep/shared": "0.0.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.312",
+    "esbuild": "^0.25.0"
+  }
+}

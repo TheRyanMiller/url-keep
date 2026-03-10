@@ -1,0 +1,8 @@
+name = "url-keep-api"
+main = "src/index.ts"
+compatibility_date = "2026-03-09"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "url_keep"
+database_id = "9e9fadd4-8cc7-418b-80bc-80b5a6fb755c"

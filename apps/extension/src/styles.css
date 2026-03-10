@@ -1,0 +1,97 @@
+:root {
+  --bg: #ffffff;
+  --fg: #111111;
+  --muted: #666666;
+  --border: #111111;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 300px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+button,
+input,
+a {
+  font: inherit;
+}
+
+button,
+input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+input {
+  padding: 0 12px;
+}
+
+.shell {
+  padding: 16px;
+}
+
+.header {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+}
+
+.header h1,
+.field span,
+.muted,
+.error {
+  margin: 0;
+}
+
+.header h1 {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field span,
+.muted {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.stack {
+  display: grid;
+  gap: 12px;
+}
+
+.button,
+.text-action {
+  cursor: pointer;
+}
+
+.text-action {
+  color: inherit;
+  text-decoration: none;
+}
+
+.text-action:hover {
+  text-decoration: underline;
+}
+
+.hidden {
+  display: none;
+}
