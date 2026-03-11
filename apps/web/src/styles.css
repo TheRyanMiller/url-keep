@@ -525,42 +525,52 @@ input {
 
 @media (max-width: 720px) {
   .bookmark-row {
-    grid-template-columns: 1fr auto;
-    gap: 6px 12px;
+    grid-template-columns: auto 1fr;
+    gap: 4px 0;
     padding: 8px 0;
     min-height: auto;
   }
 
+  .bookmark-main {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
   .bookmark-meta {
+    grid-row: 2;
+    grid-column: 1;
     display: flex;
-    flex-wrap: wrap;
     gap: 6px;
     align-items: center;
   }
 
-  .bookmark-main {
-    grid-column: 1 / -1;
+  /* hide saved_via label on mobile */
+  .bookmark-meta > span:nth-child(2) {
+    display: none;
+  }
+
+  .bookmark-side {
+    grid-row: 2;
+    grid-column: 2;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+
+  .bookmark-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .bookmark-read-link {
+    justify-content: flex-start;
   }
 
   .bookmark-image {
     width: 40px;
     height: 40px;
     border-radius: 3px;
-  }
-
-  .bookmark-side {
-    justify-content: flex-end;
-    min-width: 0;
-  }
-
-  .bookmark-actions {
-    grid-auto-flow: column;
-    justify-content: end;
-    align-items: center;
-  }
-
-  .bookmark-read-link {
-    justify-content: flex-end;
   }
 
   .row-between {
