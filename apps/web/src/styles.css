@@ -75,9 +75,20 @@ input {
 }
 
 .page-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
-  margin-bottom: 24px;
   padding-bottom: 12px;
+  margin-bottom: 24px;
+  /* Pull into .page padding so background covers full width + safe area when stuck */
+  margin-top: calc(-24px - env(safe-area-inset-top, 0));
+  margin-left: calc(-16px - env(safe-area-inset-left, 0));
+  margin-right: calc(-16px - env(safe-area-inset-right, 0));
+  padding-top: calc(24px + env(safe-area-inset-top, 0));
+  padding-left: calc(16px + env(safe-area-inset-left, 0));
+  padding-right: calc(16px + env(safe-area-inset-right, 0));
 }
 
 .brand-mark {
@@ -85,6 +96,16 @@ input {
   line-height: 0;
   max-width: min(100%, 220px);
   text-decoration: none;
+  transition: opacity 0.15s;
+}
+
+.brand-mark.refreshing {
+  animation: pulse 0.6s ease-in-out;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 .brand-logo {
@@ -354,10 +375,12 @@ input {
   max-width: 760px;
 }
 
-.reader-nav {
-  align-items: center;
+.reader-page-header {
   display: flex;
-  gap: 16px;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 8px;
+  margin-bottom: 16px;
 }
 
 .reader-shell {
@@ -577,9 +600,4 @@ input {
     flex-direction: column;
   }
 
-  .reader-nav {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 10px;
-  }
 }

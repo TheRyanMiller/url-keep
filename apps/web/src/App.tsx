@@ -1,7 +1,9 @@
 import { ApiError, UrlKeepClient } from "@url-keep/api-client";
 import {
+  ArrowLeft,
   BookOpen,
   Check,
+  ExternalLink,
   PencilLine,
   RefreshCw,
   Trash2,
@@ -301,9 +303,30 @@ function sanitizeArticleHtml(contentHtml: string) {
   });
 }
 
-function BrandLogo() {
+function BrandLogo({ onRefresh }: { onRefresh?: () => Promise<void> }) {
+  const [refreshing, setRefreshing] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const handleClick = (event: React.MouseEvent) => {
+    if (!onRefresh) return;
+    event.preventDefault();
+    if (refreshing) return;
+    if (location.pathname !== "/") {
+      navigate("/");
+      return;
+    }
+    setRefreshing(true);
+    onRefresh().finally(() => setRefreshing(false));
+  };
+
   return (
-    <Link aria-label="url-keep home" className="brand-mark" to="/">
+    <Link
+      aria-label="url-keep home"
+      className={`brand-mark${refreshing ? " refreshing" : ""}`}
+      onClick={handleClick}
+      to="/"
+    >
       <img alt="url-keep" className="brand-logo" src={BRAND_LOGO_URL} />
     </Link>
   );
@@ -919,7 +942,7 @@ function MainPage() {
   return (
     <div className="page">
       <header className="page-header row-between">
-        <BrandLogo />
+        <BrandLogo onRefresh={loadBookmarks} />
         <Nav />
       </header>
 
@@ -1016,13 +1039,137 @@ function AddPage() {
   );
 }
 
+function isValidHttpUrl(s: string): boolean {
+  try {
+    const u = new URL(s);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function resolveSharedUrl(params: URLSearchParams): string {
+  const url = params.get("url")?.trim();
+  if (url && isValidHttpUrl(url)) return url;
+
+  const text = params.get("text")?.trim();
+  if (text) {
+    const match = text.match(/https?:\/\/\S+/);
+    if (match) return match[0];
+  }
+
+  return "";
+}
+
+function resolveSharedTitle(params: URLSearchParams): string | undefined {
+  const title = params.get("title")?.trim();
+  return title || undefined;
+}
+
+function AutoSave({
+  url,
+  title,
+}: {
+  url: string;
+  title: string | undefined;
+}) {
+  const auth = useAuth();
+  const offline = useOffline();
+  const [status, setStatus] = useState<"saving" | "saved" | "error">("saving");
+  const [error, setError] = useState<string | null>(null);
+  const [undone, setUndone] = useState(false);
+  const attemptedRef = useRef(false);
+
+  useEffect(() => {
+    if (attemptedRef.current) return;
+    attemptedRef.current = true;
+
+    if (!offline.online) {
+      setStatus("error");
+      setError("saving requires a connection");
+      return;
+    }
+
+    const save = async () => {
+      try {
+        const response = await auth.client.saveBookmark({
+          url,
+          title,
+          saved_via: "mobile_web",
+        });
+        setStatus("saved");
+        void offline.refresh(true);
+      } catch (caught) {
+        setStatus("error");
+        setError(formatError(caught, "save failed"));
+      }
+    };
+
+    void save();
+  }, []);
+
+  const onUndo = async () => {
+    try {
+      await auth.client.deleteBookmarkByUrl(url);
+      setUndone(true);
+      void offline.refresh(true);
+    } catch (caught) {
+      setError(formatError(caught, "undo failed"));
+    }
+  };
+
+  const domain = (() => {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return url;
+    }
+  })();
+
+  return (
+    <div className="page narrow">
+      <header className="page-header">
+        <div className="page-heading-group">
+          <BrandLogo />
+          <p className="page-kicker">save</p>
+        </div>
+      </header>
+      <div className="stack">
+        {status === "saving" ? <p>saving...</p> : null}
+        {status === "saved" && !undone ? (
+          <>
+            <p>saved {title ?? domain}</p>
+            <div className="inline-actions">
+              <Link className="text-action" to="/">open reading list</Link>
+              <button className="text-action" onClick={() => void onUndo()} type="button">
+                undo
+              </button>
+            </div>
+          </>
+        ) : null}
+        {undone ? <p className="muted">removed</p> : null}
+        {status === "error" ? (
+          <>
+            <p className="error">{error}</p>
+            <p className="muted">{url}</p>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function MobileSavePage() {
   const auth = useAuth();
   const offline = useOffline();
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const [urlInput, setUrlInput] = useState(searchParams.get("url") ?? "");
+
+  const sharedUrl = resolveSharedUrl(searchParams);
+  const sharedTitle = resolveSharedTitle(searchParams);
+
+  const [urlInput, setUrlInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -1032,6 +1179,10 @@ function MobileSavePage() {
       navigate(`/login?redirect=${encodeURIComponent(redirect)}`, { replace: true });
     }
   }, [auth.loading, auth.token, location.pathname, location.search, navigate]);
+
+  if (sharedUrl) {
+    return <AutoSave url={sharedUrl} title={sharedTitle} />;
+  }
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -1324,13 +1475,24 @@ function ProfilePage() {
       </section>
 
       <section className="profile-section">
+        <h2 className="section-title">save from your phone</h2>
+
+        <div className="shortcut-setup stack">
+          <p className="muted block-muted">
+            install url-keep to your home screen for one-tap saving from the
+            share sheet. on iphone, tap the share button in safari then
+            &ldquo;add to home screen.&rdquo;
+          </p>
+        </div>
+      </section>
+
+      <section className="profile-section">
         <h2 className="section-title">tokens</h2>
 
         <div className="shortcut-setup stack">
           <p className="muted block-muted">
-            create a token, copy it, then install the shortcut. on first run,
-            the shortcut will ask for that token once and then save shared urls
-            directly to url-keep.
+            alternatively, use an ios shortcut for silent background saves.
+            create a token, copy it, then install the shortcut.
           </p>
           <div className="inline-actions">
             <button className="button" disabled={!offline.online} onClick={() => void onCreateShortcutToken()} type="button">
@@ -1504,11 +1666,21 @@ function ReaderPage() {
 
   return (
     <div className="page reader-page">
-      <header className="page-header row-between">
-        <div className="reader-nav">
-          <Link className="text-action" to="/">back</Link>
-          <BrandLogo />
-        </div>
+      <header className="page-header reader-page-header">
+        <Link aria-label="back" className="icon-action" to="/">
+          <ArrowLeft aria-hidden="true" size={18} strokeWidth={1.75} />
+        </Link>
+        {bookmark ? (
+          <a
+            aria-label="open original"
+            className="icon-action"
+            href={bookmark.url}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            <ExternalLink aria-hidden="true" size={16} strokeWidth={1.75} />
+          </a>
+        ) : null}
         {!offline.online ? <span className="offline-badge">offline</span> : null}
       </header>
 
