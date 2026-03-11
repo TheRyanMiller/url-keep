@@ -27,15 +27,17 @@ import {
 } from "react-router-dom";
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
   type ReactNode,
 } from "react";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
-import { getOfflineDb } from "./offline/db";
+import { clearOfflineCredentials, getOfflineDb, putOfflineCredentials } from "./offline/db";
 import { SyncManager } from "./offline/sync";
 
 const TOKEN_KEY = "url_keep_token";
@@ -307,9 +309,12 @@ function AuthProvider({ children }: { children: ReactNode }) {
   const setToken = (value: string | null) => {
     setTokenState(value);
     writeStoredToken(value);
-    if (!value) {
+    if (value) {
+      void putOfflineCredentials(value, API_ORIGIN);
+    } else {
       setUser(null);
       writeStoredUser(null);
+      void clearOfflineCredentials();
     }
   };
 
@@ -357,6 +362,23 @@ function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+function registerBackgroundSync() {
+  try {
+    const reg = navigator.serviceWorker?.ready;
+    if (!reg) {
+      return;
+    }
+
+    void reg.then((sw) => {
+      if ("sync" in sw) {
+        void (sw as ServiceWorkerRegistration & { sync: { register(tag: string): Promise<void> } }).sync.register("url-keep-retry");
+      }
+    });
+  } catch {
+    // Background Sync API not available
+  }
+}
+
 function OfflineProvider({ children }: { children: ReactNode }) {
   const auth = useAuth();
   const online = useOnlineStatus();
@@ -368,24 +390,40 @@ function OfflineProvider({ children }: { children: ReactNode }) {
     [auth.client],
   );
 
-  const refresh = async (force = false) => {
+  const managerRef = useRef(manager);
+  managerRef.current = manager;
+
+  const refresh = useCallback(async (force = false) => {
     if (!auth.token || !online) {
       return;
     }
 
-    if (!force && !(await manager.isStale())) {
-      return;
+    if (!force) {
+      if (!(await managerRef.current.isStale())) {
+        return;
+      }
+
+      try {
+        if (!(await managerRef.current.hasChanges())) {
+          return;
+        }
+      } catch {
+        // If change detection fails (network error), fall through to full sync
+      }
     }
 
     setSyncing(true);
     try {
-      await manager.sync();
+      await managerRef.current.syncOnce();
       setSyncVersion((current) => current + 1);
+    } catch {
+      registerBackgroundSync();
     } finally {
       setSyncing(false);
     }
-  };
+  }, [auth.token, online]);
 
+  // Mount sync
   useEffect(() => {
     if (!auth.token || !online) {
       return;
@@ -394,6 +432,7 @@ function OfflineProvider({ children }: { children: ReactNode }) {
     void refresh(true);
   }, [auth.token, online, manager]);
 
+  // Visibility change sync
   useEffect(() => {
     if (!auth.token || !online) {
       return;
@@ -407,7 +446,38 @@ function OfflineProvider({ children }: { children: ReactNode }) {
 
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [auth.token, online, manager]);
+  }, [auth.token, online, refresh]);
+
+  // Foreground periodic timer (5 minutes)
+  useEffect(() => {
+    if (!auth.token || !online) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refresh();
+      }
+    }, 5 * 60 * 1000);
+
+    return () => clearInterval(timer);
+  }, [auth.token, online, refresh]);
+
+  // Listen for service worker sync messages
+  useEffect(() => {
+    if (!navigator.serviceWorker) {
+      return;
+    }
+
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === "url-keep:sync-needed") {
+        void refresh(true);
+      }
+    };
+
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, [refresh]);
 
   const value = useMemo<OfflineState>(
     () => ({
@@ -576,8 +646,7 @@ function BookmarkRow({
         ) : null}
       </div>
       <div className="bookmark-main">
-        <div className={`bookmark-content${bookmark.image_url ? " has-image" : ""}`}>
-          <BookmarkImage alt={bookmark.title} src={bookmark.image_url} />
+        <div className="bookmark-content">
           <div className="bookmark-copy">
             {editing ? (
               <div className="inline-edit">
@@ -611,6 +680,7 @@ function BookmarkRow({
               </>
             )}
           </div>
+          <BookmarkImage alt={bookmark.title} src={bookmark.image_url} />
         </div>
         {error ? <p className="error">{error}</p> : null}
       </div>

@@ -5,10 +5,12 @@ import type {
   ListBookmarksOptions,
   ListBookmarksResult,
   OfflineBundleResult,
+  OfflineStatusResult,
   UserRecord,
 } from "./types";
 
 export interface Store {
+  getOfflineStatus(userId: string): Promise<OfflineStatusResult>;
   getUserByEmail(email: string): Promise<UserRecord | null>;
   getUserById(id: string): Promise<UserRecord | null>;
   insertUser(user: UserRecord): Promise<void>;

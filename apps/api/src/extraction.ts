@@ -233,8 +233,10 @@ async function extractAndStoreImages(
   r2: R2Bucket,
   fetchImpl: typeof fetch,
 ): Promise<string> {
-  const { document } = parseHTML(`<!doctype html><body>${contentHtml}</body>`);
-  const images = [...document.querySelectorAll("img[src]")].slice(0, MAX_IMAGES_PER_ARTICLE);
+  const { document } = parseHTML("<html><body></body></html>");
+  const container = document.createElement("div");
+  container.innerHTML = contentHtml;
+  const images = [...container.querySelectorAll("img[src]")].slice(0, MAX_IMAGES_PER_ARTICLE);
   let totalBytes = 0;
 
   for (const image of images) {
@@ -268,7 +270,7 @@ async function extractAndStoreImages(
     }
   }
 
-  return document.body.innerHTML;
+  return container.innerHTML;
 }
 
 async function cleanupBookmarkImages(bookmarkId: string, r2: R2Bucket): Promise<void> {
@@ -349,13 +351,16 @@ export async function runBookmarkExtraction(
 
     let contentHtml = readable.content;
     if (options.env.IMAGES) {
-      contentHtml = await extractAndStoreImages(
+      const rewrittenContentHtml = await extractAndStoreImages(
         contentHtml,
         options.bookmark.id,
         response.url || options.bookmark.url,
         options.env.IMAGES,
         fetchImpl,
       );
+      if (rewrittenContentHtml.trim()) {
+        contentHtml = rewrittenContentHtml;
+      }
     }
 
     const title = cleanOptionalText(readable.title);

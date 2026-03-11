@@ -13,6 +13,7 @@ import {
   loginResponseSchema,
   meResponseSchema,
   offlineBundleResponseSchema,
+  offlineStatusResponseSchema,
   tokenListResponseSchema,
   updateBookmarkTitleRequestSchema,
   type ArticleContentResponse,
@@ -27,6 +28,7 @@ import {
   type LoginResponse,
   type MeResponse,
   type OfflineBundleResponse,
+  type OfflineStatusResponse,
   type TokenListResponse,
   type UpdateBookmarkTitleRequest,
 } from "@url-keep/shared";
@@ -205,6 +207,12 @@ export class UrlKeepClient {
   async getBookmarkContent(id: string): Promise<ArticleContentResponse> {
     return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/content`, {
       schema: articleContentResponseSchema,
+    });
+  }
+
+  async getOfflineStatus(): Promise<OfflineStatusResponse> {
+    return this.request("/v1/offline/status", {
+      schema: offlineStatusResponseSchema,
     });
   }
 

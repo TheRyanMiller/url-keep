@@ -85,6 +85,11 @@ export type OfflineBundleResult = {
   hasMore: boolean;
 };
 
+export type OfflineStatusResult = {
+  bookmarkCount: number;
+  latestUpdatedAt: string | null;
+};
+
 export type AuthContext = {
   user: UserRecord;
   token: AccessTokenRecord;

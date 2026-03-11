@@ -12,6 +12,7 @@ export type OfflineSyncState = {
   key: "state";
   last_sync_at: string | null;
   bookmark_count: number;
+  latest_updated_at: string | null;
 };
 
 interface OfflineDBSchema extends DBSchema {
@@ -95,4 +96,22 @@ export async function putOfflineSyncState(state: Omit<OfflineSyncState, "key">) 
 export async function getOfflineSyncState(): Promise<OfflineSyncState | null> {
   const state = await (await getOfflineDb()).get("sync_meta", "state");
   return state ?? null;
+}
+
+export type OfflineCredentials = {
+  key: "credentials";
+  token: string;
+  apiOrigin: string;
+};
+
+export async function putOfflineCredentials(token: string, apiOrigin: string) {
+  await (await getOfflineDb()).put("sync_meta", {
+    key: "credentials",
+    token,
+    apiOrigin,
+  } as unknown as OfflineSyncState);
+}
+
+export async function clearOfflineCredentials() {
+  await (await getOfflineDb()).delete("sync_meta", "credentials");
 }

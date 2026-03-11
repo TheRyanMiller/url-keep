@@ -45,6 +45,8 @@ async function precacheArticleImages(
 }
 
 export class SyncManager {
+  private activeSyncPromise: Promise<void> | null = null;
+
   constructor(
     private readonly client: UrlKeepClient,
     private readonly apiOrigin: string,
@@ -64,10 +66,43 @@ export class SyncManager {
     return Date.now() - lastSyncMs > maxAgeMs;
   }
 
+  async hasChanges(): Promise<boolean> {
+    const [local, remote] = await Promise.all([
+      getOfflineSyncState(),
+      this.client.getOfflineStatus(),
+    ]);
+
+    if (!local) {
+      return true;
+    }
+
+    if (local.bookmark_count !== remote.bookmark_count) {
+      return true;
+    }
+
+    if (local.latest_updated_at !== remote.latest_updated_at) {
+      return true;
+    }
+
+    return false;
+  }
+
+  async syncOnce(): Promise<void> {
+    if (this.activeSyncPromise) {
+      return this.activeSyncPromise;
+    }
+
+    this.activeSyncPromise = this.sync().finally(() => {
+      this.activeSyncPromise = null;
+    });
+    return this.activeSyncPromise;
+  }
+
   async sync(): Promise<void> {
     const db = await getOfflineDb();
     const serverIds = new Set<string>();
     let cursor: string | undefined;
+    let latestUpdatedAt: string | null = null;
 
     do {
       const response = await this.client.getOfflineBundle(cursor, DEFAULT_SYNC_LIMIT);
@@ -76,6 +111,13 @@ export class SyncManager {
       for (const item of response.items) {
         serverIds.add(item.bookmark.id);
         await tx.objectStore("bookmarks").put(item.bookmark);
+
+        if (
+          item.bookmark.updated_at &&
+          (!latestUpdatedAt || item.bookmark.updated_at > latestUpdatedAt)
+        ) {
+          latestUpdatedAt = item.bookmark.updated_at;
+        }
 
         if (item.content) {
           await tx.objectStore("articles").put({
@@ -114,6 +156,7 @@ export class SyncManager {
     await putOfflineSyncState({
       last_sync_at: new Date().toISOString(),
       bookmark_count: serverIds.size,
+      latest_updated_at: latestUpdatedAt,
     });
   }
 

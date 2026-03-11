@@ -602,6 +602,15 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
+  app.get("/v1/offline/status", async (c) => {
+    const { user } = c.get("auth");
+    const status = await c.get("store").getOfflineStatus(user.id);
+    return c.json({
+      bookmark_count: status.bookmarkCount,
+      latest_updated_at: status.latestUpdatedAt,
+    });
+  });
+
   app.get("/v1/offline/bundle", async (c) => {
     const parsed = parseListQuery(c);
     if (parsed instanceof Response) {

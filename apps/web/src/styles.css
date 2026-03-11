@@ -193,16 +193,13 @@ input {
 }
 
 .bookmark-content {
-  display: grid;
+  display: flex;
   gap: 12px;
-}
-
-.bookmark-content.has-image {
   align-items: start;
-  grid-template-columns: 120px minmax(0, 1fr);
 }
 
 .bookmark-copy {
+  flex: 1;
   min-width: 0;
 }
 
@@ -243,8 +240,9 @@ input {
 }
 
 .bookmark-image {
-  width: 120px;
-  height: 72px;
+  flex-shrink: 0;
+  width: 100px;
+  height: 64px;
   object-fit: cover;
   border: 1px solid var(--border);
 }
@@ -509,8 +507,8 @@ input {
     min-height: auto;
   }
 
-  .bookmark-content.has-image {
-    grid-template-columns: 96px minmax(0, 1fr);
+  .bookmark-image {
+    display: none;
   }
 
   .bookmark-side {
@@ -528,11 +526,6 @@ input {
 
   .row-between {
     flex-direction: column;
-  }
-
-  .bookmark-image {
-    width: 96px;
-    height: 64px;
   }
 
   .reader-nav {

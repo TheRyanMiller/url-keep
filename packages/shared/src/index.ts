@@ -76,6 +76,11 @@ export const extractBookmarkResponseSchema = z.object({
   extraction_status: extractionStatusSchema,
 });
 
+export const offlineStatusResponseSchema = z.object({
+  bookmark_count: z.number().int().nonnegative(),
+  latest_updated_at: z.string().nullable(),
+});
+
 export const offlineBundleItemSchema = z.object({
   bookmark: bookmarkSchema,
   content: articleContentSchema.nullable(),
@@ -177,6 +182,7 @@ export type BookmarkListResponse = z.infer<typeof bookmarkListResponseSchema>;
 export type BookmarkResponse = z.infer<typeof bookmarkResponseSchema>;
 export type ArticleContentResponse = z.infer<typeof articleContentResponseSchema>;
 export type ExtractBookmarkResponse = z.infer<typeof extractBookmarkResponseSchema>;
+export type OfflineStatusResponse = z.infer<typeof offlineStatusResponseSchema>;
 export type OfflineBundleItem = z.infer<typeof offlineBundleItemSchema>;
 export type OfflineBundleResponse = z.infer<typeof offlineBundleResponseSchema>;
 export type CreateBookmarkRequest = z.infer<typeof createBookmarkRequestSchema>;

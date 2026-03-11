@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./App";
+import { registerPeriodicSync } from "./offline/register-sync";
 import "./styles.css";
 
 registerSW({ immediate: true });
@@ -14,3 +15,5 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     </BrowserRouter>
   </React.StrictMode>,
 );
+
+void registerPeriodicSync();

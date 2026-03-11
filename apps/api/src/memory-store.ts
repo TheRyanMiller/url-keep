@@ -6,6 +6,7 @@ import type {
   ListBookmarksOptions,
   ListBookmarksResult,
   OfflineBundleResult,
+  OfflineStatusResult,
   UserRecord,
 } from "./types";
 import type { Store } from "./store";
@@ -15,6 +16,20 @@ export class MemoryStore implements Store {
   private accessTokens = new Map<string, AccessTokenRecord>();
   private bookmarks = new Map<string, BookmarkRecord>();
   private articleContent = new Map<string, ArticleContentRecord>();
+
+  async getOfflineStatus(userId: string): Promise<OfflineStatusResult> {
+    let count = 0;
+    let latest: string | null = null;
+    for (const bookmark of this.bookmarks.values()) {
+      if (bookmark.userId === userId) {
+        count++;
+        if (!latest || bookmark.updatedAt > latest) {
+          latest = bookmark.updatedAt;
+        }
+      }
+    }
+    return { bookmarkCount: count, latestUpdatedAt: latest };
+  }
 
   async getUserByEmail(email: string): Promise<UserRecord | null> {
     for (const user of this.users.values()) {

@@ -8,6 +8,7 @@ import type {
   ListBookmarksResult,
   OfflineBundleItemRecord,
   OfflineBundleResult,
+  OfflineStatusResult,
   UserRecord,
 } from "./types";
 
@@ -162,6 +163,19 @@ function articleContentSelectSql() {
 
 export class D1Store implements Store {
   constructor(private readonly db: D1Database) {}
+
+  async getOfflineStatus(userId: string): Promise<OfflineStatusResult> {
+    const row = await this.db
+      .prepare(
+        "SELECT COUNT(*) AS cnt, MAX(updated_at) AS latest FROM bookmarks WHERE user_id = ?",
+      )
+      .bind(userId)
+      .first<{ cnt: number; latest: string | null }>();
+    return {
+      bookmarkCount: row?.cnt ?? 0,
+      latestUpdatedAt: row?.latest ?? null,
+    };
+  }
 
   async getUserByEmail(email: string): Promise<UserRecord | null> {
     const row = await this.db
