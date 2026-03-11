@@ -1,9 +1,7 @@
 import { ApiError, UrlKeepClient } from "@url-keep/api-client";
 import {
-  ArrowLeft,
   BookOpen,
   Check,
-  ExternalLink,
   PencilLine,
   RefreshCw,
   Trash2,
@@ -1667,19 +1665,15 @@ function ReaderPage() {
   return (
     <div className="page reader-page">
       <header className="page-header reader-page-header">
-        <Link aria-label="back" className="icon-action" to="/">
-          <ArrowLeft aria-hidden="true" size={18} strokeWidth={1.75} />
-        </Link>
+        <Link aria-label="back" className="text-action" to="/">&#x2190;</Link>
         {bookmark ? (
           <a
             aria-label="open original"
-            className="icon-action"
+            className="text-action"
             href={bookmark.url}
             rel="noopener noreferrer"
             target="_blank"
-          >
-            <ExternalLink aria-hidden="true" size={16} strokeWidth={1.75} />
-          </a>
+          >&#x2197;</a>
         ) : null}
         {!offline.online ? <span className="offline-badge">offline</span> : null}
       </header>
