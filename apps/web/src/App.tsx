@@ -3,6 +3,7 @@ import {
   BookOpen,
   Check,
   PencilLine,
+  RefreshCw,
   Trash2,
   X,
 } from "lucide-react";
@@ -628,11 +629,13 @@ function BookmarkRow({
   online,
   onDelete,
   onTitleUpdated,
+  onRetryExtraction,
 }: {
   bookmark: Bookmark;
   online: boolean;
   onDelete: (bookmark: Bookmark) => Promise<void>;
   onTitleUpdated: (bookmark: Bookmark, title: string) => Promise<void>;
+  onRetryExtraction: (bookmark: Bookmark) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [deleteArmed, setDeleteArmed] = useState(false);
@@ -676,7 +679,30 @@ function BookmarkRow({
         <span>{formatDate(bookmark.created_at)}</span>
         <span>{bookmark.saved_via}</span>
         {bookmark.extraction_status && bookmark.extraction_status !== "complete" ? (
-          <span>{bookmark.extraction_status}</span>
+          <span className="extraction-status">
+            {bookmark.extraction_status}
+            {online && (bookmark.extraction_status === "pending" || bookmark.extraction_status === "failed" || bookmark.extraction_status === "skipped") ? (
+              <button
+                aria-label="retry extraction"
+                className="retry-button"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  setError(null);
+                  onRetryExtraction(bookmark)
+                    .then(() => setBusy(false))
+                    .catch((caught) => {
+                      setError(formatError(caught, "retry failed"));
+                      setBusy(false);
+                    });
+                }}
+                title="Retry article extraction"
+                type="button"
+              >
+                <RefreshCw aria-hidden="true" size={11} strokeWidth={2} />
+              </button>
+            ) : null}
+          </span>
         ) : null}
       </div>
       <div className="bookmark-main">
@@ -865,6 +891,21 @@ function MainPage() {
     );
   };
 
+  const onRetryExtraction = async (bookmark: Bookmark) => {
+    if (!offline.online) {
+      throw new Error("retry requires a connection");
+    }
+
+    const response = await auth.client.extractBookmark(bookmark.id, true);
+    setBookmarks((current) =>
+      current.map((item) =>
+        item.id === bookmark.id
+          ? { ...item, extraction_status: response.extraction_status }
+          : item,
+      ),
+    );
+  };
+
   const onSearchChange = (value: string) => {
     const next = new URLSearchParams(searchParams);
     if (value.trim()) {
@@ -907,6 +948,7 @@ function MainPage() {
             bookmark={bookmark}
             online={offline.online}
             onDelete={onDeleteConfirm}
+            onRetryExtraction={onRetryExtraction}
             onTitleUpdated={onTitleUpdated}
           />
         ))}

@@ -328,6 +328,28 @@ input {
   background: rgba(204, 0, 0, 0.06);
 }
 
+.extraction-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.retry-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.retry-button:hover {
+  opacity: 1;
+}
+
 .reader-page {
   max-width: 760px;
 }

@@ -252,11 +252,7 @@ async function queueBookmarkExtraction(
 ) {
   const store = c.get("store");
   const existing = await store.getArticleContentByBookmarkId(bookmark.userId, bookmark.id);
-  if (
-    !force &&
-    (existing?.extractionStatus === "complete" ||
-      existing?.extractionStatus === "pending")
-  ) {
+  if (!force && existing?.extractionStatus === "complete") {
     return existing.extractionStatus;
   }
 
