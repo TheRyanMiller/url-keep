@@ -10,10 +10,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "@hono/zod-validator": "^0.4.3",
     "@noble/hashes": "^1.7.1",
     "@url-keep/shared": "0.0.0",
-    "hono": "^4.7.4"
+    "hono": "^4.7.4",
+    "linkedom": "^0.18.12"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250303.0",

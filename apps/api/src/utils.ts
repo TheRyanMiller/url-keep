@@ -233,6 +233,7 @@ export function bookmarkToApi(bookmark: BookmarkRecord) {
     saved_via: bookmark.savedVia,
     created_at: bookmark.createdAt,
     updated_at: bookmark.updatedAt,
+    extraction_status: bookmark.extractionStatus ?? null,
   };
 }
 

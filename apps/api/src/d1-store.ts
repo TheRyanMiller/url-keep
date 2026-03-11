@@ -2,9 +2,12 @@ import { decodeCursor, encodeCursor } from "./utils";
 import type { Store } from "./store";
 import type {
   AccessTokenRecord,
+  ArticleContentRecord,
   BookmarkRecord,
   ListBookmarksOptions,
   ListBookmarksResult,
+  OfflineBundleItemRecord,
+  OfflineBundleResult,
   UserRecord,
 } from "./types";
 
@@ -37,7 +40,25 @@ type BookmarkRow = {
   saved_via: BookmarkRecord["savedVia"];
   created_at: string;
   updated_at: string;
+  extraction_status: BookmarkRecord["extractionStatus"];
 };
+
+type ArticleContentRow = {
+  content_id: string | null;
+  bookmark_id: string | null;
+  content_user_id: string | null;
+  content_html: string | null;
+  word_count: number | null;
+  author: string | null;
+  published_date: string | null;
+  content_extraction_status: ArticleContentRecord["extractionStatus"] | null;
+  extraction_error: string | null;
+  extracted_at: string | null;
+  content_created_at: string | null;
+  content_updated_at: string | null;
+};
+
+type BookmarkWithContentRow = BookmarkRow & ArticleContentRow;
 
 function mapUser(row: UserRow | null): UserRecord | null {
   return row
@@ -78,8 +99,65 @@ function mapBookmark(row: BookmarkRow | null): BookmarkRecord | null {
         savedVia: row.saved_via,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        extractionStatus: row.extraction_status ?? null,
       }
     : null;
+}
+
+function mapArticleContent(row: ArticleContentRow | null): ArticleContentRecord | null {
+  return row?.content_id && row.bookmark_id && row.content_user_id
+    ? {
+        id: row.content_id,
+        bookmarkId: row.bookmark_id,
+        userId: row.content_user_id,
+        contentHtml: row.content_html,
+        wordCount: row.word_count ?? 0,
+        author: row.author,
+        publishedDate: row.published_date,
+        extractionStatus: row.content_extraction_status ?? "pending",
+        extractionError: row.extraction_error,
+        extractedAt: row.extracted_at,
+        createdAt: row.content_created_at ?? row.extracted_at ?? row.content_updated_at ?? "",
+        updatedAt: row.content_updated_at ?? row.extracted_at ?? row.content_created_at ?? "",
+      }
+    : null;
+}
+
+function bookmarkSelectSql() {
+  return `
+    SELECT
+      b.id,
+      b.user_id,
+      b.url,
+      b.normalized_url,
+      b.title,
+      b.title_source,
+      b.image_url,
+      b.site_name,
+      b.saved_via,
+      b.created_at,
+      b.updated_at,
+      ac.extraction_status AS extraction_status
+    FROM bookmarks b
+    LEFT JOIN article_content ac ON ac.bookmark_id = b.id
+  `;
+}
+
+function articleContentSelectSql() {
+  return `
+    ac.id AS content_id,
+    ac.bookmark_id,
+    ac.user_id AS content_user_id,
+    ac.content_html,
+    ac.word_count,
+    ac.author,
+    ac.published_date,
+    ac.extraction_status AS content_extraction_status,
+    ac.extraction_error,
+    ac.extracted_at,
+    ac.created_at AS content_created_at,
+    ac.updated_at AS content_updated_at
+  `;
 }
 
 export class D1Store implements Store {
@@ -194,7 +272,7 @@ export class D1Store implements Store {
   ): Promise<BookmarkRecord | null> {
     const row = await this.db
       .prepare(
-        "SELECT id, user_id, url, normalized_url, title, title_source, image_url, site_name, saved_via, created_at, updated_at FROM bookmarks WHERE user_id = ? AND normalized_url = ? LIMIT 1",
+        `${bookmarkSelectSql()} WHERE b.user_id = ? AND b.normalized_url = ? LIMIT 1`,
       )
       .bind(userId, normalizedUrl)
       .first<BookmarkRow>();
@@ -204,7 +282,7 @@ export class D1Store implements Store {
   async getBookmarkById(userId: string, id: string): Promise<BookmarkRecord | null> {
     const row = await this.db
       .prepare(
-        "SELECT id, user_id, url, normalized_url, title, title_source, image_url, site_name, saved_via, created_at, updated_at FROM bookmarks WHERE user_id = ? AND id = ? LIMIT 1",
+        `${bookmarkSelectSql()} WHERE b.user_id = ? AND b.id = ? LIMIT 1`,
       )
       .bind(userId, id)
       .first<BookmarkRow>();
@@ -216,29 +294,28 @@ export class D1Store implements Store {
     options: ListBookmarksOptions,
   ): Promise<ListBookmarksResult> {
     const cursor = decodeCursor(options.cursor);
-    const clauses = ["user_id = ?"];
+    const clauses = ["b.user_id = ?"];
     const bindings: Array<string | number> = [userId];
 
     if (options.q) {
       const needle = `%${options.q.toLowerCase()}%`;
       clauses.push(
-        "(LOWER(title) LIKE ? OR LOWER(url) LIKE ? OR LOWER(COALESCE(site_name, '')) LIKE ?)",
+        "(LOWER(b.title) LIKE ? OR LOWER(b.url) LIKE ? OR LOWER(COALESCE(b.site_name, '')) LIKE ?)",
       );
       bindings.push(needle, needle, needle);
     }
 
     if (cursor) {
-      clauses.push("(created_at < ? OR (created_at = ? AND id < ?))");
+      clauses.push("(b.created_at < ? OR (b.created_at = ? AND b.id < ?))");
       bindings.push(cursor.createdAt, cursor.createdAt, cursor.id);
     }
 
     bindings.push(options.limit + 1);
 
     const sql = `
-      SELECT id, user_id, url, normalized_url, title, title_source, image_url, site_name, saved_via, created_at, updated_at
-      FROM bookmarks
+      ${bookmarkSelectSql()}
       WHERE ${clauses.join(" AND ")}
-      ORDER BY created_at DESC, id DESC
+      ORDER BY b.created_at DESC, b.id DESC
       LIMIT ?
     `;
 
@@ -250,6 +327,62 @@ export class D1Store implements Store {
     const items = hasMore ? allRows.slice(0, options.limit) : allRows;
     const nextCursor = hasMore ? encodeCursor(items[items.length - 1]) : null;
     return { items, nextCursor };
+  }
+
+  async listOfflineBundle(
+    userId: string,
+    options: Pick<ListBookmarksOptions, "limit" | "cursor">,
+  ): Promise<OfflineBundleResult> {
+    const cursor = decodeCursor(options.cursor);
+    const clauses = ["b.user_id = ?"];
+    const bindings: Array<string | number> = [userId];
+
+    if (cursor) {
+      clauses.push("(b.created_at < ? OR (b.created_at = ? AND b.id < ?))");
+      bindings.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    }
+
+    bindings.push(options.limit + 1);
+
+    const sql = `
+      SELECT
+        b.id,
+        b.user_id,
+        b.url,
+        b.normalized_url,
+        b.title,
+        b.title_source,
+        b.image_url,
+        b.site_name,
+        b.saved_via,
+        b.created_at,
+        b.updated_at,
+        ac.extraction_status AS extraction_status,
+        ${articleContentSelectSql()}
+      FROM bookmarks b
+      LEFT JOIN article_content ac ON ac.bookmark_id = b.id
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY b.created_at DESC, b.id DESC
+      LIMIT ?
+    `;
+
+    const result = await this.db.prepare(sql).bind(...bindings).all<BookmarkWithContentRow>();
+    const rows = (result.results ?? []).filter(Boolean);
+    const hasMore = rows.length > options.limit;
+    const pageRows = hasMore ? rows.slice(0, options.limit) : rows;
+    const items = pageRows.map<OfflineBundleItemRecord>((row) => ({
+      bookmark: mapBookmark(row)!,
+      content: mapArticleContent(row),
+    }));
+    const nextCursor = hasMore
+      ? encodeCursor(items[items.length - 1].bookmark)
+      : null;
+
+    return {
+      items,
+      nextCursor,
+      hasMore,
+    };
   }
 
   async insertBookmark(bookmark: BookmarkRecord): Promise<void> {
@@ -293,13 +426,93 @@ export class D1Store implements Store {
       .run();
   }
 
+  async getArticleContentByBookmarkId(
+    userId: string,
+    bookmarkId: string,
+  ): Promise<ArticleContentRecord | null> {
+    const row = await this.db
+      .prepare(
+        `
+          SELECT ${articleContentSelectSql()}
+          FROM article_content ac
+          WHERE ac.user_id = ? AND ac.bookmark_id = ?
+          LIMIT 1
+        `,
+      )
+      .bind(userId, bookmarkId)
+      .first<ArticleContentRow>();
+    return mapArticleContent(row ?? null);
+  }
+
+  async upsertArticleContent(content: ArticleContentRecord): Promise<void> {
+    await this.db
+      .prepare(
+        `
+          INSERT INTO article_content (
+            id,
+            bookmark_id,
+            user_id,
+            content_html,
+            word_count,
+            author,
+            published_date,
+            extraction_status,
+            extraction_error,
+            extracted_at,
+            created_at,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(bookmark_id) DO UPDATE SET
+            id = excluded.id,
+            user_id = excluded.user_id,
+            content_html = excluded.content_html,
+            word_count = excluded.word_count,
+            author = excluded.author,
+            published_date = excluded.published_date,
+            extraction_status = excluded.extraction_status,
+            extraction_error = excluded.extraction_error,
+            extracted_at = excluded.extracted_at,
+            updated_at = excluded.updated_at
+        `,
+      )
+      .bind(
+        content.id,
+        content.bookmarkId,
+        content.userId,
+        content.contentHtml,
+        content.wordCount,
+        content.author,
+        content.publishedDate,
+        content.extractionStatus,
+        content.extractionError,
+        content.extractedAt,
+        content.createdAt,
+        content.updatedAt,
+      )
+      .run();
+  }
+
+  async deleteBookmarkContent(userId: string, bookmarkId: string): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM article_content WHERE user_id = ? AND bookmark_id = ?")
+      .bind(userId, bookmarkId)
+      .run();
+  }
+
   async deleteBookmarkByNormalizedUrl(
     userId: string,
     normalizedUrl: string,
-  ): Promise<void> {
+  ): Promise<BookmarkRecord | null> {
+    const bookmark = await this.getBookmarkByNormalizedUrl(userId, normalizedUrl);
+    if (!bookmark) {
+      return null;
+    }
+
     await this.db
       .prepare("DELETE FROM bookmarks WHERE user_id = ? AND normalized_url = ?")
       .bind(userId, normalizedUrl)
       .run();
+
+    return bookmark;
   }
 }

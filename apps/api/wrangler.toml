@@ -13,6 +13,10 @@ binding = "DB"
 database_name = "url_keep"
 database_id = "9e9fadd4-8cc7-418b-80bc-80b5a6fb755c"
 
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "url-keep-images"
+
 [[routes]]
 pattern = "api.url-keep.com"
 custom_domain = true

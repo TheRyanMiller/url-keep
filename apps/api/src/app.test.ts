@@ -19,10 +19,61 @@ describe("api", () => {
   let store: MemoryStore;
   let app: ReturnType<typeof createApp>;
   let user: UserRecord;
+  let extractCalls: string[];
+
+  function createExecutionContext() {
+    const promises: Promise<unknown>[] = [];
+    return {
+      ctx: {
+        passThroughOnException() {
+          return undefined;
+        },
+        props: {},
+        waitUntil(promise: Promise<unknown>) {
+          promises.push(promise);
+        },
+      } satisfies ExecutionContext,
+      promises,
+    };
+  }
+
+  async function request(
+    input: string,
+    init?: RequestInit,
+    env: typeof TEST_ENV = TEST_ENV,
+  ) {
+    const execution = createExecutionContext();
+    const response = await app.request(input, init, env, execution.ctx);
+    await Promise.allSettled(execution.promises);
+    return response;
+  }
 
   beforeEach(async () => {
     store = new MemoryStore();
-    app = createApp({ store });
+    extractCalls = [];
+    app = createApp({
+      store,
+      extractBookmark: async ({ store: targetStore, bookmark }) => {
+        extractCalls.push(bookmark.id);
+        const now = nowIso();
+        const content = {
+          id: `content-${bookmark.id}`,
+          bookmarkId: bookmark.id,
+          userId: bookmark.userId,
+          contentHtml: "<article><p>offline article</p></article>",
+          wordCount: 2,
+          author: "Jane Doe",
+          publishedDate: "2026-03-10",
+          extractionStatus: "complete" as const,
+          extractionError: null,
+          extractedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        };
+        await targetStore.upsertArticleContent(content);
+        return content;
+      },
+    });
     user = {
       id: "user-1",
       email: "me@example.com",
@@ -33,7 +84,7 @@ describe("api", () => {
   });
 
   async function login(clientName = "web app") {
-    const response = await app.request("http://localhost/v1/auth/login", {
+    const response = await request("http://localhost/v1/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -94,7 +145,7 @@ describe("api", () => {
   });
 
   it("returns CORS headers for login preflight when origin is allowed", async () => {
-    const response = await app.request(
+    const response = await request(
       "http://localhost/v1/auth/login",
       {
         method: "OPTIONS",
@@ -118,9 +169,9 @@ describe("api", () => {
 
   it("supports auth/me with bearer auth", async () => {
     const { token } = await login();
-    const response = await app.request("http://localhost/v1/auth/me", {
+    const response = await request("http://localhost/v1/auth/me", {
       headers: { Authorization: `Bearer ${token}` },
-    }, TEST_ENV);
+    });
 
     expect(response.status).toBe(200);
     const body = await json<{ user: { email: string } }>(response);
@@ -130,7 +181,7 @@ describe("api", () => {
   it("creates bookmarks and upgrades fallback titles on duplicate save", async () => {
     const { token } = await login();
 
-    const create = await app.request("http://localhost/v1/bookmarks", {
+    const create = await request("http://localhost/v1/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -140,13 +191,14 @@ describe("api", () => {
         url: "https://example.com/post",
         saved_via: "web",
       }),
-    }, TEST_ENV);
+    });
 
     expect(create.status).toBe(201);
-    const created = await json<{ item: { title: string } }>(create);
+    const created = await json<{ item: { title: string; extraction_status: string } }>(create);
     expect(created.item.title).toBe("example.com");
+    expect(created.item.extraction_status).toBe("pending");
 
-    const upgrade = await app.request("http://localhost/v1/bookmarks", {
+    const upgrade = await request("http://localhost/v1/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -157,7 +209,7 @@ describe("api", () => {
         title: "Real Title",
         saved_via: "extension",
       }),
-    }, TEST_ENV);
+    });
 
     expect(upgrade.status).toBe(200);
     const upgraded = await json<{ item: { title: string; saved_via: string } }>(upgrade);
@@ -168,7 +220,7 @@ describe("api", () => {
   it("returns no content for ios shortcut saves", async () => {
     const { token } = await login();
 
-    const response = await app.request(
+    const response = await request(
       "http://localhost/v1/bookmarks",
       {
         method: "POST",
@@ -192,7 +244,7 @@ describe("api", () => {
   it("preserves user edited titles on later duplicate saves", async () => {
     const { token } = await login();
 
-    const create = await app.request("http://localhost/v1/bookmarks", {
+    const create = await request("http://localhost/v1/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -206,7 +258,7 @@ describe("api", () => {
     }, TEST_ENV);
     const created = await json<{ item: { id: string } }>(create);
 
-    const edit = await app.request(
+    const edit = await request(
       `http://localhost/v1/bookmarks/${created.item.id}`,
       {
         method: "PATCH",
@@ -220,7 +272,7 @@ describe("api", () => {
     );
     expect(edit.status).toBe(200);
 
-    const duplicate = await app.request("http://localhost/v1/bookmarks", {
+    const duplicate = await request("http://localhost/v1/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -239,7 +291,7 @@ describe("api", () => {
 
   it("deletes bookmarks idempotently by url", async () => {
     const { token } = await login();
-    await app.request("http://localhost/v1/bookmarks", {
+    await request("http://localhost/v1/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -251,7 +303,7 @@ describe("api", () => {
       }),
     }, TEST_ENV);
 
-    const firstDelete = await app.request(
+    const firstDelete = await request(
       "http://localhost/v1/bookmarks/by-url?url=https://example.com/post",
       {
         method: "DELETE",
@@ -261,7 +313,7 @@ describe("api", () => {
     );
     expect(firstDelete.status).toBe(204);
 
-    const secondDelete = await app.request(
+    const secondDelete = await request(
       "http://localhost/v1/bookmarks/by-url?url=https://example.com/post",
       {
         method: "DELETE",
@@ -275,7 +327,7 @@ describe("api", () => {
   it("creates and revokes tokens", async () => {
     const { token } = await login();
 
-    const create = await app.request("http://localhost/v1/tokens", {
+    const create = await request("http://localhost/v1/tokens", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -291,7 +343,7 @@ describe("api", () => {
     expect(created.item.current).toBe(false);
     expect(created.token.startsWith("uk_")).toBe(true);
 
-    const revoke = await app.request(
+    const revoke = await request(
       `http://localhost/v1/tokens/${created.item.id}`,
       {
         method: "DELETE",
@@ -301,5 +353,118 @@ describe("api", () => {
     );
 
     expect(revoke.status).toBe(204);
+  });
+
+  it("returns extracted content and offline bundle items", async () => {
+    const { token } = await login();
+
+    const create = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://example.com/article",
+        saved_via: "web",
+      }),
+    });
+    const created = await json<{ item: { id: string } }>(create);
+
+    const contentResponse = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+
+    expect(contentResponse.status).toBe(200);
+    const content = await json<{ item: { extraction_status: string; content_html: string | null } }>(
+      contentResponse,
+    );
+    expect(content.item.extraction_status).toBe("complete");
+    expect(content.item.content_html).toContain("offline article");
+
+    const listResponse = await request("http://localhost/v1/bookmarks", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const list = await json<{ items: Array<{ extraction_status: string | null }> }>(listResponse);
+    expect(list.items[0]?.extraction_status).toBe("complete");
+
+    const bundleResponse = await request("http://localhost/v1/offline/bundle", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    expect(bundleResponse.status).toBe(200);
+    const bundle = await json<{
+      items: Array<{
+        bookmark: { id: string };
+        content: { extraction_status: string } | null;
+      }>;
+      has_more: boolean;
+    }>(bundleResponse);
+    expect(bundle.items[0]?.bookmark.id).toBe(created.item.id);
+    expect(bundle.items[0]?.content?.extraction_status).toBe("complete");
+    expect(bundle.has_more).toBe(false);
+  });
+
+  it("supports manual extraction retries and content deletion", async () => {
+    const { token } = await login();
+
+    const create = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://example.com/retry",
+        saved_via: "web",
+      }),
+    });
+    const created = await json<{ item: { id: string } }>(create);
+
+    expect(extractCalls).toHaveLength(1);
+
+    const noForce = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/extract`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+    expect(noForce.status).toBe(200);
+    expect(extractCalls).toHaveLength(1);
+
+    const force = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/extract?force=true`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+    expect(force.status).toBe(202);
+    expect(extractCalls).toHaveLength(2);
+
+    const deleteContent = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+    expect(deleteContent.status).toBe(204);
+
+    const afterDelete = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+    const deletedContent = await json<{ item: { extraction_status: string; content_html: string | null } }>(
+      afterDelete,
+    );
+    expect(deletedContent.item.extraction_status).toBe("pending");
+    expect(deletedContent.item.content_html).toBeNull();
   });
 });

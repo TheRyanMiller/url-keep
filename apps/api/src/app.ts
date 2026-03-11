@@ -8,8 +8,17 @@ import {
   updateBookmarkTitleRequestSchema,
 } from "@url-keep/shared";
 import { D1Store } from "./d1-store";
+import {
+  removeBookmarkImages,
+  runBookmarkExtraction,
+} from "./extraction";
 import type { Store } from "./store";
-import type { AuthContext, Bindings } from "./types";
+import type {
+  ArticleContentRecord,
+  AuthContext,
+  Bindings,
+  BookmarkRecord,
+} from "./types";
 import {
   bookmarkToApi,
   deriveFallbackTitle,
@@ -30,6 +39,13 @@ type AppEnv = {
     store: Store;
     auth: AuthContext;
   };
+};
+
+type BookmarkExtractor = typeof runBookmarkExtraction;
+
+type CreateAppOptions = {
+  store?: Store;
+  extractBookmark?: BookmarkExtractor;
 };
 
 function errorResponse(
@@ -200,10 +216,73 @@ function bookmarkSaveResponse(
   status: 200 | 201,
 ) {
   if (savedVia === "ios_shortcut") {
-    return c.json({ ok: true }, 200);
+    return c.body(null, 204);
   }
 
   return c.json({ item: bookmark }, status);
+}
+
+function articleContentToApi(content: ArticleContentRecord) {
+  return {
+    bookmark_id: content.bookmarkId,
+    content_html: content.contentHtml,
+    word_count: content.wordCount,
+    author: content.author,
+    published_date: content.publishedDate,
+    extraction_status: content.extractionStatus,
+    extraction_error: content.extractionError,
+    extracted_at: content.extractedAt,
+  };
+}
+
+function buildPendingArticleContent(
+  bookmark: BookmarkRecord,
+  existing: ArticleContentRecord | null,
+): ArticleContentRecord {
+  const now = nowIso();
+  return {
+    id: existing?.id ?? makeId(),
+    bookmarkId: bookmark.id,
+    userId: bookmark.userId,
+    contentHtml: null,
+    wordCount: 0,
+    author: null,
+    publishedDate: null,
+    extractionStatus: "pending",
+    extractionError: null,
+    extractedAt: null,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+}
+
+async function queueBookmarkExtraction(
+  c: Context<AppEnv>,
+  bookmark: BookmarkRecord,
+  extractBookmark: BookmarkExtractor,
+  force = false,
+) {
+  const store = c.get("store");
+  const existing = await store.getArticleContentByBookmarkId(bookmark.userId, bookmark.id);
+  if (
+    !force &&
+    (existing?.extractionStatus === "complete" ||
+      existing?.extractionStatus === "pending")
+  ) {
+    return existing.extractionStatus;
+  }
+
+  await store.upsertArticleContent(buildPendingArticleContent(bookmark, existing));
+  c.executionCtx.waitUntil(
+    extractBookmark({
+      env: c.env,
+      store,
+      bookmark,
+      force,
+    }),
+  );
+
+  return "pending";
 }
 
 function getAllowedOrigins(env: Bindings): string[] {
@@ -214,8 +293,9 @@ function getAllowedOrigins(env: Bindings): string[] {
   return [...new Set(values)];
 }
 
-export function createApp(options: { store?: Store } = {}) {
+export function createApp(options: CreateAppOptions = {}) {
   const app = new Hono<AppEnv>();
+  const extractBookmark = options.extractBookmark ?? runBookmarkExtraction;
 
   app.use("*", async (c, next) => {
     c.set("store", options.store ?? new D1Store(c.env.DB));
@@ -333,7 +413,10 @@ export function createApp(options: { store?: Store } = {}) {
   });
 
   app.use("/v1/*", async (c, next) => {
-    if (c.req.path === "/v1/auth/login") {
+    if (
+      c.req.path === "/v1/auth/login" ||
+      c.req.path.startsWith("/v1/images/")
+    ) {
       return next();
     }
 
@@ -519,6 +602,28 @@ export function createApp(options: { store?: Store } = {}) {
     });
   });
 
+  app.get("/v1/offline/bundle", async (c) => {
+    const parsed = parseListQuery(c);
+    if (parsed instanceof Response) {
+      return parsed;
+    }
+
+    const { user } = c.get("auth");
+    const result = await c.get("store").listOfflineBundle(user.id, {
+      cursor: parsed.cursor,
+      limit: parsed.limit,
+    });
+
+    return c.json({
+      items: result.items.map((item) => ({
+        bookmark: bookmarkToApi(item.bookmark),
+        content: item.content ? articleContentToApi(item.content) : null,
+      })),
+      next_cursor: result.nextCursor,
+      has_more: result.hasMore,
+    });
+  });
+
   app.get("/v1/bookmarks/by-url", async (c) => {
     const rawUrl = c.req.query("url");
     if (!rawUrl) {
@@ -618,6 +723,7 @@ export function createApp(options: { store?: Store } = {}) {
       } as const;
 
       await store.insertBookmark(bookmark);
+      const extractionStatus = await queueBookmarkExtraction(c, bookmark, extractBookmark);
       const responseStatus = bookmark.savedVia === "ios_shortcut" ? 204 : 201;
       debugLog(c, "bookmark.save.created", {
         auth_user_id: user.id,
@@ -629,7 +735,7 @@ export function createApp(options: { store?: Store } = {}) {
       return bookmarkSaveResponse(
         c,
         bookmark.savedVia,
-        bookmarkToApi(bookmark),
+        bookmarkToApi({ ...bookmark, extractionStatus }),
         201,
       );
     }
@@ -651,6 +757,7 @@ export function createApp(options: { store?: Store } = {}) {
     }
 
     await store.updateBookmark(nextBookmark);
+    const extractionStatus = await queueBookmarkExtraction(c, nextBookmark, extractBookmark);
     const responseStatus = nextBookmark.savedVia === "ios_shortcut" ? 204 : 200;
     debugLog(c, "bookmark.save.updated_existing", {
       auth_user_id: user.id,
@@ -662,7 +769,7 @@ export function createApp(options: { store?: Store } = {}) {
     return bookmarkSaveResponse(
       c,
       nextBookmark.savedVia,
-      bookmarkToApi(nextBookmark),
+      bookmarkToApi({ ...nextBookmark, extractionStatus }),
       200,
     );
   });
@@ -689,6 +796,77 @@ export function createApp(options: { store?: Store } = {}) {
     return c.json({ item: bookmarkToApi(bookmark) });
   });
 
+  app.post("/v1/bookmarks/:id/extract", async (c) => {
+    const { user } = c.get("auth");
+    const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
+    if (!bookmark) {
+      return errorResponse("not_found", "Bookmark not found", 404);
+    }
+
+    const force = c.req.query("force")?.toLowerCase() === "true";
+    const existing = await c.get("store").getArticleContentByBookmarkId(user.id, bookmark.id);
+    if (existing?.extractionStatus === "complete" && !force) {
+      return c.json({ extraction_status: existing.extractionStatus });
+    }
+
+    const extractionStatus = await queueBookmarkExtraction(
+      c,
+      bookmark,
+      extractBookmark,
+      force,
+    );
+
+    return c.json({ extraction_status: extractionStatus }, 202);
+  });
+
+  app.get("/v1/bookmarks/:id/content", async (c) => {
+    const { user } = c.get("auth");
+    const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
+    if (!bookmark) {
+      return errorResponse("not_found", "Bookmark not found", 404);
+    }
+
+    const content = await c.get("store").getArticleContentByBookmarkId(user.id, bookmark.id);
+    if (!content) {
+      return c.json({
+        item: articleContentToApi(buildPendingArticleContent(bookmark, null)),
+      });
+    }
+
+    return c.json({ item: articleContentToApi(content) });
+  });
+
+  app.delete("/v1/bookmarks/:id/content", async (c) => {
+    const { user } = c.get("auth");
+    const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
+    if (!bookmark) {
+      return errorResponse("not_found", "Bookmark not found", 404);
+    }
+
+    await c.get("store").deleteBookmarkContent(user.id, bookmark.id);
+    c.executionCtx.waitUntil(removeBookmarkImages(bookmark.id, c.env.IMAGES));
+    return c.body(null, 204);
+  });
+
+  app.get("/v1/images/articles/:bookmarkId/:hash", async (c) => {
+    if (!c.env.IMAGES) {
+      return errorResponse("not_found", "Image not found", 404);
+    }
+
+    const key = `articles/${c.req.param("bookmarkId")}/${c.req.param("hash")}`;
+    const object = await c.env.IMAGES.get(key);
+    if (!object) {
+      return errorResponse("not_found", "Image not found", 404);
+    }
+
+    return new Response(object.body, {
+      headers: {
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Type": object.httpMetadata?.contentType ?? "image/jpeg",
+      },
+    });
+  });
+
   app.delete("/v1/bookmarks/by-url", async (c) => {
     const rawUrl = c.req.query("url");
     if (!rawUrl) {
@@ -706,9 +884,13 @@ export function createApp(options: { store?: Store } = {}) {
       );
     }
 
-    await c
+    const deletedBookmark = await c
       .get("store")
       .deleteBookmarkByNormalizedUrl(c.get("auth").user.id, normalizedUrl);
+
+    if (deletedBookmark) {
+      c.executionCtx.waitUntil(removeBookmarkImages(deletedBookmark.id, c.env.IMAGES));
+    }
 
     return c.body(null, 204);
   });

@@ -11,6 +11,8 @@
   "dependencies": {
     "@url-keep/api-client": "0.0.0",
     "@url-keep/shared": "0.0.0",
+    "dompurify": "^3.2.7",
+    "idb": "^8.0.3",
     "lucide-react": "^0.577.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -18,6 +20,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^6.2.1"
+    "vite": "^6.2.1",
+    "vite-plugin-pwa": "^1.1.0"
   }
 }

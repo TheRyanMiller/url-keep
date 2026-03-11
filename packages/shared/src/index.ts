@@ -42,6 +42,49 @@ export const bookmarkSchema = z.object({
   saved_via: savedViaSchema,
   created_at: z.string(),
   updated_at: z.string(),
+  extraction_status: z.enum([
+    "pending",
+    "complete",
+    "failed",
+    "skipped",
+  ]).nullable().optional(),
+});
+
+export const extractionStatusSchema = z.enum([
+  "pending",
+  "complete",
+  "failed",
+  "skipped",
+]);
+
+export const articleContentSchema = z.object({
+  bookmark_id: z.string(),
+  content_html: z.string().nullable(),
+  word_count: z.number().int().nonnegative(),
+  author: z.string().nullable(),
+  published_date: z.string().nullable(),
+  extraction_status: extractionStatusSchema,
+  extracted_at: z.string().nullable(),
+  extraction_error: z.string().nullable().optional(),
+});
+
+export const articleContentResponseSchema = z.object({
+  item: articleContentSchema,
+});
+
+export const extractBookmarkResponseSchema = z.object({
+  extraction_status: extractionStatusSchema,
+});
+
+export const offlineBundleItemSchema = z.object({
+  bookmark: bookmarkSchema,
+  content: articleContentSchema.nullable(),
+});
+
+export const offlineBundleResponseSchema = z.object({
+  items: z.array(offlineBundleItemSchema),
+  next_cursor: z.string().nullable(),
+  has_more: z.boolean(),
 });
 
 export const errorResponseSchema = z.object({
@@ -121,6 +164,8 @@ export type InternalTitleSource = z.infer<typeof internalTitleSourceSchema>;
 export type User = z.infer<typeof userSchema>;
 export type TokenItem = z.infer<typeof tokenItemSchema>;
 export type Bookmark = z.infer<typeof bookmarkSchema>;
+export type ExtractionStatus = z.infer<typeof extractionStatusSchema>;
+export type ArticleContent = z.infer<typeof articleContentSchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type LoginResponse = z.infer<typeof loginResponseSchema>;
@@ -130,6 +175,10 @@ export type CreateTokenRequest = z.infer<typeof createTokenRequestSchema>;
 export type CreateTokenResponse = z.infer<typeof createTokenResponseSchema>;
 export type BookmarkListResponse = z.infer<typeof bookmarkListResponseSchema>;
 export type BookmarkResponse = z.infer<typeof bookmarkResponseSchema>;
+export type ArticleContentResponse = z.infer<typeof articleContentResponseSchema>;
+export type ExtractBookmarkResponse = z.infer<typeof extractBookmarkResponseSchema>;
+export type OfflineBundleItem = z.infer<typeof offlineBundleItemSchema>;
+export type OfflineBundleResponse = z.infer<typeof offlineBundleResponseSchema>;
 export type CreateBookmarkRequest = z.infer<typeof createBookmarkRequestSchema>;
 export type UpdateBookmarkTitleRequest = z.infer<
   typeof updateBookmarkTitleRequestSchema

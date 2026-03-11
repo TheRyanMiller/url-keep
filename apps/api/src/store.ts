@@ -1,8 +1,10 @@
 import type {
   AccessTokenRecord,
+  ArticleContentRecord,
   BookmarkRecord,
   ListBookmarksOptions,
   ListBookmarksResult,
+  OfflineBundleResult,
   UserRecord,
 } from "./types";
 
@@ -29,10 +31,20 @@ export interface Store {
     userId: string,
     options: ListBookmarksOptions,
   ): Promise<ListBookmarksResult>;
+  listOfflineBundle(
+    userId: string,
+    options: Pick<ListBookmarksOptions, "limit" | "cursor">,
+  ): Promise<OfflineBundleResult>;
   insertBookmark(bookmark: BookmarkRecord): Promise<void>;
   updateBookmark(bookmark: BookmarkRecord): Promise<void>;
+  getArticleContentByBookmarkId(
+    userId: string,
+    bookmarkId: string,
+  ): Promise<ArticleContentRecord | null>;
+  upsertArticleContent(content: ArticleContentRecord): Promise<void>;
+  deleteBookmarkContent(userId: string, bookmarkId: string): Promise<void>;
   deleteBookmarkByNormalizedUrl(
     userId: string,
     normalizedUrl: string,
-  ): Promise<void>;
+  ): Promise<BookmarkRecord | null>;
 }

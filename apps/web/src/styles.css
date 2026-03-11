@@ -44,6 +44,12 @@ input {
   color: var(--fg);
 }
 
+button:disabled,
+input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 button {
   cursor: pointer;
   min-height: 44px;
@@ -57,7 +63,11 @@ input {
 .page {
   max-width: 920px;
   margin: 0 auto;
-  padding: 24px 16px 48px;
+  padding:
+    calc(24px + env(safe-area-inset-top, 0))
+    calc(16px + env(safe-area-inset-right, 0))
+    calc(48px + env(safe-area-inset-bottom, 0))
+    calc(16px + env(safe-area-inset-left, 0));
 }
 
 .page.narrow {
@@ -219,6 +229,19 @@ input {
   min-width: 64px;
 }
 
+.bookmark-actions {
+  align-items: flex-end;
+  display: grid;
+  gap: 8px;
+}
+
+.bookmark-read-link {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .bookmark-image {
   width: 120px;
   height: 72px;
@@ -230,11 +253,23 @@ input {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .nav-sep {
   color: var(--muted);
   font-size: 11px;
+}
+
+.offline-badge {
+  border: 1px solid var(--border);
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 11px;
+  line-height: 1;
+  min-height: 28px;
+  padding: 8px 10px;
+  text-transform: uppercase;
 }
 
 .inline-actions {
@@ -293,6 +328,111 @@ input {
 .icon-action--danger:hover,
 .icon-action--danger:focus-visible {
   background: rgba(204, 0, 0, 0.06);
+}
+
+.reader-page {
+  max-width: 760px;
+}
+
+.reader-nav {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+}
+
+.reader-shell {
+  display: grid;
+  gap: 24px;
+}
+
+.reader-header {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 12px;
+  padding-bottom: 16px;
+}
+
+.reader-header h1 {
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.reader-meta {
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 11px;
+  gap: 8px 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.reader-content {
+  display: grid;
+  gap: 16px;
+  line-height: 1.75;
+  max-width: 65ch;
+}
+
+.reader-content > :first-child {
+  margin-top: 0;
+}
+
+.reader-content > :last-child {
+  margin-bottom: 0;
+}
+
+.reader-content h1,
+.reader-content h2,
+.reader-content h3,
+.reader-content h4,
+.reader-content h5,
+.reader-content h6 {
+  line-height: 1.35;
+  margin: 1.2em 0 0.5em;
+}
+
+.reader-content p,
+.reader-content ul,
+.reader-content ol,
+.reader-content blockquote,
+.reader-content pre,
+.reader-content table,
+.reader-content figure {
+  margin: 0;
+}
+
+.reader-content a {
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.reader-content img {
+  border: 1px solid var(--subtle-border);
+  display: block;
+  height: auto;
+  max-width: 100%;
+}
+
+.reader-content blockquote,
+.reader-content pre,
+.reader-content table {
+  border: 1px solid var(--subtle-border);
+  overflow-x: auto;
+  padding: 12px;
+}
+
+.reader-empty {
+  border: 1px solid var(--subtle-border);
+  color: var(--muted);
+  padding: 16px;
+}
+
+.reader-footer {
+  border-top: 1px solid var(--subtle-border);
+  padding-top: 16px;
 }
 
 .inline-edit {
@@ -378,6 +518,14 @@ input {
     min-width: 0;
   }
 
+  .bookmark-actions {
+    align-items: flex-start;
+  }
+
+  .bookmark-read-link {
+    justify-content: flex-start;
+  }
+
   .row-between {
     flex-direction: column;
   }
@@ -385,5 +533,11 @@ input {
   .bookmark-image {
     width: 96px;
     height: 64px;
+  }
+
+  .reader-nav {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
   }
 }

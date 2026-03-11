@@ -1,7 +1,12 @@
-import type { InternalTitleSource, SavedVia } from "@url-keep/shared";
+import type {
+  ExtractionStatus,
+  InternalTitleSource,
+  SavedVia,
+} from "@url-keep/shared";
 
 export type Bindings = {
   DB: D1Database;
+  IMAGES?: R2Bucket;
   APP_ORIGIN?: string;
   DEBUG_LOGS?: string;
   API_ORIGIN?: string;
@@ -40,6 +45,22 @@ export type BookmarkRecord = {
   savedVia: SavedVia;
   createdAt: string;
   updatedAt: string;
+  extractionStatus?: ExtractionStatus | null;
+};
+
+export type ArticleContentRecord = {
+  id: string;
+  bookmarkId: string;
+  userId: string;
+  contentHtml: string | null;
+  wordCount: number;
+  author: string | null;
+  publishedDate: string | null;
+  extractionStatus: ExtractionStatus;
+  extractionError: string | null;
+  extractedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ListBookmarksOptions = {
@@ -51,6 +72,17 @@ export type ListBookmarksOptions = {
 export type ListBookmarksResult = {
   items: BookmarkRecord[];
   nextCursor: string | null;
+};
+
+export type OfflineBundleItemRecord = {
+  bookmark: BookmarkRecord;
+  content: ArticleContentRecord | null;
+};
+
+export type OfflineBundleResult = {
+  items: OfflineBundleItemRecord[];
+  nextCursor: string | null;
+  hasMore: boolean;
 };
 
 export type AuthContext = {

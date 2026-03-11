@@ -1,12 +1,20 @@
-import { UrlKeepClient, ApiError } from "@url-keep/api-client";
-import { Check, PencilLine, Trash2, X } from "lucide-react";
+import { ApiError, UrlKeepClient } from "@url-keep/api-client";
+import {
+  BookOpen,
+  Check,
+  PencilLine,
+  Trash2,
+  X,
+} from "lucide-react";
 import type {
+  ArticleContent,
   Bookmark,
   CreateBookmarkRequest,
   LoginResponse,
   TokenItem,
   User,
 } from "@url-keep/shared";
+import DOMPurify from "dompurify";
 import {
   Navigate,
   Link,
@@ -14,6 +22,7 @@ import {
   Routes,
   useLocation,
   useNavigate,
+  useParams,
   useSearchParams,
 } from "react-router-dom";
 import {
@@ -25,9 +34,52 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
+import { useOnlineStatus } from "./hooks/useOnlineStatus";
+import { getOfflineDb } from "./offline/db";
+import { SyncManager } from "./offline/sync";
 
 const TOKEN_KEY = "url_keep_token";
+const USER_KEY = "url_keep_user";
 const IOS_SHORTCUT_TOKEN_NAME = "iphone shortcut";
+const ALLOWED_TAGS = [
+  "p",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "ul",
+  "ol",
+  "li",
+  "a",
+  "img",
+  "blockquote",
+  "pre",
+  "code",
+  "em",
+  "strong",
+  "b",
+  "i",
+  "br",
+  "hr",
+  "figure",
+  "figcaption",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+  "sup",
+  "sub",
+  "del",
+];
+const ALLOWED_ATTR = ["href", "src", "alt", "title"];
+
+type ReaderLocationState = {
+  bookmark?: Bookmark;
+};
 
 function readStoredToken(): string | null {
   try {
@@ -45,7 +97,33 @@ function writeStoredToken(token: string | null) {
       window.localStorage.removeItem(TOKEN_KEY);
     }
   } catch {
-    // Keep the in-memory auth state even if storage is unavailable.
+    // Ignore storage errors and keep in-memory auth.
+  }
+}
+
+function readStoredUser(): User | null {
+  try {
+    const raw = window.localStorage.getItem(USER_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as User;
+    return parsed?.id && parsed?.email ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredUser(user: User | null) {
+  try {
+    if (user) {
+      window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+    } else {
+      window.localStorage.removeItem(USER_KEY);
+    }
+  } catch {
+    // Ignore storage errors and keep in-memory auth.
   }
 }
 
@@ -80,8 +158,7 @@ function normalizeOptionalAbsoluteUrl(value: string | undefined) {
   }
 
   try {
-    const url = new URL(trimmed);
-    return url.toString();
+    return new URL(trimmed).toString();
   } catch {
     return null;
   }
@@ -101,7 +178,16 @@ type AuthState = {
   logout: () => Promise<void>;
 };
 
+type OfflineState = {
+  online: boolean;
+  syncing: boolean;
+  syncVersion: number;
+  manager: SyncManager;
+  refresh: (force?: boolean) => Promise<void>;
+};
+
 const AuthContext = createContext<AuthState | null>(null);
+const OfflineContext = createContext<OfflineState | null>(null);
 
 function useAuth() {
   const value = useContext(AuthContext);
@@ -111,8 +197,33 @@ function useAuth() {
   return value;
 }
 
+function useOffline() {
+  const value = useContext(OfflineContext);
+  if (!value) {
+    throw new Error("OfflineContext not found");
+  }
+  return value;
+}
+
 function formatDate(value: string) {
   return new Date(value).toLocaleDateString();
+}
+
+function formatOptionalDate(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+}
+
+function formatError(caught: unknown, fallback: string) {
+  return caught instanceof ApiError
+    ? caught.message
+    : caught instanceof Error
+      ? caught.message
+      : fallback;
 }
 
 function getDomain(value: string) {
@@ -121,6 +232,36 @@ function getDomain(value: string) {
   } catch {
     return value;
   }
+}
+
+function filterBookmarks(bookmarks: Bookmark[], query: string) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return bookmarks;
+  }
+
+  return bookmarks.filter((bookmark) =>
+    [bookmark.title, bookmark.url, bookmark.site_name ?? ""]
+      .join(" ")
+      .toLowerCase()
+      .includes(needle)
+  );
+}
+
+function estimateReadMinutes(wordCount: number) {
+  return Math.max(1, Math.ceil(wordCount / 230));
+}
+
+function resolveArticleHtml(contentHtml: string) {
+  return contentHtml.replaceAll('src="/v1/images/', `src="${API_ORIGIN}/v1/images/`);
+}
+
+function sanitizeArticleHtml(contentHtml: string) {
+  return DOMPurify.sanitize(resolveArticleHtml(contentHtml), {
+    ALLOWED_TAGS,
+    ALLOWED_ATTR,
+    ADD_ATTR: ["target", "rel"],
+  });
 }
 
 function BrandLogo() {
@@ -133,12 +274,15 @@ function BrandLogo() {
 
 function Nav() {
   const auth = useAuth();
+  const offline = useOffline();
+
   return (
     <nav className="nav">
+      {!offline.online ? <span className="offline-badge">offline</span> : null}
       <Link className="text-action" to="/add">add url</Link>
-      <span className="nav-sep" aria-hidden="true">|</span>
+      <span aria-hidden="true" className="nav-sep">|</span>
       <Link className="text-action" to="/profile">profile</Link>
-      <span className="nav-sep" aria-hidden="true">|</span>
+      <span aria-hidden="true" className="nav-sep">|</span>
       <button className="text-action" onClick={() => void auth.logout()} type="button">
         log out
       </button>
@@ -148,7 +292,7 @@ function Nav() {
 
 function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setTokenState] = useState<string | null>(() => readStoredToken());
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(() => readStoredUser());
   const [loading, setLoading] = useState(true);
 
   const client = useMemo(
@@ -165,12 +309,14 @@ function AuthProvider({ children }: { children: ReactNode }) {
     writeStoredToken(value);
     if (!value) {
       setUser(null);
+      writeStoredUser(null);
     }
   };
 
   const refreshMe = async () => {
     if (!token) {
       setUser(null);
+      writeStoredUser(null);
       setLoading(false);
       return;
     }
@@ -178,6 +324,7 @@ function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await client.me();
       setUser(response.user);
+      writeStoredUser(response.user);
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 401) {
         setToken(null);
@@ -191,13 +338,14 @@ function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await client.logout();
     } catch {
-      // Ignore logout failures; local auth still needs clearing.
+      // Local auth still needs clearing even if the network request fails.
     } finally {
       setToken(null);
     }
   };
 
   useEffect(() => {
+    setLoading(true);
     void refreshMe();
   }, [token]);
 
@@ -207,6 +355,72 @@ function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+function OfflineProvider({ children }: { children: ReactNode }) {
+  const auth = useAuth();
+  const online = useOnlineStatus();
+  const [syncing, setSyncing] = useState(false);
+  const [syncVersion, setSyncVersion] = useState(0);
+
+  const manager = useMemo(
+    () => new SyncManager(auth.client, API_ORIGIN),
+    [auth.client],
+  );
+
+  const refresh = async (force = false) => {
+    if (!auth.token || !online) {
+      return;
+    }
+
+    if (!force && !(await manager.isStale())) {
+      return;
+    }
+
+    setSyncing(true);
+    try {
+      await manager.sync();
+      setSyncVersion((current) => current + 1);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!auth.token || !online) {
+      return;
+    }
+
+    void refresh(true);
+  }, [auth.token, online, manager]);
+
+  useEffect(() => {
+    if (!auth.token || !online) {
+      return;
+    }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void refresh();
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [auth.token, online, manager]);
+
+  const value = useMemo<OfflineState>(
+    () => ({
+      online,
+      syncing,
+      syncVersion,
+      manager,
+      refresh,
+    }),
+    [online, syncing, syncVersion, manager, refresh],
+  );
+
+  return <OfflineContext.Provider value={value}>{children}</OfflineContext.Provider>;
 }
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -219,7 +433,7 @@ function RequireAuth({ children }: { children: ReactNode }) {
 
   if (!auth.token) {
     const redirect = `${location.pathname}${location.search}`;
-    return <Navigate to={`/login?redirect=${encodeURIComponent(redirect)}`} replace />;
+    return <Navigate replace to={`/login?redirect=${encodeURIComponent(redirect)}`} />;
   }
 
   return <>{children}</>;
@@ -245,11 +459,10 @@ function LoginPage() {
         client_name: "web app",
       });
       auth.setToken(response.token);
+      writeStoredUser(response.user);
       navigate(redirect, { replace: true });
     } catch (caught) {
-      setError(
-        caught instanceof ApiError ? caught.message : "login failed",
-      );
+      setError(formatError(caught, "login failed"));
     }
   };
 
@@ -308,10 +521,12 @@ function BookmarkImage({ src, alt }: { src?: string | null; alt: string }) {
 
 function BookmarkRow({
   bookmark,
+  online,
   onDelete,
   onTitleUpdated,
 }: {
   bookmark: Bookmark;
+  online: boolean;
   onDelete: (bookmark: Bookmark) => Promise<void>;
   onTitleUpdated: (bookmark: Bookmark, title: string) => Promise<void>;
 }) {
@@ -326,7 +541,10 @@ function BookmarkRow({
   }, [bookmark.title]);
 
   useEffect(() => {
-    if (!deleteArmed) return;
+    if (!deleteArmed) {
+      return;
+    }
+
     const id = setTimeout(() => setDeleteArmed(false), 3000);
     return () => clearTimeout(id);
   }, [deleteArmed]);
@@ -342,7 +560,7 @@ function BookmarkRow({
       await onTitleUpdated(bookmark, title.trim());
       setEditing(false);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "save failed");
+      setError(formatError(caught, "save failed"));
     } finally {
       setBusy(false);
     }
@@ -353,6 +571,9 @@ function BookmarkRow({
       <div className="bookmark-meta">
         <span>{formatDate(bookmark.created_at)}</span>
         <span>{bookmark.saved_via}</span>
+        {bookmark.extraction_status && bookmark.extraction_status !== "complete" ? (
+          <span>{bookmark.extraction_status}</span>
+        ) : null}
       </div>
       <div className="bookmark-main">
         <div className={`bookmark-content${bookmark.image_url ? " has-image" : ""}`}>
@@ -362,6 +583,7 @@ function BookmarkRow({
               <div className="inline-edit">
                 <input
                   aria-label="title"
+                  disabled={!online || busy}
                   value={title}
                   onChange={(event) => setTitle(event.target.value)}
                   onKeyDown={(event) => {
@@ -393,63 +615,77 @@ function BookmarkRow({
         {error ? <p className="error">{error}</p> : null}
       </div>
       <div className="bookmark-side">
-        <div className="icon-actions">
-          {editing ? (
-            <button
-              aria-label="save title"
-              className="icon-action icon-action--confirm"
-              disabled={busy}
-              onClick={() => void saveEdit()}
-              title="Save title"
-              type="button"
+        <div className="bookmark-actions">
+          {bookmark.extraction_status === "complete" ? (
+            <Link
+              className="text-action bookmark-read-link"
+              state={{ bookmark }}
+              to={`/read/${bookmark.id}`}
             >
-              <Check aria-hidden="true" size={16} strokeWidth={2.25} />
-            </button>
-          ) : (
-            <button
-              aria-label="edit title"
-              className="icon-action"
-              onClick={() => {
-                setDeleteArmed(false);
-                setEditing(true);
-              }}
-              title="Edit title"
-              type="button"
-            >
-              <PencilLine aria-hidden="true" size={16} strokeWidth={1.75} />
-            </button>
-          )}
+              <BookOpen aria-hidden="true" size={14} strokeWidth={1.75} />
+              <span>read</span>
+            </Link>
+          ) : null}
+          <div className="icon-actions">
+            {editing ? (
+              <button
+                aria-label="save title"
+                className="icon-action icon-action--confirm"
+                disabled={!online || busy}
+                onClick={() => void saveEdit()}
+                title="Save title"
+                type="button"
+              >
+                <Check aria-hidden="true" size={16} strokeWidth={2.25} />
+              </button>
+            ) : (
+              <button
+                aria-label="edit title"
+                className="icon-action"
+                disabled={!online}
+                onClick={() => {
+                  setDeleteArmed(false);
+                  setEditing(true);
+                }}
+                title={online ? "Edit title" : "Editing requires a connection"}
+                type="button"
+              >
+                <PencilLine aria-hidden="true" size={16} strokeWidth={1.75} />
+              </button>
+            )}
 
-          {editing ? (
-            <button
-              aria-label="cancel edit"
-              className="icon-action"
-              onClick={() => {
-                setEditing(false);
-                setTitle(bookmark.title);
-              }}
-              title="Cancel edit"
-              type="button"
-            >
-              <X aria-hidden="true" size={16} strokeWidth={1.75} />
-            </button>
-          ) : (
-            <button
-              aria-label={deleteArmed ? "confirm delete" : "delete bookmark"}
-              className={`icon-action${deleteArmed ? " icon-action--danger" : ""}`}
-              onClick={() => {
-                if (deleteArmed) {
-                  void onDelete(bookmark);
-                } else {
-                  setDeleteArmed(true);
-                }
-              }}
-              title={deleteArmed ? "Confirm delete" : "Delete bookmark"}
-              type="button"
-            >
-              <Trash2 aria-hidden="true" size={16} strokeWidth={deleteArmed ? 2.25 : 1.75} />
-            </button>
-          )}
+            {editing ? (
+              <button
+                aria-label="cancel edit"
+                className="icon-action"
+                onClick={() => {
+                  setEditing(false);
+                  setTitle(bookmark.title);
+                }}
+                title="Cancel edit"
+                type="button"
+              >
+                <X aria-hidden="true" size={16} strokeWidth={1.75} />
+              </button>
+            ) : (
+              <button
+                aria-label={deleteArmed ? "confirm delete" : "delete bookmark"}
+                className={`icon-action${deleteArmed ? " icon-action--danger" : ""}`}
+                disabled={!online}
+                onClick={() => {
+                  if (deleteArmed) {
+                    void onDelete(bookmark);
+                  } else {
+                    setDeleteArmed(true);
+                  }
+                }}
+                title={online ? (deleteArmed ? "Confirm delete" : "Delete bookmark") : "Deleting requires a connection"}
+                type="button"
+              >
+                <Trash2 aria-hidden="true" size={16} strokeWidth={deleteArmed ? 2.25 : 1.75} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </article>
@@ -458,27 +694,39 @@ function BookmarkRow({
 
 function MainPage() {
   const auth = useAuth();
+  const offline = useOffline();
   const [searchParams, setSearchParams] = useSearchParams();
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const query = searchParams.get("q") ?? "";
 
+  const loadOfflineBookmarks = async () => {
+    const items = await offline.manager.getBookmarks();
+    setBookmarks(filterBookmarks(items, query));
+  };
+
   const loadBookmarks = async () => {
     setLoading(true);
     setError(null);
+
+    if (!offline.online) {
+      await loadOfflineBookmarks();
+      setLoading(false);
+      return;
+    }
+
     try {
       const response = await auth.client.listBookmarks({
         q: query || undefined,
       });
       setBookmarks(response.items);
     } catch (caught) {
-      const detail = caught instanceof ApiError
-        ? `ApiError(${caught.status}, ${caught.code}): ${caught.message}`
-        : caught instanceof Error
-          ? `${caught.constructor.name}: ${caught.message}`
-          : String(caught);
-      setError(detail);
+      if (caught instanceof ApiError && caught.status === 0) {
+        await loadOfflineBookmarks();
+      } else {
+        setError(formatError(caught, "load failed"));
+      }
     } finally {
       setLoading(false);
     }
@@ -486,18 +734,27 @@ function MainPage() {
 
   useEffect(() => {
     void loadBookmarks();
-  }, [query]);
+  }, [query, offline.online, offline.syncVersion]);
 
   const onDeleteConfirm = async (bookmark: Bookmark) => {
+    if (!offline.online) {
+      setError("deleting requires a connection");
+      return;
+    }
+
     try {
       await auth.client.deleteBookmarkByUrl(bookmark.url);
       setBookmarks((current) => current.filter((item) => item.id !== bookmark.id));
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "delete failed");
+      setError(formatError(caught, "delete failed"));
     }
   };
 
   const onTitleUpdated = async (bookmark: Bookmark, title: string) => {
+    if (!offline.online) {
+      throw new Error("editing requires a connection");
+    }
+
     const response = await auth.client.updateBookmarkTitle(bookmark.id, { title });
     setBookmarks((current) =>
       current.map((item) => (item.id === bookmark.id ? response.item : item)),
@@ -522,6 +779,12 @@ function MainPage() {
       </header>
 
       <section className="toolbar">
+        {!offline.online ? (
+          <p className="muted block-muted">offline mode is read-only</p>
+        ) : null}
+        {offline.syncing ? (
+          <p className="muted block-muted">syncing offline cache</p>
+        ) : null}
         <input
           aria-label="search"
           placeholder="search"
@@ -538,6 +801,7 @@ function MainPage() {
           <BookmarkRow
             key={bookmark.id}
             bookmark={bookmark}
+            online={offline.online}
             onDelete={onDeleteConfirm}
             onTitleUpdated={onTitleUpdated}
           />
@@ -549,6 +813,7 @@ function MainPage() {
 
 function AddPage() {
   const auth = useAuth();
+  const offline = useOffline();
   const [urlInput, setUrlInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -557,6 +822,12 @@ function AddPage() {
     event.preventDefault();
     setError(null);
     setSaved(false);
+
+    if (!offline.online) {
+      setError("saving requires a connection");
+      return;
+    }
+
     try {
       await auth.client.saveBookmark({
         url: urlInput,
@@ -564,8 +835,9 @@ function AddPage() {
       } as CreateBookmarkRequest);
       setSaved(true);
       setUrlInput("");
+      void offline.refresh(true);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "save failed");
+      setError(formatError(caught, "save failed"));
     }
   };
 
@@ -587,9 +859,10 @@ function AddPage() {
             }}
           />
         </label>
-        <button className="button" type="submit">
+        <button className="button" disabled={!offline.online} type="submit">
           save
         </button>
+        {!offline.online ? <p className="muted">saving requires a connection</p> : null}
         {saved ? <p>saved</p> : null}
         {error ? <p className="error">{error}</p> : null}
       </form>
@@ -599,6 +872,7 @@ function AddPage() {
 
 function MobileSavePage() {
   const auth = useAuth();
+  const offline = useOffline();
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -617,14 +891,21 @@ function MobileSavePage() {
     event.preventDefault();
     setError(null);
     setMessage(null);
+
+    if (!offline.online) {
+      setError("saving requires a connection");
+      return;
+    }
+
     try {
       await auth.client.saveBookmark({
         url: urlInput,
         saved_via: "mobile_web",
       });
       setMessage("saved");
+      void offline.refresh(true);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : "save failed");
+      setError(formatError(caught, "save failed"));
     }
   };
 
@@ -644,9 +925,10 @@ function MobileSavePage() {
             onChange={(event) => setUrlInput(event.target.value)}
           />
         </label>
-        <button className="button" type="submit">
+        <button className="button" disabled={!offline.online} type="submit">
           save
         </button>
+        {!offline.online ? <p className="muted">saving requires a connection</p> : null}
         {message ? <p>{message}</p> : null}
         {error ? <p className="error">{error}</p> : null}
       </form>
@@ -655,16 +937,21 @@ function MobileSavePage() {
 }
 
 function TokenRow({
+  online,
   token,
   onRevoke,
 }: {
+  online: boolean;
   token: TokenItem;
   onRevoke: (id: string) => Promise<void>;
 }) {
   const [armed, setArmed] = useState(false);
 
   useEffect(() => {
-    if (!armed) return;
+    if (!armed) {
+      return;
+    }
+
     const id = setTimeout(() => setArmed(false), 3000);
     return () => clearTimeout(id);
   }, [armed]);
@@ -678,6 +965,7 @@ function TokenRow({
         <button
           aria-label={armed ? "confirm revoke" : "revoke token"}
           className={`icon-action${armed ? " icon-action--danger" : ""}`}
+          disabled={!online}
           onClick={() => {
             if (armed) {
               void onRevoke(token.id);
@@ -685,7 +973,7 @@ function TokenRow({
               setArmed(true);
             }
           }}
-          title={armed ? "Confirm revoke" : "Revoke token"}
+          title={online ? (armed ? "Confirm revoke" : "Revoke token") : "Revoking requires a connection"}
           type="button"
         >
           <Trash2 aria-hidden="true" size={16} strokeWidth={armed ? 2.25 : 1.75} />
@@ -697,6 +985,7 @@ function TokenRow({
 
 function ProfilePage() {
   const auth = useAuth();
+  const offline = useOffline();
 
   const [showPasswordForm, setShowPasswordForm] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -713,22 +1002,31 @@ function ProfilePage() {
   const [copied, setCopied] = useState(false);
 
   const loadTokens = async () => {
+    if (!offline.online) {
+      return;
+    }
+
     try {
       const response = await auth.client.listTokens();
       setTokens(response.items);
     } catch (caught) {
-      setTokenError(caught instanceof ApiError ? caught.message : "load failed");
+      setTokenError(formatError(caught, "load failed"));
     }
   };
 
   useEffect(() => {
     void loadTokens();
-  }, []);
+  }, [offline.online]);
 
   const onChangePassword = async (event: FormEvent) => {
     event.preventDefault();
     setPasswordError(null);
     setPasswordSuccess(false);
+
+    if (!offline.online) {
+      setPasswordError("updating password requires a connection");
+      return;
+    }
 
     if (newPassword !== confirmPassword) {
       setPasswordError("passwords do not match");
@@ -745,7 +1043,7 @@ function ProfilePage() {
       setNewPassword("");
       setConfirmPassword("");
     } catch (caught) {
-      setPasswordError(caught instanceof ApiError ? caught.message : "update failed");
+      setPasswordError(formatError(caught, "update failed"));
     }
   };
 
@@ -753,19 +1051,31 @@ function ProfilePage() {
     event.preventDefault();
     setTokenError(null);
     setCopied(false);
+
+    if (!offline.online) {
+      setTokenError("creating tokens requires a connection");
+      return;
+    }
+
     try {
       const response = await auth.client.createToken({ name: tokenName });
       setCreatedToken(response.token);
       setTokenName(IOS_SHORTCUT_TOKEN_NAME);
       await loadTokens();
     } catch (caught) {
-      setTokenError(caught instanceof ApiError ? caught.message : "create failed");
+      setTokenError(formatError(caught, "create failed"));
     }
   };
 
   const onCreateShortcutToken = async () => {
     setTokenError(null);
     setCopied(false);
+
+    if (!offline.online) {
+      setTokenError("creating tokens requires a connection");
+      return;
+    }
+
     try {
       const response = await auth.client.createToken({
         name: IOS_SHORTCUT_TOKEN_NAME,
@@ -773,12 +1083,15 @@ function ProfilePage() {
       setCreatedToken(response.token);
       await loadTokens();
     } catch (caught) {
-      setTokenError(caught instanceof ApiError ? caught.message : "create failed");
+      setTokenError(formatError(caught, "create failed"));
     }
   };
 
   const onCopyToken = async () => {
-    if (!createdToken) return;
+    if (!createdToken) {
+      return;
+    }
+
     try {
       await navigator.clipboard.writeText(createdToken);
       setCopied(true);
@@ -788,11 +1101,16 @@ function ProfilePage() {
   };
 
   const onRevoke = async (id: string) => {
+    if (!offline.online) {
+      setTokenError("revoking tokens requires a connection");
+      return;
+    }
+
     try {
       await auth.client.revokeToken(id);
       await loadTokens();
     } catch (caught) {
-      setTokenError(caught instanceof ApiError ? caught.message : "revoke failed");
+      setTokenError(formatError(caught, "revoke failed"));
     }
   };
 
@@ -803,13 +1121,17 @@ function ProfilePage() {
         <Nav />
       </header>
 
+      {!offline.online ? (
+        <p className="muted block-muted">profile changes require a connection</p>
+      ) : null}
+
       <section className="profile-section">
         <h2 className="section-title">account</h2>
-        <p>{auth.user?.email}</p>
+        <p>{auth.user?.email ?? "signed in"}</p>
         <button
           className="text-action"
           onClick={() => {
-            setShowPasswordForm((v) => !v);
+            setShowPasswordForm((value) => !value);
             setPasswordError(null);
             setPasswordSuccess(false);
           }}
@@ -846,7 +1168,7 @@ function ProfilePage() {
                 onChange={(event) => setConfirmPassword(event.target.value)}
               />
             </label>
-            <button className="button" type="submit">
+            <button className="button" disabled={!offline.online} type="submit">
               update password
             </button>
             {passwordSuccess ? <p>password updated</p> : null}
@@ -865,7 +1187,7 @@ function ProfilePage() {
             directly to url-keep.
           </p>
           <div className="inline-actions">
-            <button className="button" onClick={() => void onCreateShortcutToken()} type="button">
+            <button className="button" disabled={!offline.online} onClick={() => void onCreateShortcutToken()} type="button">
               create iphone token
             </button>
             {IOS_SHORTCUT_URL ? (
@@ -891,7 +1213,7 @@ function ProfilePage() {
             <span>name</span>
             <input value={tokenName} onChange={(event) => setTokenName(event.target.value)} />
           </label>
-          <button className="button" type="submit">
+          <button className="button" disabled={!offline.online} type="submit">
             create token
           </button>
         </form>
@@ -922,7 +1244,7 @@ function ProfilePage() {
 
         <button
           className="text-action"
-          onClick={() => setShowTokenList((v) => !v)}
+          onClick={() => setShowTokenList((value) => !value)}
           type="button"
         >
           {showTokenList ? "hide tokens" : `show all tokens (${tokens.length})`}
@@ -931,11 +1253,158 @@ function ProfilePage() {
         {showTokenList ? (
           <section className="token-list">
             {tokens.map((token) => (
-              <TokenRow key={token.id} token={token} onRevoke={onRevoke} />
+              <TokenRow key={token.id} online={offline.online} token={token} onRevoke={onRevoke} />
             ))}
           </section>
         ) : null}
       </section>
+    </div>
+  );
+}
+
+function ReaderPage() {
+  const auth = useAuth();
+  const offline = useOffline();
+  const { id } = useParams();
+  const location = useLocation();
+  const state = (location.state as ReaderLocationState | null) ?? null;
+  const [bookmark, setBookmark] = useState<Bookmark | null>(state?.bookmark ?? null);
+  const [article, setArticle] = useState<ArticleContent | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+
+    const load = async () => {
+      if (!id) {
+        setError("bookmark not found");
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setError(null);
+
+      const [cachedBookmark, cachedArticle] = await Promise.all([
+        offline.manager.getBookmark(id),
+        offline.manager.getArticle(id),
+      ]);
+
+      if (!active) {
+        return;
+      }
+
+      if (cachedBookmark) {
+        setBookmark(cachedBookmark);
+      }
+      if (cachedArticle) {
+        setArticle(cachedArticle);
+      }
+
+      if (!offline.online) {
+        if (!cachedBookmark || !cachedArticle) {
+          setError("article not available offline");
+        }
+        setLoading(false);
+        return;
+      }
+
+      try {
+        if (!cachedBookmark) {
+          await offline.refresh(true);
+          const syncedBookmark = await offline.manager.getBookmark(id);
+          if (active && syncedBookmark) {
+            setBookmark(syncedBookmark);
+          }
+        }
+
+        const response = await auth.client.getBookmarkContent(id);
+        if (!active) {
+          return;
+        }
+
+        setArticle(response.item);
+        const db = await getOfflineDb();
+        await db.put("articles", {
+          ...response.item,
+          synced_at: new Date().toISOString(),
+        });
+      } catch (caught) {
+        if (caught instanceof ApiError && caught.status === 0) {
+          if (!cachedArticle) {
+            setError("article not available offline");
+          }
+        } else {
+          setError(formatError(caught, "load failed"));
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void load();
+
+    return () => {
+      active = false;
+    };
+  }, [id, offline.online, offline.syncVersion]);
+
+  const html = article?.content_html ? sanitizeArticleHtml(article.content_html) : null;
+  const publishedDate = formatOptionalDate(article?.published_date);
+  const readMinutes = article ? estimateReadMinutes(article.word_count) : null;
+
+  return (
+    <div className="page reader-page">
+      <header className="page-header row-between">
+        <div className="reader-nav">
+          <Link className="text-action" to="/">back</Link>
+          <BrandLogo />
+        </div>
+        {!offline.online ? <span className="offline-badge">offline</span> : null}
+      </header>
+
+      {loading ? <p>loading</p> : null}
+      {error ? <p className="error">{error}</p> : null}
+
+      {bookmark ? (
+        <article className="reader-shell">
+          <header className="reader-header">
+            <h1>{bookmark.title}</h1>
+            <div className="reader-meta">
+              {article?.author ? <span>{article.author}</span> : null}
+              {article ? <span>{article.word_count.toLocaleString()} words</span> : null}
+              {readMinutes ? <span>{readMinutes} min read</span> : null}
+              {bookmark.site_name ? <span>{bookmark.site_name}</span> : null}
+              {publishedDate ? <span>{publishedDate}</span> : null}
+            </div>
+          </header>
+
+          {article?.extraction_status === "complete" && html ? (
+            <div
+              className="reader-content"
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          ) : (
+            <div className="reader-empty">
+              <p>
+                {article?.extraction_status === "pending" && "article extraction is still running"}
+                {article?.extraction_status === "failed" && (article.extraction_error ?? "article extraction failed")}
+                {article?.extraction_status === "skipped" && (article.extraction_error ?? "no readable content found")}
+                {!article && "article content is not available yet"}
+              </p>
+            </div>
+          )}
+
+          <footer className="reader-footer">
+            <a href={bookmark.url} rel="noopener noreferrer" target="_blank">
+              open original
+            </a>
+          </footer>
+        </article>
+      ) : null}
     </div>
   );
 }
@@ -969,6 +1438,14 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/read/:id"
+        element={
+          <RequireAuth>
+            <ReaderPage />
+          </RequireAuth>
+        }
+      />
+      <Route
         path="/profile"
         element={
           <RequireAuth>
@@ -985,7 +1462,9 @@ function AppRoutes() {
 export function App() {
   return (
     <AuthProvider>
-      <AppRoutes />
+      <OfflineProvider>
+        <AppRoutes />
+      </OfflineProvider>
     </AuthProvider>
   );
 }

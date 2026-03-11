@@ -1,4 +1,5 @@
 import {
+  articleContentResponseSchema,
   bookmarkListResponseSchema,
   bookmarkResponseSchema,
   changePasswordRequestSchema,
@@ -6,21 +7,26 @@ import {
   createTokenRequestSchema,
   createTokenResponseSchema,
   errorResponseSchema,
+  extractBookmarkResponseSchema,
   listBookmarksRequestSchema,
   loginRequestSchema,
   loginResponseSchema,
   meResponseSchema,
+  offlineBundleResponseSchema,
   tokenListResponseSchema,
   updateBookmarkTitleRequestSchema,
+  type ArticleContentResponse,
   type BookmarkListResponse,
   type BookmarkResponse,
   type ChangePasswordRequest,
   type CreateBookmarkRequest,
   type CreateTokenRequest,
   type CreateTokenResponse,
+  type ExtractBookmarkResponse,
   type LoginRequest,
   type LoginResponse,
   type MeResponse,
+  type OfflineBundleResponse,
   type TokenListResponse,
   type UpdateBookmarkTitleRequest,
 } from "@url-keep/shared";
@@ -177,6 +183,52 @@ export class UrlKeepClient {
       method: "PATCH",
       body,
       schema: bookmarkResponseSchema,
+    });
+  }
+
+  async extractBookmark(
+    id: string,
+    force = false,
+  ): Promise<ExtractBookmarkResponse> {
+    const search = new URLSearchParams();
+    if (force) {
+      search.set("force", "true");
+    }
+
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/extract${suffix}`, {
+      method: "POST",
+      schema: extractBookmarkResponseSchema,
+    });
+  }
+
+  async getBookmarkContent(id: string): Promise<ArticleContentResponse> {
+    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/content`, {
+      schema: articleContentResponseSchema,
+    });
+  }
+
+  async getOfflineBundle(
+    cursor?: string,
+    limit?: number,
+  ): Promise<OfflineBundleResponse> {
+    const search = new URLSearchParams();
+    if (cursor) {
+      search.set("cursor", cursor);
+    }
+    if (limit) {
+      search.set("limit", String(limit));
+    }
+
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    return this.request(`/v1/offline/bundle${suffix}`, {
+      schema: offlineBundleResponseSchema,
+    });
+  }
+
+  async deleteBookmarkContent(id: string): Promise<void> {
+    await this.request(`/v1/bookmarks/${encodeURIComponent(id)}/content`, {
+      method: "DELETE",
     });
   }
 

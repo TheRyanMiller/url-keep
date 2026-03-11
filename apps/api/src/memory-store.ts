@@ -1,12 +1,11 @@
-import {
-  decodeCursor,
-  encodeCursor,
-} from "./utils";
+import { decodeCursor, encodeCursor, nowIso } from "./utils";
 import type {
   AccessTokenRecord,
+  ArticleContentRecord,
   BookmarkRecord,
   ListBookmarksOptions,
   ListBookmarksResult,
+  OfflineBundleResult,
   UserRecord,
 } from "./types";
 import type { Store } from "./store";
@@ -15,6 +14,7 @@ export class MemoryStore implements Store {
   private users = new Map<string, UserRecord>();
   private accessTokens = new Map<string, AccessTokenRecord>();
   private bookmarks = new Map<string, BookmarkRecord>();
+  private articleContent = new Map<string, ArticleContentRecord>();
 
   async getUserByEmail(email: string): Promise<UserRecord | null> {
     for (const user of this.users.values()) {
@@ -81,13 +81,21 @@ export class MemoryStore implements Store {
     }
   }
 
+  private attachExtractionStatus(bookmark: BookmarkRecord): BookmarkRecord {
+    const content = this.articleContent.get(bookmark.id);
+    return {
+      ...structuredClone(bookmark),
+      extractionStatus: content?.extractionStatus ?? null,
+    };
+  }
+
   async getBookmarkByNormalizedUrl(
     userId: string,
     normalizedUrl: string,
   ): Promise<BookmarkRecord | null> {
     for (const bookmark of this.bookmarks.values()) {
       if (bookmark.userId === userId && bookmark.normalizedUrl === normalizedUrl) {
-        return structuredClone(bookmark);
+        return this.attachExtractionStatus(bookmark);
       }
     }
     return null;
@@ -95,7 +103,9 @@ export class MemoryStore implements Store {
 
   async getBookmarkById(userId: string, id: string): Promise<BookmarkRecord | null> {
     const bookmark = this.bookmarks.get(id) ?? null;
-    return bookmark && bookmark.userId === userId ? structuredClone(bookmark) : null;
+    return bookmark && bookmark.userId === userId
+      ? this.attachExtractionStatus(bookmark)
+      : null;
   }
 
   async listBookmarks(
@@ -111,11 +121,7 @@ export class MemoryStore implements Store {
           return true;
         }
 
-        return [
-          bookmark.title,
-          bookmark.url,
-          bookmark.siteName ?? "",
-        ]
+        return [bookmark.title, bookmark.url, bookmark.siteName ?? ""]
           .join(" ")
           .toLowerCase()
           .includes(query);
@@ -140,8 +146,29 @@ export class MemoryStore implements Store {
     const slice = filtered.slice(0, options.limit + 1);
     const hasMore = slice.length > options.limit;
     const items = hasMore ? slice.slice(0, options.limit) : slice;
+    const mapped = items.map((bookmark) => this.attachExtractionStatus(bookmark));
     const nextCursor = hasMore ? encodeCursor(items[items.length - 1]) : null;
-    return { items: structuredClone(items), nextCursor };
+    return { items: structuredClone(mapped), nextCursor };
+  }
+
+  async listOfflineBundle(
+    userId: string,
+    options: Pick<ListBookmarksOptions, "limit" | "cursor">,
+  ): Promise<OfflineBundleResult> {
+    const bookmarks = await this.listBookmarks(userId, {
+      limit: options.limit,
+      cursor: options.cursor,
+    });
+    const items = bookmarks.items.map((bookmark) => ({
+      bookmark,
+      content: structuredClone(this.articleContent.get(bookmark.id) ?? null),
+    }));
+
+    return {
+      items,
+      nextCursor: bookmarks.nextCursor,
+      hasMore: bookmarks.nextCursor !== null,
+    };
   }
 
   async insertBookmark(bookmark: BookmarkRecord): Promise<void> {
@@ -152,14 +179,42 @@ export class MemoryStore implements Store {
     this.bookmarks.set(bookmark.id, structuredClone(bookmark));
   }
 
+  async getArticleContentByBookmarkId(
+    userId: string,
+    bookmarkId: string,
+  ): Promise<ArticleContentRecord | null> {
+    const content = this.articleContent.get(bookmarkId) ?? null;
+    return content && content.userId === userId ? structuredClone(content) : null;
+  }
+
+  async upsertArticleContent(content: ArticleContentRecord): Promise<void> {
+    const existing = this.articleContent.get(content.bookmarkId);
+    this.articleContent.set(content.bookmarkId, {
+      ...structuredClone(content),
+      createdAt: existing?.createdAt ?? content.createdAt ?? nowIso(),
+      updatedAt: content.updatedAt ?? nowIso(),
+    });
+  }
+
+  async deleteBookmarkContent(userId: string, bookmarkId: string): Promise<void> {
+    const content = this.articleContent.get(bookmarkId);
+    if (content?.userId === userId) {
+      this.articleContent.delete(bookmarkId);
+    }
+  }
+
   async deleteBookmarkByNormalizedUrl(
     userId: string,
     normalizedUrl: string,
-  ): Promise<void> {
+  ): Promise<BookmarkRecord | null> {
     for (const [id, bookmark] of this.bookmarks.entries()) {
       if (bookmark.userId === userId && bookmark.normalizedUrl === normalizedUrl) {
         this.bookmarks.delete(id);
+        this.articleContent.delete(id);
+        return this.attachExtractionStatus(bookmark);
       }
     }
+
+    return null;
   }
 }
