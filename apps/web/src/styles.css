@@ -517,7 +517,9 @@ input {
   }
 
   .bookmark-actions {
-    align-items: flex-start;
+    grid-auto-flow: column;
+    justify-content: start;
+    align-items: center;
   }
 
   .bookmark-read-link {
