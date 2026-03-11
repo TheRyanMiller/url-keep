@@ -57,6 +57,8 @@ export const extractionStatusSchema = z.enum([
   "skipped",
 ]);
 
+export const contentSourceSchema = z.enum(["client", "server"]);
+
 export const articleContentSchema = z.object({
   bookmark_id: z.string(),
   content_html: z.string().nullable(),
@@ -66,6 +68,7 @@ export const articleContentSchema = z.object({
   extraction_status: extractionStatusSchema,
   extracted_at: z.string().nullable(),
   extraction_error: z.string().nullable().optional(),
+  content_source: contentSourceSchema.nullable().optional(),
 });
 
 export const articleContentResponseSchema = z.object({
@@ -164,6 +167,14 @@ export const changePasswordRequestSchema = z.object({
   new_password: z.string().min(8, "password must be at least 8 characters"),
 });
 
+export const uploadBookmarkContentRequestSchema = z.object({
+  content_html: z.string().min(1),
+  title: z.string().nullable().optional(),
+  author: z.string().nullable().optional(),
+  published_date: z.string().nullable().optional(),
+  site_name: z.string().nullable().optional(),
+});
+
 export type SavedVia = z.infer<typeof savedViaSchema>;
 export type InternalTitleSource = z.infer<typeof internalTitleSourceSchema>;
 export type User = z.infer<typeof userSchema>;
@@ -189,4 +200,6 @@ export type CreateBookmarkRequest = z.infer<typeof createBookmarkRequestSchema>;
 export type UpdateBookmarkTitleRequest = z.infer<
   typeof updateBookmarkTitleRequestSchema
 >;
+export type ContentSource = z.infer<typeof contentSourceSchema>;
 export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>;
+export type UploadBookmarkContentRequest = z.infer<typeof uploadBookmarkContentRequestSchema>;

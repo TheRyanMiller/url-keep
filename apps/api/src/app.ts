@@ -6,9 +6,13 @@ import {
   createTokenRequestSchema,
   loginRequestSchema,
   updateBookmarkTitleRequestSchema,
+  uploadBookmarkContentRequestSchema,
 } from "@url-keep/shared";
+import { sanitizeClientHtml } from "./sanitize";
 import { D1Store } from "./d1-store";
 import {
+  countWords,
+  pendingArticleContent,
   removeBookmarkImages,
   runBookmarkExtraction,
 } from "./extraction";
@@ -232,28 +236,12 @@ function articleContentToApi(content: ArticleContentRecord) {
     extraction_status: content.extractionStatus,
     extraction_error: content.extractionError,
     extracted_at: content.extractedAt,
+    content_source: content.contentSource ?? null,
   };
 }
 
-function buildPendingArticleContent(
-  bookmark: BookmarkRecord,
-  existing: ArticleContentRecord | null,
-): ArticleContentRecord {
-  const now = nowIso();
-  return {
-    id: existing?.id ?? makeId(),
-    bookmarkId: bookmark.id,
-    userId: bookmark.userId,
-    contentHtml: null,
-    wordCount: 0,
-    author: null,
-    publishedDate: null,
-    extractionStatus: "pending",
-    extractionError: null,
-    extractedAt: null,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-  };
+function stripTags(html: string): string {
+  return html.replace(/<[^>]*>/g, "");
 }
 
 async function queueBookmarkExtraction(
@@ -272,7 +260,7 @@ async function queueBookmarkExtraction(
     return existing.extractionStatus;
   }
 
-  await store.upsertArticleContent(buildPendingArticleContent(bookmark, existing));
+  await store.upsertArticleContent(pendingArticleContent(bookmark, existing));
   c.executionCtx.waitUntil(
     extractBookmark({
       env: c.env,
@@ -321,7 +309,7 @@ export function createApp(options: CreateAppOptions = {}) {
         return getAllowedOrigins(c.env).includes(origin) ? origin : undefined;
       },
       allowHeaders: ["Authorization", "Content-Type"],
-      allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       maxAge: 86400,
     }),
   );
@@ -732,7 +720,17 @@ export function createApp(options: CreateAppOptions = {}) {
       } as const;
 
       await store.insertBookmark(bookmark);
-      const extractionStatus = await queueBookmarkExtraction(c, bookmark, extractBookmark);
+      let extractionStatus: BookmarkRecord["extractionStatus"];
+      if (parsed.saved_via === "extension") {
+        // Extension owns the capture lifecycle. Create a pending row so the
+        // bookmark shows "pending" in the UI, but do NOT waitUntil() a server
+        // fetch. The extension service worker will either upload content or
+        // explicitly trigger server extraction as fallback.
+        await store.upsertArticleContent(pendingArticleContent(bookmark, null));
+        extractionStatus = "pending";
+      } else {
+        extractionStatus = await queueBookmarkExtraction(c, bookmark, extractBookmark);
+      }
       const responseStatus = bookmark.savedVia === "ios_shortcut" ? 204 : 201;
       debugLog(c, "bookmark.save.created", {
         auth_user_id: user.id,
@@ -766,7 +764,18 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     await store.updateBookmark(nextBookmark);
-    const extractionStatus = await queueBookmarkExtraction(c, nextBookmark, extractBookmark);
+    let extractionStatus: BookmarkRecord["extractionStatus"];
+    if (parsed.saved_via === "extension") {
+      const existingContent = await store.getArticleContentByBookmarkId(user.id, nextBookmark.id);
+      if (!existingContent || existingContent.extractionStatus === "failed" || existingContent.extractionStatus === "skipped") {
+        await store.upsertArticleContent(pendingArticleContent(nextBookmark, existingContent));
+        extractionStatus = "pending";
+      } else {
+        extractionStatus = existingContent.extractionStatus;
+      }
+    } else {
+      extractionStatus = await queueBookmarkExtraction(c, nextBookmark, extractBookmark);
+    }
     const responseStatus = nextBookmark.savedVia === "ios_shortcut" ? 204 : 200;
     debugLog(c, "bookmark.save.updated_existing", {
       auth_user_id: user.id,
@@ -814,6 +823,18 @@ export function createApp(options: CreateAppOptions = {}) {
 
     const force = c.req.query("force")?.toLowerCase() === "true";
     const existing = await c.get("store").getArticleContentByBookmarkId(user.id, bookmark.id);
+
+    if (existing?.contentSource === "client" && existing.extractionStatus === "complete") {
+      if (force) {
+        return errorResponse(
+          "client_content_exists",
+          "client-captured content exists. delete it first to re-extract from server.",
+          409,
+        );
+      }
+      return c.json({ extraction_status: existing.extractionStatus });
+    }
+
     if (existing?.extractionStatus === "complete" && !force) {
       return c.json({ extraction_status: existing.extractionStatus });
     }
@@ -828,6 +849,82 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ extraction_status: extractionStatus }, 202);
   });
 
+  app.put("/v1/bookmarks/:id/content", async (c) => {
+    const { user } = c.get("auth");
+    const store = c.get("store");
+    const bookmark = await store.getBookmarkById(user.id, c.req.param("id"));
+    if (!bookmark) {
+      return errorResponse("not_found", "Bookmark not found", 404);
+    }
+
+    const contentLength = Number(c.req.header("content-length") ?? "");
+    if (Number.isFinite(contentLength) && contentLength > 5 * 1024 * 1024) {
+      return errorResponse("payload_too_large", "Request body exceeds 5MB limit", 413);
+    }
+
+    const parsed = await parseJsonBody(c, uploadBookmarkContentRequestSchema);
+    if (parsed instanceof Response) {
+      return parsed;
+    }
+
+    const sanitized = sanitizeClientHtml(parsed.content_html);
+    const textOnly = stripTags(sanitized).trim();
+    if (textOnly.length < 100) {
+      return errorResponse(
+        "no_content",
+        "submitted HTML contained no readable content",
+        422,
+      );
+    }
+
+    const now = nowIso();
+    const existing = await store.getArticleContentByBookmarkId(user.id, bookmark.id);
+    const content: ArticleContentRecord = {
+      id: existing?.id ?? makeId(),
+      bookmarkId: bookmark.id,
+      userId: user.id,
+      contentHtml: sanitized,
+      wordCount: countWords(textOnly),
+      author: parsed.author ?? existing?.author ?? null,
+      publishedDate: parsed.published_date ?? existing?.publishedDate ?? null,
+      extractionStatus: "complete",
+      extractionError: null,
+      extractedAt: now,
+      contentSource: "client",
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    // If existing content came from server extraction, clean up R2 images
+    // before overwriting with client HTML (which uses original image URLs).
+    if (existing?.contentSource === "server" && existing.contentHtml) {
+      c.executionCtx.waitUntil(removeBookmarkImages(bookmark.id, c.env.IMAGES));
+    }
+
+    await store.upsertArticleContent(content);
+
+    let bookmarkChanged = false;
+    const nextBookmark = { ...bookmark };
+
+    if (bookmark.titleSource === "fallback" && parsed.title) {
+      nextBookmark.title = parsed.title;
+      nextBookmark.titleSource = "client";
+      bookmarkChanged = true;
+    }
+
+    if (!bookmark.siteName && parsed.site_name) {
+      nextBookmark.siteName = parsed.site_name;
+      bookmarkChanged = true;
+    }
+
+    if (bookmarkChanged) {
+      nextBookmark.updatedAt = now;
+      await store.updateBookmark(nextBookmark);
+    }
+
+    return c.json({ item: articleContentToApi(content) });
+  });
+
   app.get("/v1/bookmarks/:id/content", async (c) => {
     const { user } = c.get("auth");
     const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
@@ -838,7 +935,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const content = await c.get("store").getArticleContentByBookmarkId(user.id, bookmark.id);
     if (!content) {
       return c.json({
-        item: articleContentToApi(buildPendingArticleContent(bookmark, null)),
+        item: articleContentToApi(pendingArticleContent(bookmark, null)),
       });
     }
 

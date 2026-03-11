@@ -55,6 +55,7 @@ type ArticleContentRow = {
   content_extraction_status: ArticleContentRecord["extractionStatus"] | null;
   extraction_error: string | null;
   extracted_at: string | null;
+  content_source: ArticleContentRecord["contentSource"] | null;
   content_created_at: string | null;
   content_updated_at: string | null;
 };
@@ -118,6 +119,7 @@ function mapArticleContent(row: ArticleContentRow | null): ArticleContentRecord 
         extractionStatus: row.content_extraction_status ?? "pending",
         extractionError: row.extraction_error,
         extractedAt: row.extracted_at,
+        contentSource: row.content_source ?? null,
         createdAt: row.content_created_at ?? row.extracted_at ?? row.content_updated_at ?? "",
         updatedAt: row.content_updated_at ?? row.extracted_at ?? row.content_created_at ?? "",
       }
@@ -156,6 +158,7 @@ function articleContentSelectSql() {
     ac.extraction_status AS content_extraction_status,
     ac.extraction_error,
     ac.extracted_at,
+    ac.content_source,
     ac.created_at AS content_created_at,
     ac.updated_at AS content_updated_at
   `;
@@ -473,9 +476,10 @@ export class D1Store implements Store {
             extraction_status,
             extraction_error,
             extracted_at,
+            content_source,
             created_at,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(bookmark_id) DO UPDATE SET
             id = excluded.id,
             user_id = excluded.user_id,
@@ -486,6 +490,7 @@ export class D1Store implements Store {
             extraction_status = excluded.extraction_status,
             extraction_error = excluded.extraction_error,
             extracted_at = excluded.extracted_at,
+            content_source = excluded.content_source,
             updated_at = excluded.updated_at
         `,
       )
@@ -500,6 +505,7 @@ export class D1Store implements Store {
         content.extractionStatus,
         content.extractionError,
         content.extractedAt,
+        content.contentSource,
         content.createdAt,
         content.updatedAt,
       )

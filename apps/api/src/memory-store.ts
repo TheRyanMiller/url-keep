@@ -206,6 +206,7 @@ export class MemoryStore implements Store {
     const existing = this.articleContent.get(content.bookmarkId);
     this.articleContent.set(content.bookmarkId, {
       ...structuredClone(content),
+      contentSource: content.contentSource ?? null,
       createdAt: existing?.createdAt ?? content.createdAt ?? nowIso(),
       updatedAt: content.updatedAt ?? nowIso(),
     });

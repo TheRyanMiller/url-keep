@@ -10,16 +10,36 @@ const appOrigin = process.env.URL_KEEP_APP_ORIGIN ?? "http://localhost:5173";
 
 mkdirSync(outdir, { recursive: true });
 
-await build({
-  entryPoints: [resolve(root, "src/popup.ts")],
-  bundle: true,
-  format: "esm",
-  outfile: resolve(outdir, "popup.js"),
-  define: {
-    __API_ORIGIN__: JSON.stringify(apiOrigin),
-    __APP_ORIGIN__: JSON.stringify(appOrigin),
-  },
-});
+await Promise.all([
+  // Popup
+  build({
+    entryPoints: [resolve(root, "src/popup.ts")],
+    bundle: true,
+    format: "esm",
+    outfile: resolve(outdir, "popup.js"),
+    define: {
+      __API_ORIGIN__: JSON.stringify(apiOrigin),
+      __APP_ORIGIN__: JSON.stringify(appOrigin),
+    },
+  }),
+  // Service worker (background script)
+  build({
+    entryPoints: [resolve(root, "src/background.ts")],
+    bundle: true,
+    format: "esm",
+    outfile: resolve(outdir, "background.js"),
+    define: {
+      __API_ORIGIN__: JSON.stringify(apiOrigin),
+    },
+  }),
+  // Capture script (injected into tabs) — IIFE so executeScript({ files }) gets the return value
+  build({
+    entryPoints: [resolve(root, "src/capture.ts")],
+    bundle: true,
+    format: "iife",
+    outfile: resolve(outdir, "capture.js"),
+  }),
+]);
 
 cpSync(resolve(root, "src/popup.html"), resolve(outdir, "popup.html"));
 cpSync(resolve(root, "src/styles.css"), resolve(outdir, "styles.css"));
@@ -44,6 +64,10 @@ writeFileSync(
         "http://localhost/*",
         "http://127.0.0.1/*",
       ],
+      background: {
+        service_worker: "background.js",
+        type: "module",
+      },
       action: {
         default_title: "url-keep",
         default_popup: "popup.html",

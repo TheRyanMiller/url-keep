@@ -1,13 +1,16 @@
-import { UrlKeepClient, ApiError } from "@url-keep/api-client";
+import { ApiError } from "@url-keep/api-client";
+import {
+  TOKEN_KEY,
+  API_ORIGIN_KEY,
+  APP_ORIGIN_KEY,
+  QUICK_SAVE_KEY,
+  DEFAULT_API_ORIGIN,
+  createClient,
+  getStoredToken,
+} from "./settings";
 
-declare const __API_ORIGIN__: string;
 declare const __APP_ORIGIN__: string;
 
-const TOKEN_KEY = "url_keep_token";
-const API_ORIGIN_KEY = "url_keep_api_origin";
-const APP_ORIGIN_KEY = "url_keep_app_origin";
-const QUICK_SAVE_KEY = "url_keep_quick_save";
-const DEFAULT_API_ORIGIN = __API_ORIGIN__;
 const DEFAULT_APP_ORIGIN = __APP_ORIGIN__;
 
 const loginForm = document.getElementById("login-form") as HTMLFormElement;
@@ -49,6 +52,7 @@ type PopupState = {
   checking: boolean;
   url: string;
   title: string;
+  tabId: number | null;
   metadata: ExtractedMetadata;
 };
 
@@ -65,13 +69,20 @@ let currentSettings: RuntimeSettings = {
   apiOrigin: DEFAULT_API_ORIGIN,
   appOrigin: DEFAULT_APP_ORIGIN,
 };
-let client = createClient(currentSettings.apiOrigin);
+let client = makePopupClient(currentSettings.apiOrigin);
 
-function createClient(baseUrl: string) {
-  return new UrlKeepClient({
-    baseUrl,
-    getToken: () => currentToken,
-  });
+function makePopupClient(baseUrl: string) {
+  return createClient(baseUrl, () => currentToken);
+}
+
+function triggerCapture(tabId: number | null, bookmarkId: string | null) {
+  if (tabId && bookmarkId) {
+    chrome.runtime.sendMessage({
+      action: "capture",
+      tabId,
+      bookmarkId,
+    }).catch(() => {});
+  }
 }
 
 function normalizeOrigin(value: string): string {
@@ -85,7 +96,7 @@ function normalizeOrigin(value: string): string {
 
 function setSettings(settings: RuntimeSettings) {
   currentSettings = settings;
-  client = createClient(settings.apiOrigin);
+  client = makePopupClient(settings.apiOrigin);
   openAppLink.href = settings.appOrigin;
   settingsApiOriginInput.value = settings.apiOrigin;
   settingsAppOriginInput.value = settings.appOrigin;
@@ -115,11 +126,6 @@ async function loadSettings() {
       DEFAULT_APP_ORIGIN,
     ),
   });
-}
-
-async function getToken() {
-  const result = await chrome.storage.local.get(TOKEN_KEY);
-  return (result[TOKEN_KEY] as string | undefined) ?? null;
 }
 
 async function setToken(token: string | null) {
@@ -316,17 +322,20 @@ async function quickSave() {
     checking: false,
     url: tab.url,
     title: metadata.title ?? title,
+    tabId: tab.id ?? null,
     metadata,
   };
 
   try {
-    await client.saveBookmark({
+    const response = await client.saveBookmark({
       url: tab.url,
       title: metadata.title ?? title,
       image_url: metadata.image_url,
       site_name: metadata.site_name,
       saved_via: "extension",
     });
+
+    triggerCapture(tab.id ?? null, response.item?.id ?? null);
 
     popupState = { ...popupState, saved: true };
     showSuccessView(new URL(tab.url).hostname);
@@ -361,6 +370,7 @@ async function loadBookmarkState() {
     checking: true,
     url: tab.url,
     title: baseTitle,
+    tabId: tab.id ?? null,
     metadata: {},
   };
   showBookmarkView();
@@ -383,22 +393,10 @@ async function loadBookmarkState() {
 
   try {
     await client.getBookmarkByUrl(tab.url);
-    renderState({
-      saved: true,
-      checking: false,
-      url: tab.url,
-      title: popupState.title,
-      metadata: popupState.metadata,
-    });
+    renderState({ ...popupState, saved: true, checking: false });
   } catch (caught) {
     if (caught instanceof ApiError && caught.status === 404) {
-      renderState({
-        saved: false,
-        checking: false,
-        url: tab.url,
-        title: popupState.title,
-        metadata: popupState.metadata,
-      });
+      renderState({ ...popupState, saved: false, checking: false });
       return;
     }
 
@@ -531,13 +529,15 @@ actionButton.addEventListener("click", async () => {
   showError(null);
 
   try {
-    await client.saveBookmark({
+    const response = await client.saveBookmark({
       url: popupState.url,
       title: popupState.title,
       image_url: popupState.metadata.image_url,
       site_name: popupState.metadata.site_name,
       saved_via: "extension",
     });
+
+    triggerCapture(popupState.tabId, response.item?.id ?? null);
 
     actionButton.textContent = "\u2713 saved";
     actionButton.classList.add("button--success");
@@ -589,7 +589,7 @@ async function init() {
   await loadSettings();
   quickSaveEnabled = await loadQuickSave();
   quickSaveCheckbox.checked = quickSaveEnabled;
-  currentToken = await getToken();
+  currentToken = await getStoredToken();
   if (!currentToken) {
     showLogin();
     return;

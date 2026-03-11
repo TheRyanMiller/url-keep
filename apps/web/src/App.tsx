@@ -76,6 +76,8 @@ const ALLOWED_TAGS = [
   "sup",
   "sub",
   "del",
+  "div",
+  "span",
 ];
 const ALLOWED_ATTR = ["href", "src", "alt", "title"];
 
@@ -256,6 +258,38 @@ function estimateReadMinutes(wordCount: number) {
 
 function resolveArticleHtml(contentHtml: string) {
   return contentHtml.replaceAll('src="/v1/images/', `src="${API_ORIGIN}/v1/images/`);
+}
+
+function formatExtractionError(error: string | null | undefined): string {
+  if (!error) {
+    return "article extraction failed";
+  }
+
+  try {
+    const parsed = JSON.parse(error) as Record<string, unknown>;
+    const reason = parsed.reason as string | undefined;
+    const httpStatus = parsed.http_status as number | undefined;
+
+    switch (reason) {
+      case "access_denied":
+        return "this site blocked server access. save from the extension for full content.";
+      case "fetch_error":
+        return httpStatus
+          ? `could not reach this page (HTTP ${httpStatus})`
+          : "could not reach this page";
+      case "timeout":
+        return "page took too long to respond";
+      case "unsupported_content_type":
+        return `this page is not an article (${parsed.content_type ?? "unknown type"})`;
+      case "no_readable_content":
+        return "no article content found on this page";
+      default:
+        return error;
+    }
+  } catch {
+    // Legacy free-text error — show as-is
+    return error;
+  }
 }
 
 function sanitizeArticleHtml(contentHtml: string) {
@@ -1461,8 +1495,8 @@ function ReaderPage() {
             <div className="reader-empty">
               <p>
                 {article?.extraction_status === "pending" && "article extraction is still running"}
-                {article?.extraction_status === "failed" && (article.extraction_error ?? "article extraction failed")}
-                {article?.extraction_status === "skipped" && (article.extraction_error ?? "no readable content found")}
+                {article?.extraction_status === "failed" && formatExtractionError(article.extraction_error)}
+                {article?.extraction_status === "skipped" && formatExtractionError(article.extraction_error)}
                 {!article && "article content is not available yet"}
               </p>
             </div>

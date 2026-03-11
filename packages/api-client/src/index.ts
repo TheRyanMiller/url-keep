@@ -16,6 +16,7 @@ import {
   offlineStatusResponseSchema,
   tokenListResponseSchema,
   updateBookmarkTitleRequestSchema,
+  uploadBookmarkContentRequestSchema,
   type ArticleContentResponse,
   type BookmarkListResponse,
   type BookmarkResponse,
@@ -31,6 +32,7 @@ import {
   type OfflineStatusResponse,
   type TokenListResponse,
   type UpdateBookmarkTitleRequest,
+  type UploadBookmarkContentRequest,
 } from "@url-keep/shared";
 
 export class ApiError extends Error {
@@ -231,6 +233,18 @@ export class UrlKeepClient {
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return this.request(`/v1/offline/bundle${suffix}`, {
       schema: offlineBundleResponseSchema,
+    });
+  }
+
+  async uploadBookmarkContent(
+    id: string,
+    input: UploadBookmarkContentRequest,
+  ): Promise<ArticleContentResponse> {
+    const body = uploadBookmarkContentRequestSchema.parse(input);
+    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/content`, {
+      method: "PUT",
+      body,
+      schema: articleContentResponseSchema,
     });
   }
 

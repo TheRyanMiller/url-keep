@@ -1,4 +1,5 @@
 import type {
+  ContentSource,
   ExtractionStatus,
   InternalTitleSource,
   SavedVia,
@@ -48,6 +49,8 @@ export type BookmarkRecord = {
   extractionStatus?: ExtractionStatus | null;
 };
 
+export type { ContentSource };
+
 export type ArticleContentRecord = {
   id: string;
   bookmarkId: string;
@@ -59,6 +62,7 @@ export type ArticleContentRecord = {
   extractionStatus: ExtractionStatus;
   extractionError: string | null;
   extractedAt: string | null;
+  contentSource: ContentSource | null;
   createdAt: string;
   updatedAt: string;
 };

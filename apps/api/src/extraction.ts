@@ -38,7 +38,7 @@ function cleanOptionalText(value: string | null | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
-function countWords(value: string): number {
+export function countWords(value: string): number {
   const trimmed = value.trim();
   return trimmed ? trimmed.split(/\s+/).length : 0;
 }
@@ -123,7 +123,11 @@ async function readResponseTextWithLimit(
   return text;
 }
 
-function pendingArticleContent(
+function makeExtractionError(reason: string, extra?: Record<string, unknown>): string {
+  return JSON.stringify({ reason, ...extra });
+}
+
+export function pendingArticleContent(
   bookmark: BookmarkRecord,
   existing: ArticleContentRecord | null,
 ): ArticleContentRecord {
@@ -139,6 +143,7 @@ function pendingArticleContent(
     extractionStatus: "pending",
     extractionError: null,
     extractedAt: null,
+    contentSource: null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -162,6 +167,7 @@ function failureArticleContent(
     extractionStatus: status,
     extractionError: error,
     extractedAt: now,
+    contentSource: null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -313,9 +319,8 @@ export async function runBookmarkExtraction(
     return existing;
   }
 
-  await options.store.upsertArticleContent(
-    pendingArticleContent(options.bookmark, existing),
-  );
+  // The caller (queueBookmarkExtraction) already wrote a pending row before
+  // dispatching via waitUntil(). No need to write pending again here.
 
   try {
     const response = await fetchImpl(options.bookmark.url, {
@@ -324,12 +329,29 @@ export async function runBookmarkExtraction(
     });
 
     if (!response.ok) {
-      throw new Error(`fetch failed with status ${response.status}`);
+      const reason = response.status === 401 || response.status === 403
+        ? "access_denied"
+        : "fetch_error";
+      const failed = failureArticleContent(
+        options.bookmark,
+        existing,
+        "failed",
+        makeExtractionError(reason, { http_status: response.status }),
+      );
+      await options.store.upsertArticleContent(failed);
+      return failed;
     }
 
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.toLowerCase().includes("text/html")) {
-      throw new Error("unsupported content-type");
+      const skippedCt = failureArticleContent(
+        options.bookmark,
+        existing,
+        "skipped",
+        makeExtractionError("unsupported_content_type", { content_type: contentType }),
+      );
+      await options.store.upsertArticleContent(skippedCt);
+      return skippedCt;
     }
 
     const html = await readResponseTextWithLimit(response, ARTICLE_BODY_LIMIT_BYTES);
@@ -343,7 +365,7 @@ export async function runBookmarkExtraction(
         options.bookmark,
         existing,
         "skipped",
-        "no readable content found",
+        makeExtractionError("no_readable_content", { text_length: textLength }),
       );
       await options.store.upsertArticleContent(skipped);
       return skipped;
@@ -401,6 +423,7 @@ export async function runBookmarkExtraction(
       extractionStatus: "complete",
       extractionError: null,
       extractedAt: now,
+      contentSource: "server",
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -408,11 +431,14 @@ export async function runBookmarkExtraction(
     await options.store.upsertArticleContent(complete);
     return complete;
   } catch (error) {
+    const reason = error instanceof Error && error.message.includes("timeout")
+      ? "timeout"
+      : "fetch_error";
     const failed = failureArticleContent(
       options.bookmark,
       existing,
       "failed",
-      error instanceof Error ? error.message : "extraction failed",
+      makeExtractionError(reason, error instanceof Error ? { message: error.message } : {}),
     );
     await options.store.upsertArticleContent(failed);
     return failed;

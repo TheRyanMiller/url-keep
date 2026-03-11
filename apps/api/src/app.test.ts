@@ -67,6 +67,7 @@ describe("api", () => {
           extractionStatus: "complete" as const,
           extractionError: null,
           extractedAt: now,
+          contentSource: "server" as const,
           createdAt: now,
           updatedAt: now,
         };
