@@ -525,27 +525,42 @@ input {
 
 @media (max-width: 720px) {
   .bookmark-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr auto;
+    gap: 6px 12px;
+    padding: 8px 0;
     min-height: auto;
   }
 
+  .bookmark-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .bookmark-main {
+    grid-column: 1 / -1;
+  }
+
   .bookmark-image {
-    display: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 3px;
   }
 
   .bookmark-side {
-    justify-content: flex-start;
+    justify-content: flex-end;
     min-width: 0;
   }
 
   .bookmark-actions {
     grid-auto-flow: column;
-    justify-content: start;
+    justify-content: end;
     align-items: center;
   }
 
   .bookmark-read-link {
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .row-between {
