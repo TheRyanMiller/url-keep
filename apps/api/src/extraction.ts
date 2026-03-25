@@ -1,7 +1,10 @@
 import { Readability } from "@mozilla/readability";
 import { bytesToHex } from "@noble/hashes/utils";
 import { sha256 } from "@noble/hashes/sha2";
+import { toHackmdMarkdownUrl } from "@url-keep/shared";
 import { parseHTML } from "linkedom";
+import { extractMarkdownTitle, renderMarkdownToHtml } from "./markdown";
+import { sanitizeClientHtml } from "./sanitize";
 import { makeId, nowIso } from "./utils";
 import type { Store } from "./store";
 import type {
@@ -36,6 +39,10 @@ type ExtractionMetadata = {
 function cleanOptionalText(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+function stripHtml(value: string): string {
+  return value.replace(/<[^>]*>/g, " ");
 }
 
 export function countWords(value: string): number {
@@ -121,6 +128,69 @@ async function readResponseTextWithLimit(
 
   text += decoder.decode();
   return text;
+}
+
+async function tryExtractHackmdContent(
+  bookmark: BookmarkRecord,
+  fetchImpl: typeof fetch,
+  images: R2Bucket | undefined,
+): Promise<{
+  author: string | null;
+  contentHtml: string;
+  publishedDate: string | null;
+  siteName: string | null;
+  title: string | null;
+  wordCount: number;
+} | null> {
+  const rawUrl = toHackmdMarkdownUrl(bookmark.url);
+  if (!rawUrl) {
+    return null;
+  }
+
+  const response = await fetchImpl(rawUrl, {
+    headers: { "User-Agent": USER_AGENT },
+    signal: AbortSignal.timeout(ARTICLE_FETCH_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("text/markdown")) {
+    return null;
+  }
+
+  const markdown = await readResponseTextWithLimit(response, ARTICLE_BODY_LIMIT_BYTES);
+  const renderedHtml = sanitizeClientHtml(renderMarkdownToHtml(markdown));
+  const textContent = stripHtml(renderedHtml).trim();
+
+  if (textContent.length < 100) {
+    return null;
+  }
+
+  let contentHtml = renderedHtml;
+  if (images) {
+    const rewrittenContentHtml = await extractAndStoreImages(
+      contentHtml,
+      bookmark.id,
+      bookmark.url,
+      images,
+      fetchImpl,
+    );
+    if (rewrittenContentHtml.trim()) {
+      contentHtml = rewrittenContentHtml;
+    }
+  }
+
+  return {
+    author: null,
+    contentHtml,
+    publishedDate: null,
+    siteName: "HackMD",
+    title: extractMarkdownTitle(markdown),
+    wordCount: countWords(textContent),
+  };
 }
 
 function makeExtractionError(reason: string, extra?: Record<string, unknown>): string {
@@ -323,6 +393,61 @@ export async function runBookmarkExtraction(
   // dispatching via waitUntil(). No need to write pending again here.
 
   try {
+    let hackmdContent: Awaited<ReturnType<typeof tryExtractHackmdContent>> = null;
+    try {
+      hackmdContent = await tryExtractHackmdContent(
+        options.bookmark,
+        fetchImpl,
+        options.env.IMAGES,
+      );
+    } catch {
+      hackmdContent = null;
+    }
+
+    if (hackmdContent) {
+      const now = nowIso();
+      let bookmarkChanged = false;
+      const nextBookmark: BookmarkRecord = {
+        ...options.bookmark,
+        extractionStatus: "complete",
+      };
+
+      if (options.bookmark.titleSource === "fallback" && hackmdContent.title) {
+        nextBookmark.title = hackmdContent.title;
+        nextBookmark.titleSource = "client";
+        bookmarkChanged = true;
+      }
+
+      if (!options.bookmark.siteName && hackmdContent.siteName) {
+        nextBookmark.siteName = hackmdContent.siteName;
+        bookmarkChanged = true;
+      }
+
+      if (bookmarkChanged) {
+        nextBookmark.updatedAt = now;
+        await options.store.updateBookmark(nextBookmark);
+      }
+
+      const complete: ArticleContentRecord = {
+        id: existing?.id ?? makeId(),
+        bookmarkId: options.bookmark.id,
+        userId: options.bookmark.userId,
+        contentHtml: hackmdContent.contentHtml,
+        wordCount: hackmdContent.wordCount,
+        author: hackmdContent.author,
+        publishedDate: hackmdContent.publishedDate,
+        extractionStatus: "complete",
+        extractionError: null,
+        extractedAt: now,
+        contentSource: "server",
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+
+      await options.store.upsertArticleContent(complete);
+      return complete;
+    }
+
     const response = await fetchImpl(options.bookmark.url, {
       headers: { "User-Agent": USER_AGENT },
       signal: AbortSignal.timeout(ARTICLE_FETCH_TIMEOUT_MS),

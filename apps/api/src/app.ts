@@ -1,13 +1,17 @@
 import { cors } from "hono/cors";
 import { Hono, type Context } from "hono";
 import {
+  canonicalizeBookmarkUrl,
   changePasswordRequestSchema,
   createBookmarkRequestSchema,
+  isHackmdRawMarkdownUrl,
+  isHackmdUrl,
   createTokenRequestSchema,
   loginRequestSchema,
   updateBookmarkTitleRequestSchema,
   uploadBookmarkContentRequestSchema,
 } from "@url-keep/shared";
+import { extractMarkdownTitle, hasHtmlMarkup, renderMarkdownToHtml } from "./markdown";
 import { sanitizeClientHtml } from "./sanitize";
 import { D1Store } from "./d1-store";
 import {
@@ -676,9 +680,11 @@ export function createApp(options: CreateAppOptions = {}) {
 
     const { user } = c.get("auth");
     let normalizedUrl: string;
+    let canonicalUrl: string;
     let imageUrl: string | null;
 
     try {
+      canonicalUrl = canonicalizeBookmarkUrl(parsed.url);
       normalizedUrl = normalizeUrl(parsed.url);
       imageUrl = validateHttpsImageUrl(parsed.image_url);
     } catch (error) {
@@ -697,14 +703,15 @@ export function createApp(options: CreateAppOptions = {}) {
     const store = c.get("store");
     const now = nowIso();
     const existing = await store.getBookmarkByNormalizedUrl(user.id, normalizedUrl);
+    const trimmedTitle = isHackmdRawMarkdownUrl(parsed.url) ? undefined : parsed.title?.trim();
 
     if (!existing) {
-      const title = parsed.title?.trim() || deriveFallbackTitle(normalizedUrl);
-      const titleSource = parsed.title?.trim() ? "client" : "fallback";
+      const title = trimmedTitle || deriveFallbackTitle(normalizedUrl);
+      const titleSource = trimmedTitle ? "client" : "fallback";
       const bookmark = {
         id: makeId(),
         userId: user.id,
-        url: parsed.url.trim(),
+        url: canonicalUrl,
         normalizedUrl,
         title,
         titleSource,
@@ -744,7 +751,6 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     const nextBookmark = { ...existing, updatedAt: now };
-    const trimmedTitle = parsed.title?.trim();
 
     if (existing.titleSource === "fallback" && trimmedTitle) {
       nextBookmark.title = trimmedTitle;
@@ -863,7 +869,10 @@ export function createApp(options: CreateAppOptions = {}) {
       return parsed;
     }
 
-    const sanitized = sanitizeClientHtml(parsed.content_html);
+    const renderedHackmdHtml = isHackmdUrl(bookmark.url) && !hasHtmlMarkup(parsed.content_html)
+      ? renderMarkdownToHtml(parsed.content_html)
+      : null;
+    const sanitized = sanitizeClientHtml(renderedHackmdHtml ?? parsed.content_html);
     const textOnly = stripTags(sanitized).trim();
     if (textOnly.length < 100) {
       return errorResponse(
@@ -901,15 +910,16 @@ export function createApp(options: CreateAppOptions = {}) {
 
     let bookmarkChanged = false;
     const nextBookmark = { ...bookmark };
+    const derivedHackmdTitle = renderedHackmdHtml ? extractMarkdownTitle(parsed.content_html) : null;
 
-    if (bookmark.titleSource === "fallback" && parsed.title) {
-      nextBookmark.title = parsed.title;
+    if (bookmark.titleSource === "fallback" && (parsed.title || derivedHackmdTitle)) {
+      nextBookmark.title = parsed.title ?? derivedHackmdTitle ?? bookmark.title;
       nextBookmark.titleSource = "client";
       bookmarkChanged = true;
     }
 
-    if (!bookmark.siteName && parsed.site_name) {
-      nextBookmark.siteName = parsed.site_name;
+    if (!bookmark.siteName && (parsed.site_name || (renderedHackmdHtml ? "HackMD" : null))) {
+      nextBookmark.siteName = parsed.site_name ?? "HackMD";
       bookmarkChanged = true;
     }
 

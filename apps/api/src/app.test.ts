@@ -290,6 +290,94 @@ describe("api", () => {
     expect(result.item.title).toBe("My Title");
   });
 
+  it("canonicalizes HackMD raw markdown URLs on save", async () => {
+    const { token } = await login();
+
+    const create = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://hackmd.io/@murderteeth/S1A4kz-9bg.md?no-meta",
+        title: "https://hackmd.io/@murderteeth/S1A4kz-9bg.md?no-meta",
+        saved_via: "extension",
+      }),
+    }, TEST_ENV);
+
+    expect(create.status).toBe(201);
+    const created = await json<{ item: { id: string; title: string; url: string } }>(create);
+    expect(created.item.url).toBe("https://hackmd.io/@murderteeth/S1A4kz-9bg");
+    expect(created.item.title).toBe("hackmd.io");
+
+    const duplicate = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://hackmd.io/@murderteeth/S1A4kz-9bg?type=view",
+        saved_via: "extension",
+      }),
+    }, TEST_ENV);
+
+    expect(duplicate.status).toBe(200);
+    const duplicated = await json<{ item: { id: string; url: string } }>(duplicate);
+    expect(duplicated.item.id).toBe(created.item.id);
+    expect(duplicated.item.url).toBe("https://hackmd.io/@murderteeth/S1A4kz-9bg");
+  });
+
+  it("renders uploaded HackMD markdown to HTML and upgrades fallback titles", async () => {
+    const { token } = await login();
+
+    const create = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://hackmd.io/@murderteeth/S1A4kz-9bg.md?no-meta",
+        saved_via: "extension",
+      }),
+    }, TEST_ENV);
+    const created = await json<{ item: { id: string } }>(create);
+
+    const upload = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content_html: `
+# My Shared Note
+this is a paragraph with an [external link](https://example.com) that should render as html instead of being stored as raw markdown.
+
+another paragraph keeps the content comfortably above the minimum length requirement for saved article content.
+          `.trim(),
+        }),
+      },
+      TEST_ENV,
+    );
+
+    expect(upload.status).toBe(200);
+    const uploaded = await json<{ item: { content_html: string | null } }>(upload);
+    expect(uploaded.item.content_html).toContain("<h1>My Shared Note</h1>");
+    expect(uploaded.item.content_html).toContain(
+      "<a href=\"https://example.com\">external link</a>",
+    );
+    expect(uploaded.item.content_html).not.toContain("[external link](");
+
+    const bookmark = await store.getBookmarkById(user.id, created.item.id);
+    expect(bookmark?.title).toBe("My Shared Note");
+    expect(bookmark?.siteName).toBe("HackMD");
+  });
+
   it("deletes bookmarks idempotently by url", async () => {
     const { token } = await login();
     await request("http://localhost/v1/bookmarks", {

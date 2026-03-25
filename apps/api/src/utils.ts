@@ -1,6 +1,7 @@
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { scryptAsync } from "@noble/hashes/scrypt";
 import { sha256 } from "@noble/hashes/sha2";
+import { canonicalizeBookmarkUrl } from "@url-keep/shared";
 import type { BookmarkRecord } from "./types";
 
 const textEncoder = new TextEncoder();
@@ -175,7 +176,7 @@ export async function verifyPassword(
 }
 
 export function normalizeUrl(input: string): string {
-  const trimmed = input.trim();
+  const trimmed = canonicalizeBookmarkUrl(input);
   const url = new URL(trimmed);
 
   if (url.protocol !== "http:" && url.protocol !== "https:") {

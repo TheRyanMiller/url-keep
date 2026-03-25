@@ -1,5 +1,14 @@
 import { ApiError, UrlKeepClient } from "@url-keep/api-client";
 import {
+  toReadableBookmarkUrl,
+  type ArticleContent,
+  type Bookmark,
+  type CreateBookmarkRequest,
+  type LoginResponse,
+  type TokenItem,
+  type User,
+} from "@url-keep/shared";
+import {
   BookOpen,
   Check,
   PencilLine,
@@ -7,14 +16,6 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type {
-  ArticleContent,
-  Bookmark,
-  CreateBookmarkRequest,
-  LoginResponse,
-  TokenItem,
-  User,
-} from "@url-keep/shared";
 import DOMPurify from "dompurify";
 import {
   Navigate,
@@ -693,6 +694,7 @@ function BookmarkRow({
       setBusy(false);
     }
   };
+  const bookmarkHref = toReadableBookmarkUrl(bookmark.url);
 
   return (
     <article className="bookmark-row">
@@ -751,7 +753,7 @@ function BookmarkRow({
               <>
                 <a
                   className="bookmark-title"
-                  href={bookmark.url}
+                  href={bookmarkHref}
                   rel="noopener noreferrer"
                   target="_blank"
                 >
@@ -1661,20 +1663,12 @@ function ReaderPage() {
   const html = article?.content_html ? sanitizeArticleHtml(article.content_html) : null;
   const publishedDate = formatOptionalDate(article?.published_date);
   const readMinutes = article ? estimateReadMinutes(article.word_count) : null;
+  const bookmarkHref = bookmark ? toReadableBookmarkUrl(bookmark.url) : null;
 
   return (
     <div className="page reader-page">
       <header className="page-header reader-page-header">
-        <Link aria-label="back" className="text-action" to="/">&#x2190;</Link>
-        {bookmark ? (
-          <a
-            aria-label="open original"
-            className="text-action"
-            href={bookmark.url}
-            rel="noopener noreferrer"
-            target="_blank"
-          >&#x2197;</a>
-        ) : null}
+        <Link aria-label="back" className="text-action reader-back-link" to="/">&#x2190;</Link>
         {!offline.online ? <span className="offline-badge">offline</span> : null}
       </header>
 
@@ -1684,7 +1678,19 @@ function ReaderPage() {
       {bookmark ? (
         <article className="reader-shell">
           <header className="reader-header">
-            <h1>{bookmark.title}</h1>
+            <div className="reader-header-top">
+              <h1>{bookmark.title}</h1>
+              {bookmarkHref ? (
+                <a
+                  className="reader-web-link"
+                  href={bookmarkHref}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  Read on web
+                </a>
+              ) : null}
+            </div>
             <div className="reader-meta">
               {article?.author ? <span>{article.author}</span> : null}
               {article ? <span>{article.word_count.toLocaleString()} words</span> : null}
@@ -1709,12 +1715,6 @@ function ReaderPage() {
               </p>
             </div>
           )}
-
-          <footer className="reader-footer">
-            <a href={bookmark.url} rel="noopener noreferrer" target="_blank">
-              open original
-            </a>
-          </footer>
         </article>
       ) : null}
     </div>

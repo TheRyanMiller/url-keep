@@ -96,4 +96,60 @@ describe("runBookmarkExtraction", () => {
     expect(result.contentHtml).toContain("/v1/images/articles/bookmark-1/");
     expect(result.wordCount).toBeGreaterThan(20);
   });
+
+  it("renders HackMD markdown as HTML instead of saving raw markdown markup", async () => {
+    const store = new MemoryStore();
+    const bookmark = {
+      ...makeBookmark(),
+      url: "https://hackmd.io/@murderteeth/S1A4kz-9bg",
+      normalizedUrl: "https://hackmd.io/@murderteeth/S1A4kz-9bg",
+      title: "hackmd.io",
+    };
+    await store.insertBookmark(bookmark);
+
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url === "https://hackmd.io/@murderteeth/S1A4kz-9bg.md?no-meta") {
+        return new Response(
+          `
+# Uptime Kuma x Yearn User Guide
+we recently setup an [uptime kuma](https://github.com/louislam/uptime-kuma) server for monitoring the services, infra, and bots yearn depends on.
+
+### monitors
+- http
+- push
+
+this second paragraph makes the sample comfortably longer than the readability threshold so the rendered html is preserved.
+          `.trim(),
+          {
+            headers: {
+              "Content-Type": "text/markdown; charset=utf-8",
+            },
+          },
+        );
+      }
+
+      return new Response("not found", { status: 404 });
+    };
+
+    const result = await runBookmarkExtraction({
+      env: {
+        DB: {} as D1Database,
+      } satisfies Bindings,
+      store,
+      bookmark,
+      fetchImpl,
+    });
+
+    expect(result.extractionStatus).toBe("complete");
+    expect(result.contentHtml).toContain("<h1>Uptime Kuma x Yearn User Guide</h1>");
+    expect(result.contentHtml).toContain("<a href=\"https://github.com/louislam/uptime-kuma\">uptime kuma</a>");
+    expect(result.contentHtml).not.toContain("[uptime kuma](");
+    expect(result.wordCount).toBeGreaterThan(20);
+
+    const updatedBookmark = await store.getBookmarkById(bookmark.userId, bookmark.id);
+    expect(updatedBookmark?.title).toBe("Uptime Kuma x Yearn User Guide");
+    expect(updatedBookmark?.siteName).toBe("HackMD");
+  });
 });

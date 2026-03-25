@@ -1,5 +1,88 @@
 import { z } from "zod";
 
+function tryParseAbsoluteUrl(input: string): URL | null {
+  try {
+    return new URL(input.trim());
+  } catch {
+    return null;
+  }
+}
+
+function isHackmdHostname(hostname: string): boolean {
+  return hostname.toLowerCase() === "hackmd.io";
+}
+
+function normalizeHackmdPath(pathname: string): string {
+  let next = pathname;
+
+  if (next.endsWith("/edit")) {
+    next = next.slice(0, -5);
+  }
+
+  if (next.endsWith(".md")) {
+    next = next.slice(0, -3);
+  }
+
+  return next || "/";
+}
+
+export function isHackmdUrl(input: string): boolean {
+  const url = tryParseAbsoluteUrl(input);
+  return !!url && isHackmdHostname(url.hostname);
+}
+
+export function isHackmdRawMarkdownUrl(input: string): boolean {
+  const url = tryParseAbsoluteUrl(input);
+  return !!url && isHackmdHostname(url.hostname) && url.pathname.endsWith(".md");
+}
+
+export function canonicalizeBookmarkUrl(input: string): string {
+  const trimmed = input.trim();
+  const url = tryParseAbsoluteUrl(trimmed);
+
+  if (!url || !isHackmdHostname(url.hostname)) {
+    return trimmed;
+  }
+
+  url.pathname = normalizeHackmdPath(url.pathname);
+  url.search = "";
+  url.hash = "";
+
+  return url.toString();
+}
+
+export function toReadableBookmarkUrl(input: string): string {
+  const canonical = canonicalizeBookmarkUrl(input);
+  const url = tryParseAbsoluteUrl(canonical);
+
+  if (!url || !isHackmdHostname(url.hostname)) {
+    return canonical;
+  }
+
+  url.search = "?type=view";
+  return url.toString();
+}
+
+export function toHackmdMarkdownUrl(input: string): string | null {
+  const canonical = canonicalizeBookmarkUrl(input);
+  const url = tryParseAbsoluteUrl(canonical);
+
+  if (!url || !isHackmdHostname(url.hostname)) {
+    return null;
+  }
+
+  const normalizedPath = normalizeHackmdPath(url.pathname);
+  if (normalizedPath === "/") {
+    return null;
+  }
+
+  url.pathname = `${normalizedPath}.md`;
+  url.search = "?no-meta";
+  url.hash = "";
+
+  return url.toString();
+}
+
 export const savedViaSchema = z.enum([
   "web",
   "mobile_web",

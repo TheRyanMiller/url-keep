@@ -383,6 +383,15 @@ input {
   margin-bottom: 16px;
 }
 
+.reader-page-header .offline-badge {
+  margin-left: auto;
+}
+
+.reader-back-link {
+  font-size: 34px;
+  line-height: 1;
+}
+
 .reader-shell {
   display: grid;
   gap: 24px;
@@ -395,11 +404,27 @@ input {
   padding-bottom: 16px;
 }
 
+.reader-header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .reader-header h1 {
   font-size: 24px;
   font-weight: 500;
   line-height: 1.35;
   margin: 0;
+}
+
+.reader-web-link {
+  color: var(--fg);
+  flex-shrink: 0;
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+  text-underline-offset: 0.18em;
+  white-space: nowrap;
 }
 
 .reader-meta {
@@ -473,14 +498,20 @@ input {
   padding: 16px;
 }
 
-.reader-footer {
-  border-top: 1px solid var(--subtle-border);
-  padding-top: 16px;
-}
-
 .inline-edit {
   display: grid;
   gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .reader-header-top {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .reader-web-link {
+    white-space: normal;
+  }
 }
 
 .error {
