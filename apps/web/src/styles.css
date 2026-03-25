@@ -404,13 +404,6 @@ input {
   padding-bottom: 16px;
 }
 
-.reader-header-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
 .reader-header h1 {
   font-size: 24px;
   font-weight: 500;
@@ -418,13 +411,11 @@ input {
   margin: 0;
 }
 
-.reader-web-link {
-  color: var(--fg);
-  flex-shrink: 0;
+.reader-meta-link {
+  color: inherit;
   text-decoration: underline;
   text-decoration-color: currentColor;
   text-underline-offset: 0.18em;
-  white-space: nowrap;
 }
 
 .reader-meta {
@@ -501,17 +492,6 @@ input {
 .inline-edit {
   display: grid;
   gap: 8px;
-}
-
-@media (max-width: 640px) {
-  .reader-header-top {
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .reader-web-link {
-    white-space: normal;
-  }
 }
 
 .error {

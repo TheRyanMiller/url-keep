@@ -1678,11 +1678,16 @@ function ReaderPage() {
       {bookmark ? (
         <article className="reader-shell">
           <header className="reader-header">
-            <div className="reader-header-top">
-              <h1>{bookmark.title}</h1>
+            <h1>{bookmark.title}</h1>
+            <div className="reader-meta">
+              {article?.author ? <span>{article.author}</span> : null}
+              {article ? <span>{article.word_count.toLocaleString()} words</span> : null}
+              {readMinutes ? <span>{readMinutes} min read</span> : null}
+              {bookmark.site_name ? <span>{bookmark.site_name}</span> : null}
+              {publishedDate ? <span>{publishedDate}</span> : null}
               {bookmarkHref ? (
                 <a
-                  className="reader-web-link"
+                  className="reader-meta-link"
                   href={bookmarkHref}
                   rel="noopener noreferrer"
                   target="_blank"
@@ -1690,13 +1695,6 @@ function ReaderPage() {
                   Read on web
                 </a>
               ) : null}
-            </div>
-            <div className="reader-meta">
-              {article?.author ? <span>{article.author}</span> : null}
-              {article ? <span>{article.word_count.toLocaleString()} words</span> : null}
-              {readMinutes ? <span>{readMinutes} min read</span> : null}
-              {bookmark.site_name ? <span>{bookmark.site_name}</span> : null}
-              {publishedDate ? <span>{publishedDate}</span> : null}
             </div>
           </header>
 
