@@ -412,10 +412,17 @@ input {
 }
 
 .reader-meta-link {
+  align-items: center;
   color: inherit;
+  display: inline-flex;
+  gap: 4px;
   text-decoration: underline;
   text-decoration-color: currentColor;
   text-underline-offset: 0.18em;
+}
+
+.reader-meta-link svg {
+  flex-shrink: 0;
 }
 
 .reader-meta {
@@ -428,11 +435,63 @@ input {
   text-transform: uppercase;
 }
 
+.reader-meta-tooltip {
+  cursor: help;
+}
+
+.reader-text-size-control {
+  position: relative;
+}
+
+.reader-text-size-trigger {
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  letter-spacing: normal;
+  line-height: 1;
+  text-transform: none;
+}
+
+.reader-text-size-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  z-index: 2;
+}
+
+.reader-text-size-option {
+  min-height: auto;
+  min-width: 28px;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+.reader-text-size-option.is-active {
+  background: var(--fg);
+  color: var(--bg);
+}
+
 .reader-content {
+  --reader-font-size: 15px;
   display: grid;
-  gap: 16px;
-  line-height: 1.75;
+  gap: 18px;
+  font-size: var(--reader-font-size);
+  line-height: 1.8;
   max-width: 65ch;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
 }
 
 .reader-content > :first-child {
@@ -450,7 +509,26 @@ input {
 .reader-content h5,
 .reader-content h6 {
   line-height: 1.35;
-  margin: 1.2em 0 0.5em;
+  margin: 1.4em 0 0.45em;
+  text-wrap: balance;
+}
+
+.reader-content h1 {
+  font-size: 1.8em;
+}
+
+.reader-content h2 {
+  font-size: 1.45em;
+}
+
+.reader-content h3 {
+  font-size: 1.18em;
+}
+
+.reader-content h4,
+.reader-content h5,
+.reader-content h6 {
+  font-size: 1em;
 }
 
 .reader-content p,
@@ -459,13 +537,24 @@ input {
 .reader-content blockquote,
 .reader-content pre,
 .reader-content table,
-.reader-content figure {
+.reader-content figure,
+.reader-content hr {
   margin: 0;
+}
+
+.reader-content ul,
+.reader-content ol {
+  padding-left: 1.35em;
+}
+
+.reader-content li + li {
+  margin-top: 0.42em;
 }
 
 .reader-content a {
   text-decoration: underline;
   text-underline-offset: 0.18em;
+  overflow-wrap: anywhere;
 }
 
 .reader-content img {
@@ -475,12 +564,74 @@ input {
   max-width: 100%;
 }
 
-.reader-content blockquote,
+.reader-content figure {
+  display: grid;
+  gap: 8px;
+}
+
+.reader-content figcaption {
+  color: var(--muted);
+  font-size: 0.92em;
+}
+
+.reader-content blockquote {
+  padding-left: 14px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-style: italic;
+}
+
+.reader-content code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0.1em 0.3em;
+}
+
 .reader-content pre,
 .reader-content table {
   border: 1px solid var(--subtle-border);
   overflow-x: auto;
   padding: 12px;
+}
+
+.reader-content pre {
+  background: rgba(0, 0, 0, 0.02);
+  white-space: pre-wrap;
+}
+
+.reader-content pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.reader-content table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.reader-content th,
+.reader-content td {
+  border-bottom: 1px solid var(--subtle-border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.reader-content hr {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--subtle-border);
+}
+
+.reader-content-size-s {
+  --reader-font-size: 14px;
+}
+
+.reader-content-size-m {
+  --reader-font-size: 15px;
+}
+
+.reader-content-size-l {
+  --reader-font-size: 16px;
 }
 
 .reader-empty {

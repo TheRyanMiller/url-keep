@@ -9,6 +9,7 @@ import {
   type User,
 } from "@url-keep/shared";
 import {
+  ArrowUpRight,
   BookOpen,
   Check,
   PencilLine,
@@ -45,6 +46,7 @@ import { SyncManager } from "./offline/sync";
 const TOKEN_KEY = "url_keep_token";
 const USER_KEY = "url_keep_user";
 const IOS_SHORTCUT_TOKEN_NAME = "iphone shortcut";
+const READER_TEXT_SIZE_KEY = "url_keep_reader_text_size";
 const ALLOWED_TAGS = [
   "p",
   "h1",
@@ -83,9 +85,17 @@ const ALLOWED_TAGS = [
 ];
 const ALLOWED_ATTR = ["href", "src", "alt", "title"];
 
+type ReaderTextSize = "s" | "m" | "l";
+
 type ReaderLocationState = {
   bookmark?: Bookmark;
 };
+
+const READER_TEXT_SIZE_OPTIONS: Array<{ label: string; value: ReaderTextSize }> = [
+  { label: "S", value: "s" },
+  { label: "M", value: "m" },
+  { label: "L", value: "l" },
+];
 
 function readStoredToken(): string | null {
   try {
@@ -130,6 +140,23 @@ function writeStoredUser(user: User | null) {
     }
   } catch {
     // Ignore storage errors and keep in-memory auth.
+  }
+}
+
+function readStoredReaderTextSize(): ReaderTextSize {
+  try {
+    const raw = window.localStorage.getItem(READER_TEXT_SIZE_KEY);
+    return raw === "s" || raw === "m" || raw === "l" ? raw : "m";
+  } catch {
+    return "m";
+  }
+}
+
+function writeStoredReaderTextSize(value: ReaderTextSize) {
+  try {
+    window.localStorage.setItem(READER_TEXT_SIZE_KEY, value);
+  } catch {
+    // Ignore storage errors and keep the in-memory preference.
   }
 }
 
@@ -1580,6 +1607,9 @@ function ReaderPage() {
   const [article, setArticle] = useState<ArticleContent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [textSize, setTextSize] = useState<ReaderTextSize>(() => readStoredReaderTextSize());
+  const [textSizeMenuOpen, setTextSizeMenuOpen] = useState(false);
+  const textSizeControlRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -1660,6 +1690,42 @@ function ReaderPage() {
     };
   }, [id, offline.online, offline.syncVersion]);
 
+  useEffect(() => {
+    writeStoredReaderTextSize(textSize);
+  }, [textSize]);
+
+  useEffect(() => {
+    if (!textSizeMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (textSizeControlRef.current?.contains(target)) {
+        return;
+      }
+
+      setTextSizeMenuOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setTextSizeMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [textSizeMenuOpen]);
+
   const html = article?.content_html ? sanitizeArticleHtml(article.content_html) : null;
   const publishedDate = formatOptionalDate(article?.published_date);
   const readMinutes = article ? estimateReadMinutes(article.word_count) : null;
@@ -1681,10 +1747,47 @@ function ReaderPage() {
             <h1>{bookmark.title}</h1>
             <div className="reader-meta">
               {article?.author ? <span>{article.author}</span> : null}
-              {article ? <span>{article.word_count.toLocaleString()} words</span> : null}
-              {readMinutes ? <span>{readMinutes} min read</span> : null}
+              {readMinutes && article ? (
+                <span
+                  aria-label={`${readMinutes} min read, ${article.word_count.toLocaleString()} words`}
+                  className="reader-meta-tooltip"
+                  title={`${article.word_count.toLocaleString()} words`}
+                >
+                  {readMinutes} min read
+                </span>
+              ) : null}
               {bookmark.site_name ? <span>{bookmark.site_name}</span> : null}
               {publishedDate ? <span>{publishedDate}</span> : null}
+              <div className="reader-text-size-control" ref={textSizeControlRef}>
+                <button
+                  aria-expanded={textSizeMenuOpen}
+                  aria-haspopup="true"
+                  aria-label="Text size"
+                  className="reader-text-size-trigger"
+                  onClick={() => setTextSizeMenuOpen((open) => !open)}
+                  type="button"
+                >
+                  Aa
+                </button>
+                {textSizeMenuOpen ? (
+                  <div className="reader-text-size-menu" role="menu" aria-label="Text size options">
+                    {READER_TEXT_SIZE_OPTIONS.map((option) => (
+                      <button
+                        aria-pressed={textSize === option.value}
+                        className={`reader-text-size-option${textSize === option.value ? " is-active" : ""}`}
+                        key={option.value}
+                        onClick={() => {
+                          setTextSize(option.value);
+                          setTextSizeMenuOpen(false);
+                        }}
+                        type="button"
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
               {bookmarkHref ? (
                 <a
                   className="reader-meta-link"
@@ -1693,6 +1796,7 @@ function ReaderPage() {
                   target="_blank"
                 >
                   Read on web
+                  <ArrowUpRight aria-hidden="true" size={11} strokeWidth={1.8} />
                 </a>
               ) : null}
             </div>
@@ -1700,7 +1804,7 @@ function ReaderPage() {
 
           {article?.extraction_status === "complete" && html ? (
             <div
-              className="reader-content"
+              className={`reader-content reader-content-size-${textSize}`}
               dangerouslySetInnerHTML={{ __html: html }}
             />
           ) : (
