@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "./app";
 import { MemoryStore } from "./memory-store";
-import { hashPassword, nowIso } from "./utils";
+import { hashPassword, hashToken, nowIso } from "./utils";
 import type { UserRecord } from "./types";
 
 const TEST_ENV = {
@@ -607,6 +607,7 @@ another paragraph keeps the content comfortably above the minimum length require
     }>(enable);
     expect(enabled.item.enabled).toBe(true);
     expect(enabled.item.share_url).toContain("http://localhost:5173/s/");
+    expect(enabled.item.share_url).toMatch(/\/s\/[a-f0-9]{20}$/);
     expect(enabled.item.hit_count).toBe(0);
     expect(enabled.item.last_accessed_at).toBeNull();
 
@@ -693,7 +694,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(share.status).toBe(200);
     const body = await json<{ item: { enabled: boolean; share_url: string | null } }>(share);
     expect(body.item.enabled).toBe(true);
-    expect(body.item.share_url).toContain("/s/");
+    expect(body.item.share_url).toMatch(/\/s\/[a-f0-9]{20}$/);
   });
 
   it("returns 404 for revoked or invalid public share links", async () => {
@@ -735,5 +736,35 @@ another paragraph keeps the content comfortably above the minimum length require
       TEST_ENV,
     );
     expect(invalidRead.status).toBe(404);
+  });
+
+  it("rotates legacy share ids to shorter links and still accepts legacy signed URLs", async () => {
+    const { token } = await login();
+    const created = await createBookmark(token, "https://example.com/legacy-share");
+    expect(created).not.toBeNull();
+
+    const legacyShareId = "uk_legacysharetoken0123456789";
+    await store.enableBookmarkShare(user.id, created!.item.id, legacyShareId, nowIso());
+
+    const legacyRead = await request(
+      `http://localhost/v1/public/shares/${legacyShareId}.${hashToken(legacyShareId, TEST_ENV.TOKEN_PEPPER)}`,
+      undefined,
+      TEST_ENV,
+    );
+    expect(legacyRead.status).toBe(200);
+
+    const enable = await request(
+      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      TEST_ENV,
+    );
+    expect(enable.status).toBe(200);
+
+    const body = await json<{ item: { share_url: string | null } }>(enable);
+    const publicToken = body.item.share_url?.split("/s/")[1] ?? "";
+    expect(publicToken).toMatch(/^[a-f0-9]{20}$/);
   });
 });

@@ -70,6 +70,11 @@ export function makeOpaqueToken(): string {
   return `uk_${bytesToHex(bytes)}`;
 }
 
+export function makeShareToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(10));
+  return bytesToHex(bytes);
+}
+
 export function hashToken(token: string, pepper: string): string {
   const tokenBytes = textEncoder.encode(`${token}${pepper}`);
   return bytesToHex(sha256(tokenBytes));

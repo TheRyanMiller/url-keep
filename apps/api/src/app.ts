@@ -35,6 +35,7 @@ import {
   hashToken,
   makeId,
   makeOpaqueToken,
+  makeShareToken,
   normalizeUrl,
   nowIso,
   shouldRefreshLastUsed,
@@ -258,6 +259,8 @@ function timingSafeEqualStrings(left: string, right: string): boolean {
   return mismatch === 0;
 }
 
+const RAW_SHARE_ID_PATTERN = /^[a-f0-9]{20}$/;
+
 function getAppOrigin(c: Context<AppEnv>): string {
   const configured = c.env.APP_ORIGIN
     ?.split(",")
@@ -269,27 +272,34 @@ function getAppOrigin(c: Context<AppEnv>): string {
   return new URL(c.req.url).origin.replace(/\/+$/, "");
 }
 
-function buildPublicShareToken(shareId: string, pepper: string): string {
-  return `${shareId}.${hashToken(shareId, pepper)}`;
+function buildPublicShareToken(shareId: string): string {
+  return shareId;
 }
 
-function parsePublicShareToken(value: string): { shareId: string; signature: string } | null {
+function parsePublicShareToken(value: string, pepper?: string): string | null {
   const trimmed = value.trim();
+  if (RAW_SHARE_ID_PATTERN.test(trimmed)) {
+    return trimmed;
+  }
+
   const separator = trimmed.indexOf(".");
-  if (separator <= 0 || separator >= trimmed.length - 1) {
+  if (separator <= 0 || separator >= trimmed.length - 1 || !pepper) {
     return null;
   }
 
-  return {
-    shareId: trimmed.slice(0, separator),
-    signature: trimmed.slice(separator + 1),
-  };
+  const shareId = trimmed.slice(0, separator);
+  const signature = trimmed.slice(separator + 1);
+  const expectedSignature = hashToken(shareId, pepper);
+  return timingSafeEqualStrings(signature, expectedSignature) ? shareId : null;
+}
+
+function isLegacyShareId(shareId: string): boolean {
+  return !RAW_SHARE_ID_PATTERN.test(shareId);
 }
 
 function bookmarkShareToApi(
   c: Context<AppEnv>,
   share: BookmarkShareRecord | null,
-  pepper: string,
 ) {
   if (!share) {
     return {
@@ -303,7 +313,7 @@ function bookmarkShareToApi(
 
   return {
     enabled: true,
-    share_url: `${getAppOrigin(c)}/s/${buildPublicShareToken(share.shareId, pepper)}`,
+    share_url: `${getAppOrigin(c)}/s/${buildPublicShareToken(share.shareId)}`,
     hit_count: share.viewCount,
     created_at: share.enabledAt,
     last_accessed_at: share.lastAccessedAt,
@@ -913,27 +923,17 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/v1/bookmarks/:id/share", async (c) => {
     const { user } = c.get("auth");
-    const pepper = c.env.TOKEN_PEPPER;
-    if (!pepper) {
-      return errorResponse("server_error", "TOKEN_PEPPER is not configured", 500);
-    }
-
     const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
     if (!bookmark) {
       return errorResponse("not_found", "Bookmark not found", 404);
     }
 
     const share = await c.get("store").getBookmarkShare(user.id, bookmark.id);
-    return c.json({ item: bookmarkShareToApi(c, share, pepper) });
+    return c.json({ item: bookmarkShareToApi(c, share) });
   });
 
   app.put("/v1/bookmarks/:id/share", async (c) => {
     const { user } = c.get("auth");
-    const pepper = c.env.TOKEN_PEPPER;
-    if (!pepper) {
-      return errorResponse("server_error", "TOKEN_PEPPER is not configured", 500);
-    }
-
     const store = c.get("store");
     const bookmark = await store.getBookmarkById(user.id, c.req.param("id"));
     if (!bookmark) {
@@ -941,8 +941,8 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     const existingShare = await store.getBookmarkShare(user.id, bookmark.id);
-    if (existingShare) {
-      return c.json({ item: bookmarkShareToApi(c, existingShare, pepper) });
+    if (existingShare && !isLegacyShareId(existingShare.shareId)) {
+      return c.json({ item: bookmarkShareToApi(c, existingShare) });
     }
 
     const content = await store.getArticleContentByBookmarkId(user.id, bookmark.id);
@@ -954,7 +954,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const share = await store.enableBookmarkShare(
       user.id,
       bookmark.id,
-      makeOpaqueToken(),
+      makeShareToken(),
       nowIso(),
     );
 
@@ -962,7 +962,7 @@ export function createApp(options: CreateAppOptions = {}) {
       return errorResponse("not_found", "Bookmark not found", 404);
     }
 
-    return c.json({ item: bookmarkShareToApi(c, share, pepper) });
+    return c.json({ item: bookmarkShareToApi(c, share) });
   });
 
   app.delete("/v1/bookmarks/:id/share", async (c) => {
@@ -1130,22 +1130,12 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.get("/v1/public/shares/:token", async (c) => {
-    const pepper = c.env.TOKEN_PEPPER;
-    if (!pepper) {
-      return errorResponse("server_error", "TOKEN_PEPPER is not configured", 500);
-    }
-
-    const parsed = parsePublicShareToken(c.req.param("token"));
-    if (!parsed) {
+    const shareId = parsePublicShareToken(c.req.param("token"), c.env.TOKEN_PEPPER);
+    if (!shareId) {
       return errorResponse("not_found", "Share not found", 404);
     }
 
-    const expectedSignature = hashToken(parsed.shareId, pepper);
-    if (!timingSafeEqualStrings(parsed.signature, expectedSignature)) {
-      return errorResponse("not_found", "Share not found", 404);
-    }
-
-    const result = await c.get("store").getPublicShareById(parsed.shareId);
+    const result = await c.get("store").getPublicShareById(shareId);
     if (!result || !result.content || validateShareableContent(result.content)) {
       return errorResponse("not_found", "Share not found", 404);
     }

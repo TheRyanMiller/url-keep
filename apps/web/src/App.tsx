@@ -3,7 +3,6 @@ import {
   toReadableBookmarkUrl,
   type ArticleContent,
   type Bookmark,
-  type BookmarkShare,
   type CreateBookmarkRequest,
   type LoginResponse,
   type PublicShareArticle,
@@ -252,15 +251,6 @@ function formatOptionalDate(value: string | null | undefined) {
 
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
-}
-
-function formatDateTime(value: string | null | undefined) {
-  if (!value) {
-    return null;
-  }
-
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function formatError(caught: unknown, fallback: string) {
@@ -860,21 +850,11 @@ function BookmarkRow({
   const [title, setTitle] = useState(bookmark.title);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [share, setShare] = useState<BookmarkShare | null>(null);
-  const [shareVisible, setShareVisible] = useState(false);
   const [shareBusy, setShareBusy] = useState(false);
-  const [shareCopied, setShareCopied] = useState(false);
 
   useEffect(() => {
     setTitle(bookmark.title);
   }, [bookmark.title]);
-
-  useEffect(() => {
-    setShare(null);
-    setShareVisible(false);
-    setShareBusy(false);
-    setShareCopied(false);
-  }, [bookmark.id]);
 
   useEffect(() => {
     if (!deleteArmed) {
@@ -910,50 +890,32 @@ function BookmarkRow({
     }
 
     setShareBusy(true);
-    setShareCopied(false);
     setDeleteArmed(false);
     try {
       const response = await auth.client.enableBookmarkShare(bookmark.id);
-      setShare(response.item);
-      setShareVisible(true);
-    } catch (caught) {
-      if (caught instanceof ApiError && caught.code === "invalid_response") {
+      if (!response.item.share_url) {
         onShareNotice("share is unavailable right now");
-      } else {
-        onShareNotice(formatError(caught, "share failed"));
+        return;
       }
-    } finally {
-      setShareBusy(false);
-    }
-  };
 
-  const copyShare = async () => {
-    if (!share?.share_url) {
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(share.share_url);
-      setShareCopied(true);
-    } catch {
-      onShareNotice("copy failed");
-    }
-  };
-
-  const disableShare = async () => {
-    if (!online) {
-      onShareNotice("sharing requires a connection");
-      return;
-    }
-
-    setShareBusy(true);
-    try {
-      await auth.client.disableBookmarkShare(bookmark.id);
-      setShare(null);
-      setShareVisible(false);
-      setShareCopied(false);
+      try {
+        await navigator.clipboard.writeText(response.item.share_url);
+        onShareNotice("share link copied");
+      } catch {
+        onShareNotice("share link ready, but copy failed");
+      }
     } catch (caught) {
-      onShareNotice(formatError(caught, "disable failed"));
+      if (caught instanceof ApiError) {
+        if (caught.code === "invalid_response") {
+          onShareNotice("share is unavailable right now");
+          return;
+        }
+        if (caught.code === "share_unavailable") {
+          onShareNotice("article is not ready to share yet");
+          return;
+        }
+      }
+      onShareNotice(formatError(caught, "share failed"));
     } finally {
       setShareBusy(false);
     }
@@ -1059,38 +1021,6 @@ function BookmarkRow({
               </Link>
             </div>
           ) : null}
-          {shareVisible && share?.share_url ? (
-            <section className="share-panel">
-              <a
-                className="share-url"
-                href={share.share_url}
-                rel="noopener noreferrer"
-                target="_blank"
-              >
-                {share.share_url}
-              </a>
-              <p className="share-meta">
-                {share.hit_count === 1 ? "1 open" : `${share.hit_count} opens`}
-                {" · "}
-                {share.last_accessed_at
-                  ? `last opened ${formatDateTime(share.last_accessed_at)}`
-                  : "unused"}
-              </p>
-              <div className="inline-actions">
-                <button className="text-action" onClick={() => void copyShare()} type="button">
-                  {shareCopied ? "copied" : "copy link"}
-                </button>
-                <button
-                  className="text-action"
-                  disabled={!online || shareBusy}
-                  onClick={() => void disableShare()}
-                  type="button"
-                >
-                  disable share
-                </button>
-              </div>
-            </section>
-          ) : null}
           <div className="icon-actions">
             {editing ? (
               <button
@@ -1106,11 +1036,11 @@ function BookmarkRow({
             ) : (
               bookmark.extraction_status === "complete" ? (
                 <button
-                  aria-label={shareBusy ? "creating share link" : "share article"}
+                  aria-label={shareBusy ? "copying share link" : "share article"}
                   className="icon-action bookmark-share-link"
                   disabled={!online || shareBusy}
                   onClick={() => void enableShare()}
-                  title={shareBusy ? "Creating share link" : "Share article"}
+                  title={shareBusy ? "Copying share link" : "Copy share link"}
                   type="button"
                 >
                   <Share2 aria-hidden="true" size={16} strokeWidth={1.75} />

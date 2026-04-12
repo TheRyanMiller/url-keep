@@ -315,25 +315,6 @@ input {
   opacity: 0.55;
 }
 
-.share-panel {
-  display: grid;
-  gap: 6px;
-  width: min(320px, 100%);
-  padding-top: 8px;
-  border-top: 1px solid var(--subtle-border);
-}
-
-.share-url {
-  color: inherit;
-  overflow-wrap: anywhere;
-}
-
-.share-meta {
-  margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-}
-
 .bookmark-image {
   flex-shrink: 0;
   width: 100px;
@@ -833,12 +814,6 @@ input {
 
   .bookmark-read-link {
     justify-content: flex-end;
-  }
-
-  .share-panel {
-    max-width: none;
-    width: 100%;
-    text-align: left;
   }
 
   .bookmark-image {
