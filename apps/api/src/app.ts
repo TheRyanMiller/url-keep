@@ -259,7 +259,10 @@ function timingSafeEqualStrings(left: string, right: string): boolean {
 }
 
 function getAppOrigin(c: Context<AppEnv>): string {
-  const configured = c.env.APP_ORIGIN?.trim().replace(/\/+$/, "");
+  const configured = c.env.APP_ORIGIN
+    ?.split(",")
+    .map((value) => value.trim().replace(/^['"]|['"]$/g, "").replace(/\/+$/, ""))
+    .find(Boolean);
   if (configured) {
     return configured;
   }
@@ -324,14 +327,6 @@ function validateShareableContent(content: ArticleContentRecord | null): Respons
     return errorResponse(
       "share_unavailable",
       "article extraction must be complete before sharing",
-      409,
-    );
-  }
-
-  if (content.contentSource !== "server") {
-    return errorResponse(
-      "share_unavailable",
-      "only server-extracted articles can be shared publicly",
       409,
     );
   }

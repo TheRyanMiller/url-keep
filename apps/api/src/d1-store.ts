@@ -174,13 +174,14 @@ function bookmarkSelectSql() {
   `;
 }
 
-function bookmarkShareSelectSql(alias = "b") {
+function bookmarkShareSelectSql(alias?: string) {
+  const prefix = alias ? `${alias}.` : "";
   return `
-    ${alias}.share_id,
-    ${alias}.share_enabled_at,
-    ${alias}.share_revoked_at,
-    ${alias}.share_view_count,
-    ${alias}.share_last_accessed_at
+    ${prefix}share_id,
+    ${prefix}share_enabled_at,
+    ${prefix}share_revoked_at,
+    ${prefix}share_view_count,
+    ${prefix}share_last_accessed_at
   `;
 }
 

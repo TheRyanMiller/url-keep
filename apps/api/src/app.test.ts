@@ -591,7 +591,10 @@ another paragraph keeps the content comfortably above the minimum length require
         method: "PUT",
         headers: { Authorization: `Bearer ${token}` },
       },
-      TEST_ENV,
+      {
+        ...TEST_ENV,
+        APP_ORIGIN: "http://localhost:5173, http://127.0.0.1:5173",
+      },
     );
     expect(enable.status).toBe(200);
     const enabled = await json<{
@@ -603,7 +606,7 @@ another paragraph keeps the content comfortably above the minimum length require
       };
     }>(enable);
     expect(enabled.item.enabled).toBe(true);
-    expect(enabled.item.share_url).toContain("/s/");
+    expect(enabled.item.share_url).toContain("http://localhost:5173/s/");
     expect(enabled.item.hit_count).toBe(0);
     expect(enabled.item.last_accessed_at).toBeNull();
 
@@ -613,7 +616,10 @@ another paragraph keeps the content comfortably above the minimum length require
         method: "PUT",
         headers: { Authorization: `Bearer ${token}` },
       },
-      TEST_ENV,
+      {
+        ...TEST_ENV,
+        APP_ORIGIN: "http://localhost:5173, http://127.0.0.1:5173",
+      },
     );
     const secondEnabled = await json<typeof enabled>(secondEnable);
     expect(secondEnabled.item.share_url).toBe(enabled.item.share_url);
@@ -650,7 +656,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(shareBody.item.last_accessed_at).not.toBeNull();
   });
 
-  it("rejects public sharing for client-captured content", async () => {
+  it("allows public sharing for client-captured content", async () => {
     const { token } = await login();
     const created = await createBookmark(token, "https://example.com/client-share");
     expect(created).not.toBeNull();
@@ -684,9 +690,10 @@ another paragraph keeps the content comfortably above the minimum length require
       },
       TEST_ENV,
     );
-    expect(share.status).toBe(409);
-    const body = await json<{ error: { code: string; message: string } }>(share);
-    expect(body.error.code).toBe("share_unavailable");
+    expect(share.status).toBe(200);
+    const body = await json<{ item: { enabled: boolean; share_url: string | null } }>(share);
+    expect(body.item.enabled).toBe(true);
+    expect(body.item.share_url).toContain("/s/");
   });
 
   it("returns 404 for revoked or invalid public share links", async () => {
