@@ -16,6 +16,7 @@ import {
   Check,
   PencilLine,
   RefreshCw,
+  Share2,
   Trash2,
   X,
 } from "lucide-react";
@@ -1035,12 +1036,14 @@ function BookmarkRow({
                 <span>read</span>
               </Link>
               <button
+                aria-label={shareBusy ? "creating share link" : "share article"}
                 className="text-action bookmark-share-link"
                 disabled={!online || shareBusy}
                 onClick={() => void enableShare()}
+                title={shareBusy ? "Creating share link" : "Share article"}
                 type="button"
               >
-                {shareBusy ? "sharing..." : "share"}
+                <Share2 aria-hidden="true" size={14} strokeWidth={1.75} />
               </button>
             </div>
           ) : null}

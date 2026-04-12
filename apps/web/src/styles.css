@@ -269,7 +269,15 @@ input {
 }
 
 .bookmark-share-link {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  line-height: 1;
   min-height: auto;
+}
+
+.bookmark-share-link:disabled {
+  opacity: 0.55;
 }
 
 .share-panel {
