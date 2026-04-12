@@ -843,12 +843,14 @@ function BookmarkRow({
   bookmark,
   online,
   onDelete,
+  onShareNotice,
   onTitleUpdated,
   onRetryExtraction,
 }: {
   bookmark: Bookmark;
   online: boolean;
   onDelete: (bookmark: Bookmark) => Promise<void>;
+  onShareNotice: (message: string) => void;
   onTitleUpdated: (bookmark: Bookmark, title: string) => Promise<void>;
   onRetryExtraction: (bookmark: Bookmark) => Promise<void>;
 }) {
@@ -861,7 +863,6 @@ function BookmarkRow({
   const [share, setShare] = useState<BookmarkShare | null>(null);
   const [shareVisible, setShareVisible] = useState(false);
   const [shareBusy, setShareBusy] = useState(false);
-  const [shareError, setShareError] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
 
   useEffect(() => {
@@ -872,7 +873,6 @@ function BookmarkRow({
     setShare(null);
     setShareVisible(false);
     setShareBusy(false);
-    setShareError(null);
     setShareCopied(false);
   }, [bookmark.id]);
 
@@ -905,12 +905,11 @@ function BookmarkRow({
 
   const enableShare = async () => {
     if (!online) {
-      setShareError("sharing requires a connection");
+      onShareNotice("sharing requires a connection");
       return;
     }
 
     setShareBusy(true);
-    setShareError(null);
     setShareCopied(false);
     setDeleteArmed(false);
     try {
@@ -919,9 +918,9 @@ function BookmarkRow({
       setShareVisible(true);
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === "invalid_response") {
-        setShareError("share is unavailable right now");
+        onShareNotice("share is unavailable right now");
       } else {
-        setShareError(formatError(caught, "share failed"));
+        onShareNotice(formatError(caught, "share failed"));
       }
     } finally {
       setShareBusy(false);
@@ -936,27 +935,25 @@ function BookmarkRow({
     try {
       await navigator.clipboard.writeText(share.share_url);
       setShareCopied(true);
-      setShareError(null);
     } catch {
-      setShareError("copy failed");
+      onShareNotice("copy failed");
     }
   };
 
   const disableShare = async () => {
     if (!online) {
-      setShareError("sharing requires a connection");
+      onShareNotice("sharing requires a connection");
       return;
     }
 
     setShareBusy(true);
-    setShareError(null);
     try {
       await auth.client.disableBookmarkShare(bookmark.id);
       setShare(null);
       setShareVisible(false);
       setShareCopied(false);
     } catch (caught) {
-      setShareError(formatError(caught, "disable failed"));
+      onShareNotice(formatError(caught, "disable failed"));
     } finally {
       setShareBusy(false);
     }
@@ -1094,7 +1091,6 @@ function BookmarkRow({
               </div>
             </section>
           ) : null}
-          {shareError ? <p className="error share-error">{shareError}</p> : null}
           <div className="icon-actions">
             {editing ? (
               <button
@@ -1166,6 +1162,7 @@ function MainPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ id: number; message: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const query = searchParams.get("q") ?? "";
 
@@ -1203,6 +1200,25 @@ function MainPage() {
   useEffect(() => {
     void loadBookmarks();
   }, [query, offline.online, offline.syncVersion]);
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+
+    const id = window.setTimeout(() => {
+      setNotice((current) => (current?.id === notice.id ? null : current));
+    }, 2800);
+
+    return () => window.clearTimeout(id);
+  }, [notice]);
+
+  const showNotice = (message: string) => {
+    setNotice({
+      id: Date.now(),
+      message,
+    });
+  };
 
   const onDeleteConfirm = async (bookmark: Bookmark) => {
     if (!offline.online) {
@@ -1256,6 +1272,11 @@ function MainPage() {
 
   return (
     <div className="page">
+      {notice ? (
+        <div aria-live="polite" className="app-notice" role="status">
+          {notice.message}
+        </div>
+      ) : null}
       <header className="page-header row-between">
         <BrandLogo onRefresh={loadBookmarks} />
         <Nav />
@@ -1287,6 +1308,7 @@ function MainPage() {
             online={offline.online}
             onDelete={onDeleteConfirm}
             onRetryExtraction={onRetryExtraction}
+            onShareNotice={showNotice}
             onTitleUpdated={onTitleUpdated}
           />
         ))}
