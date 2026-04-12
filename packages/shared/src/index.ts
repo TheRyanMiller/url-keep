@@ -158,6 +158,32 @@ export const articleContentResponseSchema = z.object({
   item: articleContentSchema,
 });
 
+export const bookmarkShareSchema = z.object({
+  enabled: z.boolean(),
+  share_url: z.string().url().nullable(),
+  hit_count: z.number().int().nonnegative(),
+  created_at: z.string().nullable(),
+  last_accessed_at: z.string().nullable(),
+});
+
+export const bookmarkShareResponseSchema = z.object({
+  item: bookmarkShareSchema,
+});
+
+export const publicShareArticleSchema = z.object({
+  title: z.string(),
+  url: z.string().url(),
+  site_name: z.string().nullable(),
+  author: z.string().nullable(),
+  published_date: z.string().nullable(),
+  word_count: z.number().int().nonnegative(),
+  content_html: z.string(),
+});
+
+export const publicShareArticleResponseSchema = z.object({
+  item: publicShareArticleSchema,
+});
+
 export const extractBookmarkResponseSchema = z.object({
   extraction_status: extractionStatusSchema,
 });
@@ -265,6 +291,8 @@ export type TokenItem = z.infer<typeof tokenItemSchema>;
 export type Bookmark = z.infer<typeof bookmarkSchema>;
 export type ExtractionStatus = z.infer<typeof extractionStatusSchema>;
 export type ArticleContent = z.infer<typeof articleContentSchema>;
+export type BookmarkShare = z.infer<typeof bookmarkShareSchema>;
+export type PublicShareArticle = z.infer<typeof publicShareArticleSchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type LoginResponse = z.infer<typeof loginResponseSchema>;
@@ -275,6 +303,8 @@ export type CreateTokenResponse = z.infer<typeof createTokenResponseSchema>;
 export type BookmarkListResponse = z.infer<typeof bookmarkListResponseSchema>;
 export type BookmarkResponse = z.infer<typeof bookmarkResponseSchema>;
 export type ArticleContentResponse = z.infer<typeof articleContentResponseSchema>;
+export type BookmarkShareResponse = z.infer<typeof bookmarkShareResponseSchema>;
+export type PublicShareArticleResponse = z.infer<typeof publicShareArticleResponseSchema>;
 export type ExtractBookmarkResponse = z.infer<typeof extractBookmarkResponseSchema>;
 export type OfflineStatusResponse = z.infer<typeof offlineStatusResponseSchema>;
 export type OfflineBundleItem = z.infer<typeof offlineBundleItemSchema>;

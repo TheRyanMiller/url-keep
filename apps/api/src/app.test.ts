@@ -99,6 +99,29 @@ describe("api", () => {
     return json<{ token: string }>(response);
   }
 
+  async function createBookmark(
+    token: string,
+    url: string,
+    savedVia: "web" | "extension" | "mobile_web" | "ios_shortcut" = "web",
+  ) {
+    const response = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url,
+        saved_via: savedVia,
+      }),
+    }, TEST_ENV);
+
+    expect(response.status).toBe(savedVia === "ios_shortcut" ? 204 : 201);
+    return response.status === 204
+      ? null
+      : json<{ item: { id: string; url: string; title: string } }>(response);
+  }
+
   it("logs in successfully and rejects bad credentials", async () => {
     const success = await login();
     expect(success.token.startsWith("uk_")).toBe(true);
@@ -555,5 +578,155 @@ another paragraph keeps the content comfortably above the minimum length require
     );
     expect(deletedContent.item.extraction_status).toBe("pending");
     expect(deletedContent.item.content_html).toBeNull();
+  });
+
+  it("creates idempotent public share links and tracks hit counts", async () => {
+    const { token } = await login();
+    const created = await createBookmark(token, "https://example.com/shareable");
+    expect(created).not.toBeNull();
+
+    const enable = await request(
+      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      TEST_ENV,
+    );
+    expect(enable.status).toBe(200);
+    const enabled = await json<{
+      item: {
+        enabled: boolean;
+        share_url: string | null;
+        hit_count: number;
+        last_accessed_at: string | null;
+      };
+    }>(enable);
+    expect(enabled.item.enabled).toBe(true);
+    expect(enabled.item.share_url).toContain("/s/");
+    expect(enabled.item.hit_count).toBe(0);
+    expect(enabled.item.last_accessed_at).toBeNull();
+
+    const secondEnable = await request(
+      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      TEST_ENV,
+    );
+    const secondEnabled = await json<typeof enabled>(secondEnable);
+    expect(secondEnabled.item.share_url).toBe(enabled.item.share_url);
+
+    const publicToken = enabled.item.share_url!.split("/s/")[1];
+    const publicRead = await request(
+      `http://localhost/v1/public/shares/${publicToken}`,
+      undefined,
+      TEST_ENV,
+    );
+    expect(publicRead.status).toBe(200);
+    const publicBody = await json<{
+      item: {
+        title: string;
+        url: string;
+        content_html: string;
+      };
+    }>(publicRead);
+    expect(publicBody.item.title).toBe("example.com");
+    expect(publicBody.item.url).toBe("https://example.com/shareable");
+    expect(publicBody.item.content_html).toContain("offline article");
+    expect(publicRead.headers.get("Cache-Control")).toBe("no-store");
+    expect(publicRead.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
+
+    const shareState = await request(
+      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      TEST_ENV,
+    );
+    const shareBody = await json<typeof enabled>(shareState);
+    expect(shareBody.item.hit_count).toBe(1);
+    expect(shareBody.item.last_accessed_at).not.toBeNull();
+  });
+
+  it("rejects public sharing for client-captured content", async () => {
+    const { token } = await login();
+    const created = await createBookmark(token, "https://example.com/client-share");
+    expect(created).not.toBeNull();
+
+    const upload = await request(
+      `http://localhost/v1/bookmarks/${created!.item.id}/content`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content_html: `
+            <article>
+              <p>this client captured article has enough text to satisfy the validation rule.</p>
+              <p>another paragraph keeps it comfortably above the minimum content threshold for the upload endpoint.</p>
+            </article>
+          `,
+        }),
+      },
+      TEST_ENV,
+    );
+    expect(upload.status).toBe(200);
+
+    const share = await request(
+      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      TEST_ENV,
+    );
+    expect(share.status).toBe(409);
+    const body = await json<{ error: { code: string; message: string } }>(share);
+    expect(body.error.code).toBe("share_unavailable");
+  });
+
+  it("returns 404 for revoked or invalid public share links", async () => {
+    const { token } = await login();
+    const created = await createBookmark(token, "https://example.com/revoked-share");
+    expect(created).not.toBeNull();
+
+    const enable = await request(
+      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      TEST_ENV,
+    );
+    const enabled = await json<{ item: { share_url: string | null } }>(enable);
+    const publicToken = enabled.item.share_url!.split("/s/")[1];
+
+    const disable = await request(
+      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      TEST_ENV,
+    );
+    expect(disable.status).toBe(204);
+
+    const revokedRead = await request(
+      `http://localhost/v1/public/shares/${publicToken}`,
+      undefined,
+      TEST_ENV,
+    );
+    expect(revokedRead.status).toBe(404);
+
+    const invalidRead = await request(
+      "http://localhost/v1/public/shares/not-a-real-token",
+      undefined,
+      TEST_ENV,
+    );
+    expect(invalidRead.status).toBe(404);
   });
 });

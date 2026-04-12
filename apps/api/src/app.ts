@@ -26,6 +26,7 @@ import type {
   AuthContext,
   Bindings,
   BookmarkRecord,
+  BookmarkShareRecord,
 } from "./types";
 import {
   bookmarkToApi,
@@ -244,6 +245,104 @@ function articleContentToApi(content: ArticleContentRecord) {
   };
 }
 
+function timingSafeEqualStrings(left: string, right: string): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  let mismatch = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+
+  return mismatch === 0;
+}
+
+function getAppOrigin(c: Context<AppEnv>): string {
+  const configured = c.env.APP_ORIGIN?.trim().replace(/\/+$/, "");
+  if (configured) {
+    return configured;
+  }
+  return new URL(c.req.url).origin.replace(/\/+$/, "");
+}
+
+function buildPublicShareToken(shareId: string, pepper: string): string {
+  return `${shareId}.${hashToken(shareId, pepper)}`;
+}
+
+function parsePublicShareToken(value: string): { shareId: string; signature: string } | null {
+  const trimmed = value.trim();
+  const separator = trimmed.indexOf(".");
+  if (separator <= 0 || separator >= trimmed.length - 1) {
+    return null;
+  }
+
+  return {
+    shareId: trimmed.slice(0, separator),
+    signature: trimmed.slice(separator + 1),
+  };
+}
+
+function bookmarkShareToApi(
+  c: Context<AppEnv>,
+  share: BookmarkShareRecord | null,
+  pepper: string,
+) {
+  if (!share) {
+    return {
+      enabled: false,
+      share_url: null,
+      hit_count: 0,
+      created_at: null,
+      last_accessed_at: null,
+    };
+  }
+
+  return {
+    enabled: true,
+    share_url: `${getAppOrigin(c)}/s/${buildPublicShareToken(share.shareId, pepper)}`,
+    hit_count: share.viewCount,
+    created_at: share.enabledAt,
+    last_accessed_at: share.lastAccessedAt,
+  };
+}
+
+function publicShareArticleToApi(bookmark: BookmarkRecord, content: ArticleContentRecord) {
+  return {
+    title: bookmark.title,
+    url: bookmark.url,
+    site_name: bookmark.siteName,
+    author: content.author,
+    published_date: content.publishedDate,
+    word_count: content.wordCount,
+    content_html: content.contentHtml ?? "",
+  };
+}
+
+function validateShareableContent(content: ArticleContentRecord | null): Response | null {
+  if (!content || content.extractionStatus !== "complete") {
+    return errorResponse(
+      "share_unavailable",
+      "article extraction must be complete before sharing",
+      409,
+    );
+  }
+
+  if (content.contentSource !== "server") {
+    return errorResponse(
+      "share_unavailable",
+      "only server-extracted articles can be shared publicly",
+      409,
+    );
+  }
+
+  if (!content.contentHtml) {
+    return errorResponse("share_unavailable", "article content is not available for sharing", 409);
+  }
+
+  return null;
+}
+
 function stripTags(html: string): string {
   return html.replace(/<[^>]*>/g, "");
 }
@@ -403,7 +502,8 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use("/v1/*", async (c, next) => {
     if (
       c.req.path === "/v1/auth/login" ||
-      c.req.path.startsWith("/v1/images/")
+      c.req.path.startsWith("/v1/images/") ||
+      c.req.path.startsWith("/v1/public/shares/")
     ) {
       return next();
     }
@@ -816,6 +916,71 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ item: bookmarkToApi(bookmark) });
   });
 
+  app.get("/v1/bookmarks/:id/share", async (c) => {
+    const { user } = c.get("auth");
+    const pepper = c.env.TOKEN_PEPPER;
+    if (!pepper) {
+      return errorResponse("server_error", "TOKEN_PEPPER is not configured", 500);
+    }
+
+    const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
+    if (!bookmark) {
+      return errorResponse("not_found", "Bookmark not found", 404);
+    }
+
+    const share = await c.get("store").getBookmarkShare(user.id, bookmark.id);
+    return c.json({ item: bookmarkShareToApi(c, share, pepper) });
+  });
+
+  app.put("/v1/bookmarks/:id/share", async (c) => {
+    const { user } = c.get("auth");
+    const pepper = c.env.TOKEN_PEPPER;
+    if (!pepper) {
+      return errorResponse("server_error", "TOKEN_PEPPER is not configured", 500);
+    }
+
+    const store = c.get("store");
+    const bookmark = await store.getBookmarkById(user.id, c.req.param("id"));
+    if (!bookmark) {
+      return errorResponse("not_found", "Bookmark not found", 404);
+    }
+
+    const existingShare = await store.getBookmarkShare(user.id, bookmark.id);
+    if (existingShare) {
+      return c.json({ item: bookmarkShareToApi(c, existingShare, pepper) });
+    }
+
+    const content = await store.getArticleContentByBookmarkId(user.id, bookmark.id);
+    const shareableError = validateShareableContent(content);
+    if (shareableError) {
+      return shareableError;
+    }
+
+    const share = await store.enableBookmarkShare(
+      user.id,
+      bookmark.id,
+      makeOpaqueToken(),
+      nowIso(),
+    );
+
+    if (!share) {
+      return errorResponse("not_found", "Bookmark not found", 404);
+    }
+
+    return c.json({ item: bookmarkShareToApi(c, share, pepper) });
+  });
+
+  app.delete("/v1/bookmarks/:id/share", async (c) => {
+    const { user } = c.get("auth");
+    const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
+    if (!bookmark) {
+      return errorResponse("not_found", "Bookmark not found", 404);
+    }
+
+    await c.get("store").disableBookmarkShare(user.id, bookmark.id, nowIso());
+    return c.body(null, 204);
+  });
+
   app.post("/v1/bookmarks/:id/extract", async (c) => {
     const { user } = c.get("auth");
     const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
@@ -907,6 +1072,10 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     await store.upsertArticleContent(content);
+    const activeShare = await store.getBookmarkShare(user.id, bookmark.id);
+    if (activeShare) {
+      await store.disableBookmarkShare(user.id, bookmark.id, now);
+    }
 
     let bookmarkChanged = false;
     const nextBookmark = { ...bookmark };
@@ -950,14 +1119,50 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.delete("/v1/bookmarks/:id/content", async (c) => {
     const { user } = c.get("auth");
-    const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
+    const store = c.get("store");
+    const bookmark = await store.getBookmarkById(user.id, c.req.param("id"));
     if (!bookmark) {
       return errorResponse("not_found", "Bookmark not found", 404);
     }
 
-    await c.get("store").deleteBookmarkContent(user.id, bookmark.id);
+    const activeShare = await store.getBookmarkShare(user.id, bookmark.id);
+    await store.deleteBookmarkContent(user.id, bookmark.id);
+    if (activeShare) {
+      await store.disableBookmarkShare(user.id, bookmark.id, nowIso());
+    }
     c.executionCtx.waitUntil(removeBookmarkImages(bookmark.id, c.env.IMAGES));
     return c.body(null, 204);
+  });
+
+  app.get("/v1/public/shares/:token", async (c) => {
+    const pepper = c.env.TOKEN_PEPPER;
+    if (!pepper) {
+      return errorResponse("server_error", "TOKEN_PEPPER is not configured", 500);
+    }
+
+    const parsed = parsePublicShareToken(c.req.param("token"));
+    if (!parsed) {
+      return errorResponse("not_found", "Share not found", 404);
+    }
+
+    const expectedSignature = hashToken(parsed.shareId, pepper);
+    if (!timingSafeEqualStrings(parsed.signature, expectedSignature)) {
+      return errorResponse("not_found", "Share not found", 404);
+    }
+
+    const result = await c.get("store").getPublicShareById(parsed.shareId);
+    if (!result || !result.content || validateShareableContent(result.content)) {
+      return errorResponse("not_found", "Share not found", 404);
+    }
+
+    const accessedAt = nowIso();
+    await c.get("store").recordBookmarkShareHit(result.bookmark.id, accessedAt);
+
+    c.header("Cache-Control", "no-store");
+    c.header("X-Robots-Tag", "noindex, nofollow");
+    return c.json({
+      item: publicShareArticleToApi(result.bookmark, result.content),
+    });
   });
 
   app.get("/v1/images/articles/:bookmarkId/:hash", async (c) => {

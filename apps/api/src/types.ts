@@ -67,6 +67,22 @@ export type ArticleContentRecord = {
   updatedAt: string;
 };
 
+export type BookmarkShareRecord = {
+  bookmarkId: string;
+  userId: string;
+  shareId: string;
+  enabledAt: string;
+  revokedAt: string | null;
+  viewCount: number;
+  lastAccessedAt: string | null;
+};
+
+export type PublicShareLookupRecord = {
+  bookmark: BookmarkRecord;
+  content: ArticleContentRecord | null;
+  share: BookmarkShareRecord;
+};
+
 export type ListBookmarksOptions = {
   q?: string;
   limit: number;

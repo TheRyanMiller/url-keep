@@ -1,5 +1,6 @@
 import {
   articleContentResponseSchema,
+  bookmarkShareResponseSchema,
   bookmarkListResponseSchema,
   bookmarkResponseSchema,
   changePasswordRequestSchema,
@@ -14,10 +15,12 @@ import {
   meResponseSchema,
   offlineBundleResponseSchema,
   offlineStatusResponseSchema,
+  publicShareArticleResponseSchema,
   tokenListResponseSchema,
   updateBookmarkTitleRequestSchema,
   uploadBookmarkContentRequestSchema,
   type ArticleContentResponse,
+  type BookmarkShareResponse,
   type BookmarkListResponse,
   type BookmarkResponse,
   type ChangePasswordRequest,
@@ -30,6 +33,7 @@ import {
   type MeResponse,
   type OfflineBundleResponse,
   type OfflineStatusResponse,
+  type PublicShareArticleResponse,
   type TokenListResponse,
   type UpdateBookmarkTitleRequest,
   type UploadBookmarkContentRequest,
@@ -209,6 +213,32 @@ export class UrlKeepClient {
   async getBookmarkContent(id: string): Promise<ArticleContentResponse> {
     return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/content`, {
       schema: articleContentResponseSchema,
+    });
+  }
+
+  async getBookmarkShare(id: string): Promise<BookmarkShareResponse> {
+    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/share`, {
+      schema: bookmarkShareResponseSchema,
+    });
+  }
+
+  async enableBookmarkShare(id: string): Promise<BookmarkShareResponse> {
+    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/share`, {
+      method: "PUT",
+      schema: bookmarkShareResponseSchema,
+    });
+  }
+
+  async disableBookmarkShare(id: string): Promise<void> {
+    await this.request(`/v1/bookmarks/${encodeURIComponent(id)}/share`, {
+      method: "DELETE",
+    });
+  }
+
+  async getPublicShareArticle(token: string): Promise<PublicShareArticleResponse> {
+    return this.request(`/v1/public/shares/${encodeURIComponent(token)}`, {
+      token: null,
+      schema: publicShareArticleResponseSchema,
     });
   }
 

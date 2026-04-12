@@ -3,10 +3,12 @@ import type {
   AccessTokenRecord,
   ArticleContentRecord,
   BookmarkRecord,
+  BookmarkShareRecord,
   ListBookmarksOptions,
   ListBookmarksResult,
   OfflineBundleResult,
   OfflineStatusResult,
+  PublicShareLookupRecord,
   UserRecord,
 } from "./types";
 import type { Store } from "./store";
@@ -16,6 +18,7 @@ export class MemoryStore implements Store {
   private accessTokens = new Map<string, AccessTokenRecord>();
   private bookmarks = new Map<string, BookmarkRecord>();
   private articleContent = new Map<string, ArticleContentRecord>();
+  private bookmarkShares = new Map<string, BookmarkShareRecord>();
 
   async getOfflineStatus(userId: string): Promise<OfflineStatusResult> {
     let count = 0;
@@ -194,6 +197,78 @@ export class MemoryStore implements Store {
     this.bookmarks.set(bookmark.id, structuredClone(bookmark));
   }
 
+  async getBookmarkShare(
+    userId: string,
+    bookmarkId: string,
+  ): Promise<BookmarkShareRecord | null> {
+    const share = this.bookmarkShares.get(bookmarkId) ?? null;
+    return share && share.userId === userId ? structuredClone(share) : null;
+  }
+
+  async enableBookmarkShare(
+    userId: string,
+    bookmarkId: string,
+    shareId: string,
+    enabledAt: string,
+  ): Promise<BookmarkShareRecord | null> {
+    const bookmark = this.bookmarks.get(bookmarkId) ?? null;
+    if (!bookmark || bookmark.userId !== userId) {
+      return null;
+    }
+
+    const existing = this.bookmarkShares.get(bookmarkId);
+    const share: BookmarkShareRecord = {
+      bookmarkId,
+      userId,
+      shareId,
+      enabledAt,
+      revokedAt: null,
+      viewCount: existing?.shareId === shareId ? existing.viewCount : 0,
+      lastAccessedAt: existing?.shareId === shareId ? existing.lastAccessedAt : null,
+    };
+    this.bookmarkShares.set(bookmarkId, structuredClone(share));
+    return share;
+  }
+
+  async disableBookmarkShare(userId: string, bookmarkId: string, revokedAt: string): Promise<void> {
+    const share = this.bookmarkShares.get(bookmarkId);
+    if (share?.userId === userId) {
+      share.revokedAt = revokedAt;
+      this.bookmarkShares.delete(bookmarkId);
+    }
+  }
+
+  async getPublicShareById(shareId: string): Promise<PublicShareLookupRecord | null> {
+    for (const share of this.bookmarkShares.values()) {
+      if (share.shareId !== shareId || share.revokedAt) {
+        continue;
+      }
+
+      const bookmark = this.bookmarks.get(share.bookmarkId) ?? null;
+      if (!bookmark) {
+        return null;
+      }
+
+      return {
+        bookmark: this.attachExtractionStatus(bookmark),
+        content: structuredClone(this.articleContent.get(bookmark.id) ?? null),
+        share: structuredClone(share),
+      };
+    }
+
+    return null;
+  }
+
+  async recordBookmarkShareHit(bookmarkId: string, accessedAt: string): Promise<void> {
+    const share = this.bookmarkShares.get(bookmarkId);
+    if (!share) {
+      return;
+    }
+
+    share.viewCount += 1;
+    share.lastAccessedAt = accessedAt;
+  }
+
   async getArticleContentByBookmarkId(
     userId: string,
     bookmarkId: string,
@@ -227,6 +302,7 @@ export class MemoryStore implements Store {
       if (bookmark.userId === userId && bookmark.normalizedUrl === normalizedUrl) {
         this.bookmarks.delete(id);
         this.articleContent.delete(id);
+        this.bookmarkShares.delete(id);
         return this.attachExtractionStatus(bookmark);
       }
     }

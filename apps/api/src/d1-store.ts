@@ -4,11 +4,13 @@ import type {
   AccessTokenRecord,
   ArticleContentRecord,
   BookmarkRecord,
+  BookmarkShareRecord,
   ListBookmarksOptions,
   ListBookmarksResult,
   OfflineBundleItemRecord,
   OfflineBundleResult,
   OfflineStatusResult,
+  PublicShareLookupRecord,
   UserRecord,
 } from "./types";
 
@@ -60,7 +62,16 @@ type ArticleContentRow = {
   content_updated_at: string | null;
 };
 
+type BookmarkShareRow = {
+  share_id: string | null;
+  share_enabled_at: string | null;
+  share_revoked_at: string | null;
+  share_view_count: number | null;
+  share_last_accessed_at: string | null;
+};
+
 type BookmarkWithContentRow = BookmarkRow & ArticleContentRow;
+type PublicShareRow = BookmarkRow & ArticleContentRow & BookmarkShareRow;
 
 function mapUser(row: UserRow | null): UserRecord | null {
   return row
@@ -126,6 +137,23 @@ function mapArticleContent(row: ArticleContentRow | null): ArticleContentRecord 
     : null;
 }
 
+function mapBookmarkShare(
+  row: BookmarkShareRow | null,
+  bookmark: Pick<BookmarkRecord, "id" | "userId">,
+): BookmarkShareRecord | null {
+  return row?.share_id && row.share_enabled_at && !row.share_revoked_at
+    ? {
+        bookmarkId: bookmark.id,
+        userId: bookmark.userId,
+        shareId: row.share_id,
+        enabledAt: row.share_enabled_at,
+        revokedAt: row.share_revoked_at,
+        viewCount: row.share_view_count ?? 0,
+        lastAccessedAt: row.share_last_accessed_at,
+      }
+    : null;
+}
+
 function bookmarkSelectSql() {
   return `
     SELECT
@@ -143,6 +171,16 @@ function bookmarkSelectSql() {
       ac.extraction_status AS extraction_status
     FROM bookmarks b
     LEFT JOIN article_content ac ON ac.bookmark_id = b.id
+  `;
+}
+
+function bookmarkShareSelectSql(alias = "b") {
+  return `
+    ${alias}.share_id,
+    ${alias}.share_enabled_at,
+    ${alias}.share_revoked_at,
+    ${alias}.share_view_count,
+    ${alias}.share_last_accessed_at
   `;
 }
 
@@ -440,6 +478,144 @@ export class D1Store implements Store {
         bookmark.id,
         bookmark.userId,
       )
+      .run();
+  }
+
+  async getBookmarkShare(
+    userId: string,
+    bookmarkId: string,
+  ): Promise<BookmarkShareRecord | null> {
+    const row = await this.db
+      .prepare(
+        `
+          SELECT
+            id,
+            user_id,
+            ${bookmarkShareSelectSql()}
+          FROM bookmarks
+          WHERE user_id = ? AND id = ?
+          LIMIT 1
+        `,
+      )
+      .bind(userId, bookmarkId)
+      .first<
+        Pick<BookmarkRow, "id" | "user_id"> & BookmarkShareRow
+      >();
+
+    if (!row) {
+      return null;
+    }
+
+    return mapBookmarkShare(row, {
+      id: row.id,
+      userId: row.user_id,
+    });
+  }
+
+  async enableBookmarkShare(
+    userId: string,
+    bookmarkId: string,
+    shareId: string,
+    enabledAt: string,
+  ): Promise<BookmarkShareRecord | null> {
+    await this.db
+      .prepare(
+        `
+          UPDATE bookmarks
+          SET
+            share_id = ?,
+            share_enabled_at = ?,
+            share_revoked_at = NULL,
+            share_view_count = 0,
+            share_last_accessed_at = NULL
+          WHERE user_id = ? AND id = ?
+        `,
+      )
+      .bind(shareId, enabledAt, userId, bookmarkId)
+      .run();
+
+    return this.getBookmarkShare(userId, bookmarkId);
+  }
+
+  async disableBookmarkShare(userId: string, bookmarkId: string, revokedAt: string): Promise<void> {
+    await this.db
+      .prepare(
+        `
+          UPDATE bookmarks
+          SET
+            share_id = NULL,
+            share_enabled_at = NULL,
+            share_revoked_at = ?,
+            share_view_count = 0,
+            share_last_accessed_at = NULL
+          WHERE user_id = ? AND id = ?
+        `,
+      )
+      .bind(revokedAt, userId, bookmarkId)
+      .run();
+  }
+
+  async getPublicShareById(shareId: string): Promise<PublicShareLookupRecord | null> {
+    const row = await this.db
+      .prepare(
+        `
+          SELECT
+            b.id,
+            b.user_id,
+            b.url,
+            b.normalized_url,
+            b.title,
+            b.title_source,
+            b.image_url,
+            b.site_name,
+            b.saved_via,
+            b.created_at,
+            b.updated_at,
+            ac.extraction_status AS extraction_status,
+            ${bookmarkShareSelectSql("b")},
+            ${articleContentSelectSql()}
+          FROM bookmarks b
+          LEFT JOIN article_content ac ON ac.bookmark_id = b.id
+          WHERE b.share_id = ? AND b.share_enabled_at IS NOT NULL AND b.share_revoked_at IS NULL
+          LIMIT 1
+        `,
+      )
+      .bind(shareId)
+      .first<PublicShareRow>();
+
+    if (!row) {
+      return null;
+    }
+
+    const bookmark = mapBookmark(row);
+    if (!bookmark) {
+      return null;
+    }
+
+    const share = mapBookmarkShare(row, bookmark);
+    if (!share) {
+      return null;
+    }
+
+    return {
+      bookmark,
+      content: mapArticleContent(row),
+      share,
+    };
+  }
+
+  async recordBookmarkShareHit(bookmarkId: string, accessedAt: string): Promise<void> {
+    await this.db
+      .prepare(
+        `
+          UPDATE bookmarks
+          SET
+            share_view_count = share_view_count + 1,
+            share_last_accessed_at = ?
+          WHERE id = ? AND share_id IS NOT NULL
+        `,
+      )
+      .bind(accessedAt, bookmarkId)
       .run();
   }
 

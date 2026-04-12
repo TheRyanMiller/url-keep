@@ -3,8 +3,10 @@ import {
   toReadableBookmarkUrl,
   type ArticleContent,
   type Bookmark,
+  type BookmarkShare,
   type CreateBookmarkRequest,
   type LoginResponse,
+  type PublicShareArticle,
   type TokenItem,
   type User,
 } from "@url-keep/shared";
@@ -249,6 +251,15 @@ function formatOptionalDate(value: string | null | undefined) {
 
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function formatError(caught: unknown, fallback: string) {
@@ -673,6 +684,155 @@ function BookmarkImage({ src, alt }: { src?: string | null; alt: string }) {
   );
 }
 
+function ReaderDocument({
+  header,
+  title,
+  sourceUrl,
+  siteName,
+  author,
+  publishedDate,
+  wordCount,
+  contentHtml,
+  extractionStatus,
+  extractionError,
+}: {
+  header: ReactNode;
+  title: string;
+  sourceUrl: string;
+  siteName?: string | null;
+  author?: string | null;
+  publishedDate?: string | null;
+  wordCount?: number | null;
+  contentHtml?: string | null;
+  extractionStatus: ArticleContent["extraction_status"];
+  extractionError?: string | null;
+}) {
+  const [textSize, setTextSize] = useState<ReaderTextSize>(() => readStoredReaderTextSize());
+  const [textSizeMenuOpen, setTextSizeMenuOpen] = useState(false);
+  const textSizeControlRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    writeStoredReaderTextSize(textSize);
+  }, [textSize]);
+
+  useEffect(() => {
+    if (!textSizeMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (textSizeControlRef.current?.contains(target)) {
+        return;
+      }
+
+      setTextSizeMenuOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setTextSizeMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [textSizeMenuOpen]);
+
+  const html = contentHtml ? sanitizeArticleHtml(contentHtml) : null;
+  const resolvedPublishedDate = formatOptionalDate(publishedDate);
+  const readMinutes = wordCount ? estimateReadMinutes(wordCount) : null;
+  const sourceHref = toReadableBookmarkUrl(sourceUrl);
+
+  return (
+    <>
+      <header className="page-header reader-page-header">{header}</header>
+      <article className="reader-shell">
+        <header className="reader-header">
+          <h1>{title}</h1>
+          <div className="reader-meta">
+            {author ? <span>{author}</span> : null}
+            {readMinutes && wordCount ? (
+              <span
+                aria-label={`${readMinutes} min read, ${wordCount.toLocaleString()} words`}
+                className="reader-meta-tooltip"
+                title={`${wordCount.toLocaleString()} words`}
+              >
+                {readMinutes} min read
+              </span>
+            ) : null}
+            {siteName ? <span>{siteName}</span> : null}
+            {resolvedPublishedDate ? <span>{resolvedPublishedDate}</span> : null}
+            <div className="reader-text-size-control" ref={textSizeControlRef}>
+              <button
+                aria-expanded={textSizeMenuOpen}
+                aria-haspopup="true"
+                aria-label="Text size"
+                className="reader-text-size-trigger"
+                onClick={() => setTextSizeMenuOpen((open) => !open)}
+                type="button"
+              >
+                Aa
+              </button>
+              {textSizeMenuOpen ? (
+                <div className="reader-text-size-menu" role="menu" aria-label="Text size options">
+                  {READER_TEXT_SIZE_OPTIONS.map((option) => (
+                    <button
+                      aria-pressed={textSize === option.value}
+                      className={`reader-text-size-option${textSize === option.value ? " is-active" : ""}`}
+                      key={option.value}
+                      onClick={() => {
+                        setTextSize(option.value);
+                        setTextSizeMenuOpen(false);
+                      }}
+                      type="button"
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <a
+              className="reader-meta-link"
+              href={sourceHref}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              Read on web
+              <ArrowUpRight aria-hidden="true" size={11} strokeWidth={1.8} />
+            </a>
+          </div>
+        </header>
+
+        {extractionStatus === "complete" && html ? (
+          <div
+            className={`reader-content reader-content-size-${textSize}`}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        ) : (
+          <div className="reader-empty">
+            <p>
+              {extractionStatus === "pending" && "article extraction is still running"}
+              {extractionStatus === "failed" && formatExtractionError(extractionError)}
+              {extractionStatus === "skipped" && formatExtractionError(extractionError)}
+              {!contentHtml && extractionStatus === "complete" && "article content is not available yet"}
+            </p>
+          </div>
+        )}
+      </article>
+    </>
+  );
+}
+
 function BookmarkRow({
   bookmark,
   online,
@@ -686,15 +846,29 @@ function BookmarkRow({
   onTitleUpdated: (bookmark: Bookmark, title: string) => Promise<void>;
   onRetryExtraction: (bookmark: Bookmark) => Promise<void>;
 }) {
+  const auth = useAuth();
   const [editing, setEditing] = useState(false);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [title, setTitle] = useState(bookmark.title);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [share, setShare] = useState<BookmarkShare | null>(null);
+  const [shareVisible, setShareVisible] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [shareCopied, setShareCopied] = useState(false);
 
   useEffect(() => {
     setTitle(bookmark.title);
   }, [bookmark.title]);
+
+  useEffect(() => {
+    setShare(null);
+    setShareVisible(false);
+    setShareBusy(false);
+    setShareError(null);
+    setShareCopied(false);
+  }, [bookmark.id]);
 
   useEffect(() => {
     if (!deleteArmed) {
@@ -722,6 +896,60 @@ function BookmarkRow({
     }
   };
   const bookmarkHref = toReadableBookmarkUrl(bookmark.url);
+
+  const enableShare = async () => {
+    if (!online) {
+      setShareError("sharing requires a connection");
+      return;
+    }
+
+    setShareBusy(true);
+    setShareError(null);
+    setShareCopied(false);
+    try {
+      const response = await auth.client.enableBookmarkShare(bookmark.id);
+      setShare(response.item);
+      setShareVisible(true);
+    } catch (caught) {
+      setShareError(formatError(caught, "share failed"));
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const copyShare = async () => {
+    if (!share?.share_url) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(share.share_url);
+      setShareCopied(true);
+      setShareError(null);
+    } catch {
+      setShareError("copy failed");
+    }
+  };
+
+  const disableShare = async () => {
+    if (!online) {
+      setShareError("sharing requires a connection");
+      return;
+    }
+
+    setShareBusy(true);
+    setShareError(null);
+    try {
+      await auth.client.disableBookmarkShare(bookmark.id);
+      setShare(null);
+      setShareVisible(false);
+      setShareCopied(false);
+    } catch (caught) {
+      setShareError(formatError(caught, "disable failed"));
+    } finally {
+      setShareBusy(false);
+    }
+  };
 
   return (
     <article className="bookmark-row">
@@ -797,15 +1025,58 @@ function BookmarkRow({
       <div className="bookmark-side">
         <div className="bookmark-actions">
           {bookmark.extraction_status === "complete" ? (
-            <Link
-              className="text-action bookmark-read-link"
-              state={{ bookmark }}
-              to={`/read/${bookmark.id}`}
-            >
-              <BookOpen aria-hidden="true" size={14} strokeWidth={1.75} />
-              <span>read</span>
-            </Link>
+            <div className="bookmark-primary-actions">
+              <Link
+                className="text-action bookmark-read-link"
+                state={{ bookmark }}
+                to={`/read/${bookmark.id}`}
+              >
+                <BookOpen aria-hidden="true" size={14} strokeWidth={1.75} />
+                <span>read</span>
+              </Link>
+              <button
+                className="text-action bookmark-share-link"
+                disabled={!online || shareBusy}
+                onClick={() => void enableShare()}
+                type="button"
+              >
+                {shareBusy ? "sharing..." : "share"}
+              </button>
+            </div>
           ) : null}
+          {shareVisible && share?.share_url ? (
+            <section className="share-panel">
+              <a
+                className="share-url"
+                href={share.share_url}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                {share.share_url}
+              </a>
+              <p className="share-meta">
+                {share.hit_count === 1 ? "1 open" : `${share.hit_count} opens`}
+                {" · "}
+                {share.last_accessed_at
+                  ? `last opened ${formatDateTime(share.last_accessed_at)}`
+                  : "unused"}
+              </p>
+              <div className="inline-actions">
+                <button className="text-action" onClick={() => void copyShare()} type="button">
+                  {shareCopied ? "copied" : "copy link"}
+                </button>
+                <button
+                  className="text-action"
+                  disabled={!online || shareBusy}
+                  onClick={() => void disableShare()}
+                  type="button"
+                >
+                  disable share
+                </button>
+              </div>
+            </section>
+          ) : null}
+          {shareError ? <p className="error share-error">{shareError}</p> : null}
           <div className="icon-actions">
             {editing ? (
               <button
@@ -1607,9 +1878,6 @@ function ReaderPage() {
   const [article, setArticle] = useState<ArticleContent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [textSize, setTextSize] = useState<ReaderTextSize>(() => readStoredReaderTextSize());
-  const [textSizeMenuOpen, setTextSizeMenuOpen] = useState(false);
-  const textSizeControlRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -1690,134 +1958,98 @@ function ReaderPage() {
     };
   }, [id, offline.online, offline.syncVersion]);
 
-  useEffect(() => {
-    writeStoredReaderTextSize(textSize);
-  }, [textSize]);
-
-  useEffect(() => {
-    if (!textSizeMenuOpen) {
-      return;
-    }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) {
-        return;
-      }
-
-      if (textSizeControlRef.current?.contains(target)) {
-        return;
-      }
-
-      setTextSizeMenuOpen(false);
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setTextSizeMenuOpen(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [textSizeMenuOpen]);
-
-  const html = article?.content_html ? sanitizeArticleHtml(article.content_html) : null;
-  const publishedDate = formatOptionalDate(article?.published_date);
-  const readMinutes = article ? estimateReadMinutes(article.word_count) : null;
-  const bookmarkHref = bookmark ? toReadableBookmarkUrl(bookmark.url) : null;
-
   return (
     <div className="page reader-page">
-      <header className="page-header reader-page-header">
-        <Link aria-label="back" className="text-action reader-back-link" to="/">&#x2190;</Link>
-        {!offline.online ? <span className="offline-badge">offline</span> : null}
-      </header>
-
       {loading ? <p>loading</p> : null}
       {error ? <p className="error">{error}</p> : null}
 
       {bookmark ? (
-        <article className="reader-shell">
-          <header className="reader-header">
-            <h1>{bookmark.title}</h1>
-            <div className="reader-meta">
-              {article?.author ? <span>{article.author}</span> : null}
-              {readMinutes && article ? (
-                <span
-                  aria-label={`${readMinutes} min read, ${article.word_count.toLocaleString()} words`}
-                  className="reader-meta-tooltip"
-                  title={`${article.word_count.toLocaleString()} words`}
-                >
-                  {readMinutes} min read
-                </span>
-              ) : null}
-              {bookmark.site_name ? <span>{bookmark.site_name}</span> : null}
-              {publishedDate ? <span>{publishedDate}</span> : null}
-              <div className="reader-text-size-control" ref={textSizeControlRef}>
-                <button
-                  aria-expanded={textSizeMenuOpen}
-                  aria-haspopup="true"
-                  aria-label="Text size"
-                  className="reader-text-size-trigger"
-                  onClick={() => setTextSizeMenuOpen((open) => !open)}
-                  type="button"
-                >
-                  Aa
-                </button>
-                {textSizeMenuOpen ? (
-                  <div className="reader-text-size-menu" role="menu" aria-label="Text size options">
-                    {READER_TEXT_SIZE_OPTIONS.map((option) => (
-                      <button
-                        aria-pressed={textSize === option.value}
-                        className={`reader-text-size-option${textSize === option.value ? " is-active" : ""}`}
-                        key={option.value}
-                        onClick={() => {
-                          setTextSize(option.value);
-                          setTextSizeMenuOpen(false);
-                        }}
-                        type="button"
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-              {bookmarkHref ? (
-                <a
-                  className="reader-meta-link"
-                  href={bookmarkHref}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  Read on web
-                  <ArrowUpRight aria-hidden="true" size={11} strokeWidth={1.8} />
-                </a>
-              ) : null}
-            </div>
-          </header>
-
-          {article?.extraction_status === "complete" && html ? (
-            <div
-              className={`reader-content reader-content-size-${textSize}`}
-              dangerouslySetInnerHTML={{ __html: html }}
-            />
-          ) : (
-            <div className="reader-empty">
-              <p>
-                {article?.extraction_status === "pending" && "article extraction is still running"}
-                {article?.extraction_status === "failed" && formatExtractionError(article.extraction_error)}
-                {article?.extraction_status === "skipped" && formatExtractionError(article.extraction_error)}
-                {!article && "article content is not available yet"}
-              </p>
-            </div>
+        <ReaderDocument
+          author={article?.author}
+          contentHtml={article?.content_html}
+          extractionError={article?.extraction_error}
+          extractionStatus={article?.extraction_status ?? "pending"}
+          header={(
+            <>
+              <Link aria-label="back" className="text-action reader-back-link" to="/">&#x2190;</Link>
+              {!offline.online ? <span className="offline-badge">offline</span> : null}
+            </>
           )}
-        </article>
+          publishedDate={article?.published_date}
+          siteName={bookmark.site_name}
+          sourceUrl={bookmark.url}
+          title={bookmark.title}
+          wordCount={article?.word_count}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function PublicSharePage() {
+  const auth = useAuth();
+  const { token } = useParams();
+  const [article, setArticle] = useState<PublicShareArticle | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+
+    const load = async () => {
+      if (!token) {
+        setError("share not found");
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await auth.client.getPublicShareArticle(token);
+        if (!active) {
+          return;
+        }
+        setArticle(response.item);
+      } catch (caught) {
+        if (!active) {
+          return;
+        }
+        if (caught instanceof ApiError && caught.status === 404) {
+          setError("share not found");
+        } else {
+          setError(formatError(caught, "load failed"));
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void load();
+
+    return () => {
+      active = false;
+    };
+  }, [auth.client, token]);
+
+  return (
+    <div className="page reader-page">
+      {loading ? <p>loading</p> : null}
+      {error ? <p className="error">{error}</p> : null}
+      {article ? (
+        <ReaderDocument
+          author={article.author}
+          contentHtml={article.content_html}
+          extractionStatus="complete"
+          header={<span className="reader-page-label">url-keep</span>}
+          publishedDate={article.published_date}
+          siteName={article.site_name}
+          sourceUrl={article.url}
+          title={article.title}
+          wordCount={article.word_count}
+        />
       ) : null}
     </div>
   );
@@ -1859,6 +2091,7 @@ function AppRoutes() {
           </RequireAuth>
         }
       />
+      <Route path="/s/:token" element={<PublicSharePage />} />
       <Route
         path="/profile"
         element={

@@ -2,10 +2,12 @@ import type {
   AccessTokenRecord,
   ArticleContentRecord,
   BookmarkRecord,
+  BookmarkShareRecord,
   ListBookmarksOptions,
   ListBookmarksResult,
   OfflineBundleResult,
   OfflineStatusResult,
+  PublicShareLookupRecord,
   UserRecord,
 } from "./types";
 
@@ -39,6 +41,16 @@ export interface Store {
   ): Promise<OfflineBundleResult>;
   insertBookmark(bookmark: BookmarkRecord): Promise<void>;
   updateBookmark(bookmark: BookmarkRecord): Promise<void>;
+  getBookmarkShare(userId: string, bookmarkId: string): Promise<BookmarkShareRecord | null>;
+  enableBookmarkShare(
+    userId: string,
+    bookmarkId: string,
+    shareId: string,
+    enabledAt: string,
+  ): Promise<BookmarkShareRecord | null>;
+  disableBookmarkShare(userId: string, bookmarkId: string, revokedAt: string): Promise<void>;
+  getPublicShareById(shareId: string): Promise<PublicShareLookupRecord | null>;
+  recordBookmarkShareHit(bookmarkId: string, accessedAt: string): Promise<void>;
   getArticleContentByBookmarkId(
     userId: string,
     bookmarkId: string,
