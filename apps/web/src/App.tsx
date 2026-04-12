@@ -264,11 +264,16 @@ function formatDateTime(value: string | null | undefined) {
 }
 
 function formatError(caught: unknown, fallback: string) {
-  return caught instanceof ApiError
+  if (caught instanceof ApiError) {
+    if (caught.code === "invalid_response") {
+      return "the server returned something unexpected";
+    }
+    return caught.message;
+  }
+
+  return caught instanceof Error
     ? caught.message
-    : caught instanceof Error
-      ? caught.message
-      : fallback;
+    : fallback;
 }
 
 function getDomain(value: string) {
@@ -907,12 +912,17 @@ function BookmarkRow({
     setShareBusy(true);
     setShareError(null);
     setShareCopied(false);
+    setDeleteArmed(false);
     try {
       const response = await auth.client.enableBookmarkShare(bookmark.id);
       setShare(response.item);
       setShareVisible(true);
     } catch (caught) {
-      setShareError(formatError(caught, "share failed"));
+      if (caught instanceof ApiError && caught.code === "invalid_response") {
+        setShareError("share is unavailable right now");
+      } else {
+        setShareError(formatError(caught, "share failed"));
+      }
     } finally {
       setShareBusy(false);
     }
@@ -1007,14 +1017,29 @@ function BookmarkRow({
               </div>
             ) : (
               <>
-                <a
-                  className="bookmark-title"
-                  href={bookmarkHref}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  {bookmark.title}
-                </a>
+                <div className="bookmark-title-row">
+                  <a
+                    className="bookmark-title"
+                    href={bookmarkHref}
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  >
+                    {bookmark.title}
+                  </a>
+                  <button
+                    aria-label="edit title"
+                    className="bookmark-title-edit"
+                    disabled={!online}
+                    onClick={() => {
+                      setDeleteArmed(false);
+                      setEditing(true);
+                    }}
+                    title={online ? "Edit title" : "Editing requires a connection"}
+                    type="button"
+                  >
+                    <PencilLine aria-hidden="true" size={14} strokeWidth={1.75} />
+                  </button>
+                </div>
                 <p className="bookmark-domain">{getDomain(bookmark.url)}</p>
               </>
             )}
@@ -1035,16 +1060,6 @@ function BookmarkRow({
                 <BookOpen aria-hidden="true" size={14} strokeWidth={1.75} />
                 <span>read</span>
               </Link>
-              <button
-                aria-label={shareBusy ? "creating share link" : "share article"}
-                className="text-action bookmark-share-link"
-                disabled={!online || shareBusy}
-                onClick={() => void enableShare()}
-                title={shareBusy ? "Creating share link" : "Share article"}
-                type="button"
-              >
-                <Share2 aria-hidden="true" size={14} strokeWidth={1.75} />
-              </button>
             </div>
           ) : null}
           {shareVisible && share?.share_url ? (
@@ -1093,19 +1108,18 @@ function BookmarkRow({
                 <Check aria-hidden="true" size={16} strokeWidth={2.25} />
               </button>
             ) : (
-              <button
-                aria-label="edit title"
-                className="icon-action"
-                disabled={!online}
-                onClick={() => {
-                  setDeleteArmed(false);
-                  setEditing(true);
-                }}
-                title={online ? "Edit title" : "Editing requires a connection"}
-                type="button"
-              >
-                <PencilLine aria-hidden="true" size={16} strokeWidth={1.75} />
-              </button>
+              bookmark.extraction_status === "complete" ? (
+                <button
+                  aria-label={shareBusy ? "creating share link" : "share article"}
+                  className="icon-action bookmark-share-link"
+                  disabled={!online || shareBusy}
+                  onClick={() => void enableShare()}
+                  title={shareBusy ? "Creating share link" : "Share article"}
+                  type="button"
+                >
+                  <Share2 aria-hidden="true" size={16} strokeWidth={1.75} />
+                </button>
+              ) : null
             )}
 
             {editing ? (

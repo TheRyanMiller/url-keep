@@ -224,15 +224,37 @@ input {
   min-width: 0;
 }
 
-.bookmark-title {
-  display: inline-block;
+.bookmark-title-row {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
   margin: 0 0 6px;
+  max-width: 100%;
+}
+
+.bookmark-title {
+  display: inline;
+  margin: 0;
   text-decoration: none;
+}
+
+.bookmark-title-edit {
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  flex-shrink: 0;
+  justify-content: center;
+  min-height: auto;
+  padding: 0;
 }
 
 .bookmark-title:hover,
 .text-action:hover,
-.text-action:focus-visible {
+.text-action:focus-visible,
+.bookmark-title-edit:hover,
+.bookmark-title-edit:focus-visible {
   text-decoration: underline;
   background: var(--hover);
 }
@@ -269,11 +291,7 @@ input {
 }
 
 .bookmark-share-link {
-  align-items: center;
-  display: inline-flex;
-  justify-content: center;
   line-height: 1;
-  min-height: auto;
 }
 
 .bookmark-share-link:disabled {
@@ -301,6 +319,8 @@ input {
 
 .share-error {
   max-width: 320px;
+  color: var(--muted);
+  font-size: 11px;
   text-align: right;
 }
 

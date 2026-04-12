@@ -330,14 +330,18 @@ export class UrlKeepClient {
       return undefined as T;
     }
 
+    const rawBody = await response.text();
     let data: unknown;
     try {
-      data = await response.json();
-    } catch (caught) {
+      data = rawBody ? JSON.parse(rawBody) : null;
+    } catch {
+      const fallback = response.ok
+        ? "Invalid JSON response from API"
+        : rawBody.trim() || "Invalid response from API";
       throw new ApiError(
         response.status,
         "invalid_response",
-        describeUnknownError(caught, "Invalid JSON response from API"),
+        fallback,
       );
     }
 
