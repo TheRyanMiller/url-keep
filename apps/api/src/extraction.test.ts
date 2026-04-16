@@ -11,6 +11,7 @@ function makeBookmark(): BookmarkRecord {
     userId: "user-1",
     url: "https://example.com/article",
     normalizedUrl: "https://example.com/article",
+    bucket: "reading",
     title: "example.com",
     titleSource: "fallback",
     imageUrl: null,

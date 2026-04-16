@@ -2,6 +2,7 @@ import { cors } from "hono/cors";
 import { Hono, type Context } from "hono";
 import {
   canonicalizeBookmarkUrl,
+  classifyBookmarkUrl,
   changePasswordRequestSchema,
   createBookmarkRequestSchema,
   isHackmdRawMarkdownUrl,
@@ -208,6 +209,7 @@ async function parseJsonBody<T>(
 
 function parseListQuery(c: Context<AppEnv>) {
   const q = c.req.query("q")?.trim() || undefined;
+  let bucket = c.req.query("bucket")?.trim() || undefined;
   const cursor = c.req.query("cursor")?.trim() || undefined;
   const rawLimit = c.req.query("limit");
   const parsedLimit = rawLimit ? Number(rawLimit) : 50;
@@ -216,7 +218,11 @@ function parseListQuery(c: Context<AppEnv>) {
     return errorResponse("invalid_request", "limit must be an integer between 1 and 100", 400);
   }
 
-  return { q, cursor, limit: parsedLimit };
+  if (bucket && bucket !== "reading" && bucket !== "videos") {
+    return errorResponse("invalid_request", "bucket must be reading or videos", 400);
+  }
+
+  return { q, bucket: bucket as "reading" | "videos" | undefined, cursor, limit: parsedLimit };
 }
 
 function bookmarkSaveResponse(
@@ -809,6 +815,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const now = nowIso();
     const existing = await store.getBookmarkByNormalizedUrl(user.id, normalizedUrl);
     const trimmedTitle = isHackmdRawMarkdownUrl(parsed.url) ? undefined : parsed.title?.trim();
+    const classification = classifyBookmarkUrl(normalizedUrl);
 
     if (!existing) {
       const title = trimmedTitle || deriveFallbackTitle(normalizedUrl);
@@ -818,6 +825,7 @@ export function createApp(options: CreateAppOptions = {}) {
         userId: user.id,
         url: canonicalUrl,
         normalizedUrl,
+        bucket: classification.bucket,
         title,
         titleSource,
         imageUrl,
@@ -829,7 +837,9 @@ export function createApp(options: CreateAppOptions = {}) {
 
       await store.insertBookmark(bookmark);
       let extractionStatus: BookmarkRecord["extractionStatus"];
-      if (parsed.saved_via === "extension") {
+      if (!classification.autoExtract) {
+        extractionStatus = null;
+      } else if (parsed.saved_via === "extension") {
         // Extension owns the capture lifecycle. Create a pending row so the
         // bookmark shows "pending" in the UI, but do NOT waitUntil() a server
         // fetch. The extension service worker will either upload content or
@@ -855,7 +865,7 @@ export function createApp(options: CreateAppOptions = {}) {
       );
     }
 
-    const nextBookmark = { ...existing, updatedAt: now };
+    const nextBookmark = { ...existing, bucket: classification.bucket, updatedAt: now };
 
     if (existing.titleSource === "fallback" && trimmedTitle) {
       nextBookmark.title = trimmedTitle;
@@ -872,7 +882,9 @@ export function createApp(options: CreateAppOptions = {}) {
 
     await store.updateBookmark(nextBookmark);
     let extractionStatus: BookmarkRecord["extractionStatus"];
-    if (parsed.saved_via === "extension") {
+    if (!classification.autoExtract) {
+      extractionStatus = null;
+    } else if (parsed.saved_via === "extension") {
       const existingContent = await store.getArticleContentByBookmarkId(user.id, nextBookmark.id);
       if (!existingContent || existingContent.extractionStatus === "failed" || existingContent.extractionStatus === "skipped") {
         await store.upsertArticleContent(pendingArticleContent(nextBookmark, existingContent));
@@ -981,6 +993,14 @@ export function createApp(options: CreateAppOptions = {}) {
     const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
     if (!bookmark) {
       return errorResponse("not_found", "Bookmark not found", 404);
+    }
+
+    if (!classifyBookmarkUrl(bookmark.normalizedUrl).autoExtract) {
+      return errorResponse(
+        "extraction_unavailable",
+        "reader extraction is not available for this bookmark",
+        409,
+      );
     }
 
     const force = c.req.query("force")?.toLowerCase() === "true";

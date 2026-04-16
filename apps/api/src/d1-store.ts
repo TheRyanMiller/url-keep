@@ -1,4 +1,5 @@
 import { decodeCursor, encodeCursor } from "./utils";
+import { classifyBookmarkUrl } from "@url-keep/shared";
 import type { Store } from "./store";
 import type {
   AccessTokenRecord,
@@ -36,6 +37,7 @@ type BookmarkRow = {
   user_id: string;
   url: string;
   normalized_url: string;
+  bucket: BookmarkRecord["bucket"] | null;
   title: string;
   title_source: BookmarkRecord["titleSource"];
   image_url: string | null;
@@ -99,12 +101,15 @@ function mapAccessToken(row: AccessTokenRow | null): AccessTokenRecord | null {
 }
 
 function mapBookmark(row: BookmarkRow | null): BookmarkRecord | null {
+  const classification = row ? classifyBookmarkUrl(row.normalized_url) : null;
+
   return row
     ? {
         id: row.id,
         userId: row.user_id,
         url: row.url,
         normalizedUrl: row.normalized_url,
+        bucket: row.bucket ?? classification?.bucket ?? "reading",
         title: row.title,
         titleSource: row.title_source,
         imageUrl: row.image_url,
@@ -112,7 +117,9 @@ function mapBookmark(row: BookmarkRow | null): BookmarkRecord | null {
         savedVia: row.saved_via,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-        extractionStatus: row.extraction_status ?? null,
+        extractionStatus: classification?.autoExtract
+          ? row.extraction_status ?? null
+          : null,
       }
     : null;
 }
@@ -161,6 +168,7 @@ function bookmarkSelectSql() {
       b.user_id,
       b.url,
       b.normalized_url,
+      b.bucket,
       b.title,
       b.title_source,
       b.image_url,
@@ -361,6 +369,11 @@ export class D1Store implements Store {
       bindings.push(needle, needle, needle);
     }
 
+    if (options.bucket) {
+      clauses.push("b.bucket = ?");
+      bindings.push(options.bucket);
+    }
+
     if (cursor) {
       clauses.push("(b.created_at < ? OR (b.created_at = ? AND b.id < ?))");
       bindings.push(cursor.createdAt, cursor.createdAt, cursor.id);
@@ -406,6 +419,7 @@ export class D1Store implements Store {
         b.user_id,
         b.url,
         b.normalized_url,
+        b.bucket,
         b.title,
         b.title_source,
         b.image_url,
@@ -444,13 +458,14 @@ export class D1Store implements Store {
   async insertBookmark(bookmark: BookmarkRecord): Promise<void> {
     await this.db
       .prepare(
-        "INSERT INTO bookmarks (id, user_id, url, normalized_url, title, title_source, image_url, site_name, saved_via, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO bookmarks (id, user_id, url, normalized_url, bucket, title, title_source, image_url, site_name, saved_via, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         bookmark.id,
         bookmark.userId,
         bookmark.url,
         bookmark.normalizedUrl,
+        bookmark.bucket,
         bookmark.title,
         bookmark.titleSource,
         bookmark.imageUrl,
@@ -465,11 +480,12 @@ export class D1Store implements Store {
   async updateBookmark(bookmark: BookmarkRecord): Promise<void> {
     await this.db
       .prepare(
-        "UPDATE bookmarks SET url = ?, normalized_url = ?, title = ?, title_source = ?, image_url = ?, site_name = ?, saved_via = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        "UPDATE bookmarks SET url = ?, normalized_url = ?, bucket = ?, title = ?, title_source = ?, image_url = ?, site_name = ?, saved_via = ?, updated_at = ? WHERE id = ? AND user_id = ?",
       )
       .bind(
         bookmark.url,
         bookmark.normalizedUrl,
+        bookmark.bucket,
         bookmark.title,
         bookmark.titleSource,
         bookmark.imageUrl,
@@ -563,6 +579,7 @@ export class D1Store implements Store {
           SELECT
             b.id,
             b.user_id,
+            b.bucket,
             b.url,
             b.normalized_url,
             b.title,

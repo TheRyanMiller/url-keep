@@ -83,6 +83,100 @@ export function toHackmdMarkdownUrl(input: string): string | null {
   return url.toString();
 }
 
+export const bookmarkBucketSchema = z.enum(["reading", "videos"]);
+
+export type BookmarkBucket = z.infer<typeof bookmarkBucketSchema>;
+
+export type BookmarkClassification = {
+  bucket: BookmarkBucket;
+  autoExtract: boolean;
+  defaultAction: "open" | "watch" | null;
+};
+
+function normalizeBookmarkHostname(hostname: string): string {
+  return hostname.toLowerCase().replace(/^www\./, "");
+}
+
+function defaultBookmarkClassification(): BookmarkClassification {
+  return {
+    bucket: "reading",
+    autoExtract: true,
+    defaultAction: null,
+  };
+}
+
+function isYoutubeVideoUrl(url: URL): boolean {
+  const hostname = normalizeBookmarkHostname(url.hostname);
+  const pathname = url.pathname.toLowerCase();
+
+  if (hostname === "youtu.be") {
+    return pathname !== "/" && pathname.length > 1;
+  }
+
+  if (hostname !== "youtube.com" && hostname !== "m.youtube.com") {
+    return false;
+  }
+
+  return pathname === "/watch" || pathname.startsWith("/shorts/");
+}
+
+function isLoomShareUrl(url: URL): boolean {
+  return normalizeBookmarkHostname(url.hostname) === "loom.com"
+    && url.pathname.toLowerCase().startsWith("/share/");
+}
+
+function isVimeoVideoUrl(url: URL): boolean {
+  const hostname = normalizeBookmarkHostname(url.hostname);
+  const pathname = url.pathname.toLowerCase();
+
+  if (hostname === "player.vimeo.com") {
+    return /^\/video\/\d+(?:\/|$)/.test(pathname);
+  }
+
+  return hostname === "vimeo.com" && /^\/\d+(?:\/|$)/.test(pathname);
+}
+
+function isNonReaderReadingUrl(url: URL): boolean {
+  const hostname = normalizeBookmarkHostname(url.hostname);
+  const pathname = url.pathname.toLowerCase();
+  if (
+    hostname !== "x.com"
+    && hostname !== "twitter.com"
+    && hostname !== "mobile.twitter.com"
+  ) {
+    return false;
+  }
+
+  return /^\/[^/]+\/status\/[^/]+/.test(pathname);
+}
+
+export function classifyBookmarkUrl(input: string): BookmarkClassification {
+  const canonical = canonicalizeBookmarkUrl(input);
+  const url = tryParseAbsoluteUrl(canonical);
+
+  if (!url) {
+    return defaultBookmarkClassification();
+  }
+
+  if (isYoutubeVideoUrl(url) || isLoomShareUrl(url) || isVimeoVideoUrl(url)) {
+    return {
+      bucket: "videos",
+      autoExtract: false,
+      defaultAction: "watch",
+    };
+  }
+
+  if (isNonReaderReadingUrl(url)) {
+    return {
+      bucket: "reading",
+      autoExtract: false,
+      defaultAction: "open",
+    };
+  }
+
+  return defaultBookmarkClassification();
+}
+
 export const savedViaSchema = z.enum([
   "web",
   "mobile_web",
@@ -119,6 +213,7 @@ export const bookmarkSchema = z.object({
   id: z.string(),
   url: z.string().url(),
   normalized_url: z.string().url(),
+  bucket: bookmarkBucketSchema,
   title: z.string(),
   image_url: z.string().url().nullable().optional(),
   site_name: z.string().nullable().optional(),
@@ -246,6 +341,7 @@ export const createTokenResponseSchema = z.object({
 
 export const listBookmarksRequestSchema = z.object({
   q: z.string().optional(),
+  bucket: bookmarkBucketSchema.optional(),
   limit: z.number().int().min(1).max(100).optional(),
   cursor: z.string().optional(),
 });

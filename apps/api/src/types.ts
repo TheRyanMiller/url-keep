@@ -1,4 +1,5 @@
 import type {
+  BookmarkBucket,
   ContentSource,
   ExtractionStatus,
   InternalTitleSource,
@@ -39,6 +40,7 @@ export type BookmarkRecord = {
   userId: string;
   url: string;
   normalizedUrl: string;
+  bucket: BookmarkBucket;
   title: string;
   titleSource: InternalTitleSource;
   imageUrl: string | null;
@@ -85,6 +87,7 @@ export type PublicShareLookupRecord = {
 
 export type ListBookmarksOptions = {
   q?: string;
+  bucket?: BookmarkBucket;
   limit: number;
   cursor?: string;
 };

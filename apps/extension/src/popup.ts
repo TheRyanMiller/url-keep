@@ -38,6 +38,7 @@ const quickSaveCheckbox = document.getElementById(
 ) as HTMLInputElement;
 const successView = document.getElementById("success-view") as HTMLElement;
 const successDomain = document.getElementById("success-domain") as HTMLElement;
+const successOpenApp = document.getElementById("success-open-app") as HTMLAnchorElement;
 const successRemove = document.getElementById("success-remove") as HTMLButtonElement;
 const errorElement = document.getElementById("error") as HTMLElement;
 
@@ -75,12 +76,13 @@ function makePopupClient(baseUrl: string) {
   return createClient(baseUrl, () => currentToken);
 }
 
-function triggerCapture(tabId: number | null, bookmarkId: string | null) {
-  if (tabId && bookmarkId) {
+function triggerCapture(tabId: number | null, bookmarkId: string | null, url: string | null) {
+  if (tabId && bookmarkId && url) {
     chrome.runtime.sendMessage({
       action: "capture",
       tabId,
       bookmarkId,
+      url,
     }).catch(() => {});
   }
 }
@@ -98,6 +100,7 @@ function setSettings(settings: RuntimeSettings) {
   currentSettings = settings;
   client = makePopupClient(settings.apiOrigin);
   openAppLink.href = settings.appOrigin;
+  successOpenApp.href = settings.appOrigin;
   settingsApiOriginInput.value = settings.apiOrigin;
   settingsAppOriginInput.value = settings.appOrigin;
 }
@@ -335,7 +338,7 @@ async function quickSave() {
       saved_via: "extension",
     });
 
-    triggerCapture(tab.id ?? null, response.item?.id ?? null);
+    triggerCapture(tab.id ?? null, response.item?.id ?? null, tab.url ?? null);
 
     popupState = { ...popupState, saved: true };
     showSuccessView(new URL(tab.url).hostname);
@@ -537,7 +540,7 @@ actionButton.addEventListener("click", async () => {
       saved_via: "extension",
     });
 
-    triggerCapture(popupState.tabId, response.item?.id ?? null);
+    triggerCapture(popupState.tabId, response.item?.id ?? null, popupState.url);
 
     actionButton.textContent = "\u2713 saved";
     actionButton.classList.add("button--success");

@@ -145,13 +145,16 @@ export class UrlKeepClient {
   }
 
   async listBookmarks(
-    query: Partial<{ q: string; limit: number; cursor: string }> = {},
+    query: Partial<{ q: string; bucket: "reading" | "videos"; limit: number; cursor: string }> = {},
   ): Promise<BookmarkListResponse> {
     const parsed = listBookmarksRequestSchema.parse(query);
     const search = new URLSearchParams();
 
     if (parsed.q) {
       search.set("q", parsed.q);
+    }
+    if (parsed.bucket) {
+      search.set("bucket", parsed.bucket);
     }
     if (parsed.limit) {
       search.set("limit", String(parsed.limit));

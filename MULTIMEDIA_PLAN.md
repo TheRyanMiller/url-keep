@@ -1,19 +1,20 @@
 # Multimedia Organization Plan
 
-## 1. Overview
+## 1. Goal
 
-`url-keep` should stay one personal list, but it should stop pretending every saved URL is an article.
+`url-keep` should stay one personal list.
 
-The goal is not to build a full media platform. The goal is:
+The v1 problem is narrower than "support multimedia":
 
-- detect obvious media types from the URL
-- organize the list into a few useful buckets
-- give each bucket the right default action
-- avoid noisy extraction failures for URLs that were never meant for the reader
+- stop treating obvious non-article URLs like broken articles
+- make video links easier to scan
+- keep the current black-and-white, text-first product shape
 
-## 2. Chosen Product Shape
+The plan should stay boring and reversible. If a decision adds taxonomy, schema, or UI branches without a clear UX win, that is a red flag.
 
-Add a tabbed filter to the main list:
+## 2. Product Shape
+
+Add one small filter control above the list:
 
 - `ALL`
 - `READING`
@@ -21,226 +22,318 @@ Add a tabbed filter to the main list:
 
 Rules:
 
-- `ALL` shows every bookmark in the current newest-first order.
-- `READING` shows text-first URLs: articles, docs, newsletters, blog posts, Reddit posts, X posts, and general links.
-- `VIDEOS` shows URLs whose primary destination is watching a video.
+- `ALL` shows every bookmark in the current newest-first order
+- `READING` means "everything that is not an obvious video destination"
+- `VIDEOS` means "obvious watch-first URLs"
+- default stays `ALL`
+- keep the state in the URL: `/?tab=reading`, `/?tab=videos`
+- keep search scoped to the active tab
 
-This should stay intentionally small. Do not add separate tabs for `SOCIAL`, `AUDIO`, `PODCASTS`, or `LINKS` in v1.
+Do not add `SOCIAL`, `AUDIO`, `PODCASTS`, `DOCS`, or any other tabs in v1.
 
-## 3. Classification Model
+## 3. Simplicity Rules
 
-Add a small media classification layer to bookmarks.
+These constraints should drive the implementation:
 
-Suggested fields:
+- prefer derived state over stored state, except when one stored field materially simplifies correctness
+- use one shared classifier instead of multiple enums and columns
+- bias toward false negatives over false positives
+- keep the current row layout in v1
+- change behavior before changing visual complexity
+- tabs must return complete results across the full list, not just the currently loaded page
 
-- `media_kind`: `article | social | video | link`
-- `list_bucket`: `reading | videos`
-- `provider`: nullable short string like `youtube`, `x`, `vimeo`, `loom`
+The biggest risk in the original draft was over-modeling the problem. `article | social | video | link` plus `list_bucket` plus `provider` is more structure than the UX actually needs.
 
-Why both `media_kind` and `list_bucket`:
+## 4. Minimal Decision Model
 
-- `media_kind` is the precise internal classification.
-- `list_bucket` is the simple UI grouping used by the tabs.
+V1 should use a shared pure helper in `packages/shared`, for example:
 
-This lets X bookmarks be treated as `social` internally while still appearing in `READING`.
+```ts
+type BookmarkBucket = "reading" | "videos";
 
-## 4. Detection Rules
+type BookmarkClassification = {
+  bucket: BookmarkBucket;
+  autoExtract: boolean;
+  defaultAction: "open" | "watch" | null;
+};
+```
 
-Detection should be deterministic and cheap. Do not depend on provider APIs in v1.
+There should be only two product groupings:
 
-At save time:
+- `reading`
+- `videos`
 
-1. Normalize the URL as usual.
-2. Classify by hostname and path rules.
-3. Store `media_kind`, `list_bucket`, and `provider`.
-4. Keep existing `title`, `image_url`, and `site_name` behavior.
+Everything else is behavior, not category.
 
-Initial rules:
+Recommended rules:
 
-- `youtube.com/watch`, `youtu.be/*`, `youtube.com/shorts/*` -> `video`, bucket `videos`, provider `youtube`
-- `vimeo.com/*` video pages -> `video`, bucket `videos`, provider `vimeo`
-- `loom.com/share/*` -> `video`, bucket `videos`, provider `loom`
-- `x.com/*/status/*`, `twitter.com/*/status/*` -> `social`, bucket `reading`, provider `x`
-- everything else -> `article` or `link`, bucket `reading`
+- obvious video URLs
+  bucket `videos`, `autoExtract = false`, `defaultAction = "watch"`
+- a short allowlist of non-reader reading URLs such as X status pages
+  bucket `reading`, `autoExtract = false`, `defaultAction = "open"`
+- everything else
+  bucket `reading`, `autoExtract = true`, `defaultAction = null`
 
-Important default:
+Persist only `bucket` in the database.
 
-- only move a URL into `VIDEOS` when it is clearly a video destination
-- everything else stays in `READING`
+Migration and backfill plan:
 
-That rule is predictable and avoids surprising users.
+1. Add `bucket` to `bookmarks` as a nullable field.
+2. Run a one-time backfill script that classifies every existing bookmark by URL and writes `reading` or `videos`.
+3. Verify there are no null buckets left.
+4. Make `bucket` required and restrict it to `reading | videos`.
+5. Do not ship the tab UI until backfill is complete.
 
-## 5. List UX
+Do not default old rows to `reading` and call it done. That would make older video bookmarks disappear from `VIDEOS` until they were manually touched again.
 
-### 5.1 Tabs
+Why:
 
-The tab strip should sit above the list and update the URL, for example:
+- correct server-side filtering and pagination for `READING` and `VIDEOS`
+- only one new field instead of duplicated fields like `media_kind` and `list_bucket`
+- the same logic can run in API, web, extension, and offline mode
+- classification rules stay easy to adjust
 
-- `/`
-- `/?tab=reading`
-- `/?tab=videos`
+Keep `autoExtract` and `defaultAction` derived from the shared helper. Only `bucket` needs to be persisted.
+
+## 5. Detection Rules
+
+Keep the rules small and deterministic.
+
+### `video`
+
+Only classify as `video` when the URL is obviously a watch destination:
+
+- `youtube.com/watch`
+- `youtu.be/*`
+- `youtube.com/shorts/*`
+- `loom.com/share/*`
+- clear Vimeo watch pages
 
 Behavior:
 
-- default to `ALL`
-- keep search scoped to the active tab
-- keep newest-first sort everywhere
-- preserve the current black-and-white text-first UI
+- bucket `videos`
+- `autoExtract = false`
+- default action `watch`
 
-### 5.2 Row Treatment By Type
+### non-reader reading rule
 
-#### Reading items
+For a short allowlist of URLs that belong in `READING` but should not use the article-reader flow:
 
-Use the current row layout with small adjustments:
+- `x.com/*/status/*`
+- `twitter.com/*/status/*`
 
-- primary action: `read` when readable content exists
-- fallback action: `open` when readable content does not exist
-- keep extraction status only for URLs that are meant to become readable
+Behavior:
 
-Examples:
+- bucket `reading`
+- `autoExtract = false`
+- default action `open`
 
-- news article
-- blog post
-- documentation page
-- newsletter archive page
+### default
 
-#### Video items
+Everything else falls back to:
 
-Video rows should feel different immediately:
+- bucket `reading`
+- `autoExtract = true`
+- `defaultAction = null`
 
-- larger 16:9 thumbnail if one is available
-- provider label such as `youtube`
-- primary action: `watch`
-- do not show article extraction retry/failure UI
+This default matters. It keeps the system predictable and avoids accidentally hiding useful reader behavior for normal pages.
 
-If richer metadata becomes available later, add:
+## 6. UX Rules
 
-- channel or creator name
-- duration
+The UI should stay close to the current app.
 
-But those are optional for v1.
+### Tab control
 
-#### X and other social items
+Use one segmented filter control directly under the page header.
 
-Social URLs should live in `READING`, not `VIDEOS`.
+Behavior:
 
-Recommended behavior:
+- tabs are `ALL`, `READING`, `VIDEOS`
+- missing or invalid `tab` query param falls back to `ALL`
+- switching tabs preserves `q` if a search is active
+- search remains scoped to the active tab
+- do not show counts in v1
 
-- provider badge such as `x`
-- title should prefer captured post text when available, otherwise the existing page title
-- primary action: `open`
-- secondary action: `read` only if client-captured text exists
+Implementation:
 
-This avoids sending users to an empty reader page for content that is usually better opened at the source.
+- treat the control as URL-backed navigation, not a JavaScript tab widget
+- render it as a simple `nav` with three links
+- use `aria-current="page"` on the active tab
+- do not use a complex ARIA `tablist` / `tabpanel` pattern here
 
-## 6. Reader And Extraction Rules
+Layout:
 
-The current reader should become more selective.
+- desktop: tabs on the left, search input on the right, same row when space allows
+- mobile: stack tabs above search
+- mobile tabs should share the row width evenly
 
-### 6.1 Articles and normal reading URLs
+Visual treatment:
 
+- one outer border around the control
+- one divider between each tab
+- text only: no icons, no badges, no counts
+- active tab: black background, white text
+- inactive tab: white background, black text
+- no animation beyond normal hover and focus states
+
+Empty states:
+
+- `ALL`: `no bookmarks yet`
+- `READING`: `no reading links yet`
+- `VIDEOS`: `no videos yet`
+
+When search is active, use the same empty states with `matching` added, for example `no videos matching your search`.
+
+### Normal reading rows
+
+- keep the current row layout
 - keep the current extraction and reader flow
 - show `read` when extracted content exists
+- otherwise let the title link open the source
+- keep extraction status and retry only here
 
-### 6.2 Video URLs
+### Non-reader reading URLs
 
-- skip article extraction by default
-- do not show extraction failures for video URLs
-- default action is always `watch`
+- keep the same row layout
+- primary text action should be `open`
+- hide extraction failure and retry UI
 
-This is the biggest UX win. A saved YouTube link should never look broken because article extraction failed.
+This is the right behavior for X posts. They stay in `READING`, but the source page is the real destination.
 
-### 6.3 Social URLs
+Do not show `read` for this exception path in v1. If client-captured social-reader support ever proves valuable, that can be added later as a separate decision.
 
-For X and similar sources:
+### Video rows
 
-- do not rely on server extraction as the main path
-- if the extension captures readable text, allow `/read/:id`
-- otherwise treat the bookmark as open-first
+- keep the same row layout in v1
+- primary text action should be `watch`
+- hide extraction failure and retry UI
+- keep thumbnails if already available, but do not introduce a special large-card layout yet
 
-This keeps the product useful without pretending social sites are reliable reader inputs.
+The original plan's 16:9 video row is a reasonable later enhancement, but it is not necessary for the first UX win.
 
-## 7. API And Data Changes
+## 7. Reader And Extraction Behavior
 
-Keep this small.
+This is the main product improvement.
 
-### 7.1 Schema
+### normal reading URLs
 
-Add bookmark fields:
+- keep automatic extraction as it works today
 
-- `media_kind`
-- `list_bucket`
-- `provider`
+### non-reader reading URLs
 
-Expose them in:
+- do not auto-queue server extraction
+- do not attempt automatic extension capture in v1
+- keep the bookmark opening at the source URL
+
+### `video`
+
+- do not auto-queue server extraction
+- do not create pending extraction noise
+- never show a failed article state for a watch-first URL
+
+Implementation detail that keeps the system clean:
+
+- when `autoExtract = false`, do not create a pending `article_content` row just to represent "not applicable"
+- return `extraction_status = null` for these bookmarks
+
+That is simpler than creating fake pending or skipped records and then teaching the UI to ignore them.
+
+## 8. API, Extension, And Offline Impact
+
+V1 should avoid broad API and schema changes.
+
+### API
+
+- call the shared classifier during bookmark save
+- persist bookmark `bucket`
+- only queue extraction when `autoExtract = true`
+- add server-side list filtering by bucket so tabs paginate correctly
+
+Recommended API shape:
+
+- `GET /v1/bookmarks`
+- `GET /v1/bookmarks?bucket=reading`
+- `GET /v1/bookmarks?bucket=videos`
+
+Explicit request and response contract:
+
+- add optional `bucket` query param to `GET /v1/bookmarks`
+- allowed values: `reading`, `videos`
+- omit `bucket` for `ALL`
+- invalid `bucket` returns `400`
+- when both `bucket` and `q` are present, both filters apply server-side before pagination
+- pagination cursors must stay scoped to the same `bucket` and `q`
+
+Expose `bucket` in every bookmark payload that the web app and offline cache use:
 
 - bookmark create response
 - bookmark list response
 - bookmark by-url response
-- offline bundle payload
+- offline bundle `bookmark` payload
 
-### 7.2 List API
+Make this explicit in:
 
-Add an optional list filter:
+- `packages/shared/src/index.ts`
+- `SPEC.md`
+- API handlers and store types
+- offline cache schema
 
-- `GET /v1/bookmarks?bucket=reading`
-- `GET /v1/bookmarks?bucket=videos`
+### Extension
 
-Default remains all bookmarks.
+- call the same shared classifier before capture
+- skip content capture and server-extraction fallback for URLs where `autoExtract = false`
 
-This is better than client-only filtering because the list already has paging, search, and offline sync concerns.
+### Web app
 
-## 8. Suggested UX Rules
+- use the tab state in the URL
+- request `READING` and `VIDEOS` from the API with `bucket=...`
+- adjust action labels from `bucket`, `autoExtract`, and `extraction_status`
 
-Use the bucket and media kind to decide the primary button label:
+### Offline mode
 
-| Type | Tab | Primary action |
-|------|-----|----------------|
-| Article | `READING` | `read` |
-| General link | `READING` | `open` |
-| X post | `READING` | `open` |
-| Video | `VIDEOS` | `watch` |
+- include `bucket` in cached bookmark payloads so offline tabs stay correct without extra scanning
 
-Secondary rules:
-
-- never show `read` for a video unless a transcript or captured text exists
-- avoid `failed extraction` messaging on URLs that were intentionally classified as non-reader media
-- keep `ALL` mixed, but let the row styling and action labels explain the type
+This is the one schema/API change that is worth making. Without it, client-side-only tab filtering would be incomplete as soon as the list grows beyond one page.
 
 ## 9. Recommended V1 Scope
 
-Ship this in two small phases.
+Ship the smallest version that clearly improves UX:
 
-### Phase 1
-
-- add URL classification
-- add `media_kind`, `list_bucket`, `provider`
+- add shared URL classification
+- add one bookmark `bucket` field
 - add `ALL | READING | VIDEOS`
-- update action labels to `read`, `open`, or `watch`
-- skip extraction noise for video URLs
+- add API-side bucket filtering
+- change primary action labels to `read`, `open`, or `watch`
+- skip extraction noise for URLs where `autoExtract = false`
+- keep the current visual row structure
 
-### Phase 2
+Do not include in v1:
 
-- improve video row layout
-- improve X/social row treatment
-- allow client-captured social text to open in the reader when available
+- multiple media columns
+- provider APIs
+- detailed media metadata
+- separate social or audio tabs
+- special video cards
+- broader content taxonomy
 
 ## 10. Examples
 
-| URL example | Classification | Tab | Default UX |
-|-------------|----------------|-----|------------|
-| New York Times article | `article` | `READING` | standard row, `read` |
-| `https://youtu.be/...` | `video` | `VIDEOS` | large thumbnail, `watch` |
-| `https://x.com/.../status/...` | `social` | `READING` | compact row, `open` |
-| GitHub README or issue | `link` or `article` | `READING` | `open` or `read` depending on content availability |
+| URL example | Bucket | Auto extract | Default UX |
+|-------------|--------|--------------|------------|
+| New York Times article | `reading` | yes | current row, `read` when content exists |
+| `https://youtu.be/...` | `videos` | no | current row, `watch` |
+| `https://x.com/.../status/...` | `reading` | no | current row, `open` |
+| GitHub issue or README | `reading` | yes | current row, `open` or `read` depending on content |
 
 ## 11. Recommendation
 
-The best v1 is:
+The best v1 is smaller than the original draft:
 
-- classify only obvious video providers into `VIDEOS`
-- keep X and similar social bookmarks inside `READING`
-- make the primary action reflect the content type
-- stop showing article-reader failure states for links that are not articles
+- one stored `bucket` field only
+- no duplicate classification fields
+- one shared URL rules helper
+- three tabs only
+- same list UI, clearer actions
+- no extraction failures for URLs that were never reader content
 
-That gives the list a much better UX without making the product complicated.
+That gives a cleaner code path and a much clearer UX without turning `url-keep` into a media platform.

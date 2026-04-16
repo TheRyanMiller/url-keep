@@ -187,6 +187,54 @@ input {
   margin-bottom: 24px;
 }
 
+.toolbar-main {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.toolbar-main input {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-tabs {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  min-height: 44px;
+}
+
+.list-tab {
+  align-items: center;
+  background: var(--bg);
+  color: var(--fg);
+  display: inline-flex;
+  justify-content: center;
+  min-width: 88px;
+  padding: 0 14px;
+  text-decoration: none;
+}
+
+.list-tab + .list-tab {
+  border-left: 1px solid var(--border);
+}
+
+.list-tab.is-active {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.list-tab:hover,
+.list-tab:focus-visible {
+  background: var(--hover);
+}
+
+.list-tab.is-active:hover,
+.list-tab.is-active:focus-visible {
+  background: var(--fg);
+  color: var(--bg);
+}
+
 .row-form {
   display: grid;
   gap: 8px;
@@ -337,7 +385,7 @@ input {
   gap: 10px;
 }
 
-.bookmark-read-link {
+.bookmark-primary-link {
   align-items: center;
   display: inline-flex;
   gap: 6px;
@@ -807,6 +855,20 @@ input {
 }
 
 @media (max-width: 720px) {
+  .toolbar-main {
+    flex-direction: column;
+  }
+
+  .list-tabs {
+    display: flex;
+    width: 100%;
+  }
+
+  .list-tab {
+    flex: 1;
+    min-width: 0;
+  }
+
   .bookmark-row {
     grid-template-columns: auto 1fr;
     gap: 4px 0;
@@ -842,7 +904,7 @@ input {
     justify-content: flex-end;
   }
 
-  .bookmark-read-link {
+  .bookmark-primary-link {
     justify-content: flex-end;
   }
 

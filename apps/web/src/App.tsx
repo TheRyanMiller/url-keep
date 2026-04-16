@@ -1,5 +1,6 @@
 import { ApiError, UrlKeepClient } from "@url-keep/api-client";
 import {
+  classifyBookmarkUrl,
   toReadableBookmarkUrl,
   type ArticleContent,
   type Bookmark,
@@ -88,6 +89,7 @@ const ALLOWED_TAGS = [
 const ALLOWED_ATTR = ["href", "src", "alt", "title"];
 
 type ReaderTextSize = "s" | "m" | "l";
+type MainTab = "all" | Bookmark["bucket"];
 
 type ReaderLocationState = {
   bookmark?: Bookmark;
@@ -295,6 +297,7 @@ async function copyPreferredArticleLink({
   bookmarkId,
   sourceUrl,
   extractionStatus,
+  preferReaderLink,
   online,
   onNotice,
 }: {
@@ -302,13 +305,14 @@ async function copyPreferredArticleLink({
   bookmarkId: string;
   sourceUrl: string;
   extractionStatus?: Bookmark["extraction_status"] | ArticleContent["extraction_status"] | null;
+  preferReaderLink: boolean;
   online: boolean;
   onNotice: (message: string) => void;
 }) {
   let urlToCopy = toReadableBookmarkUrl(sourceUrl);
   let copiedReaderLink = false;
 
-  if (online && extractionStatus === "complete") {
+  if (preferReaderLink && online && extractionStatus === "complete") {
     try {
       const response = await client.enableBookmarkShare(bookmarkId);
       if (response.item.share_url) {
@@ -349,18 +353,41 @@ function getDomain(value: string) {
   }
 }
 
-function filterBookmarks(bookmarks: Bookmark[], query: string) {
-  const needle = query.trim().toLowerCase();
-  if (!needle) {
-    return bookmarks;
-  }
+function getBookmarkBucket(bookmark: Pick<Bookmark, "bucket" | "normalized_url">) {
+  return bookmark.bucket ?? classifyBookmarkUrl(bookmark.normalized_url).bucket;
+}
 
-  return bookmarks.filter((bookmark) =>
-    [bookmark.title, bookmark.url, bookmark.site_name ?? ""]
+function filterBookmarksByTab(bookmarks: Bookmark[], query: string, tab: MainTab) {
+  const needle = query.trim().toLowerCase();
+  return bookmarks.filter((bookmark) => {
+    if (tab !== "all" && getBookmarkBucket(bookmark) !== tab) {
+      return false;
+    }
+
+    if (!needle) {
+      return true;
+    }
+
+    return [bookmark.title, bookmark.url, bookmark.site_name ?? ""]
       .join(" ")
       .toLowerCase()
-      .includes(needle)
-  );
+      .includes(needle);
+  });
+}
+
+function parseMainTab(value: string | null): MainTab {
+  return value === "reading" || value === "videos" ? value : "all";
+}
+
+function getEmptyStateMessage(tab: MainTab, hasQuery: boolean) {
+  switch (tab) {
+    case "reading":
+      return hasQuery ? "no reading links matching your search" : "no reading links yet";
+    case "videos":
+      return hasQuery ? "no videos matching your search" : "no videos yet";
+    default:
+      return hasQuery ? "no bookmarks matching your search" : "no bookmarks yet";
+  }
 }
 
 function estimateReadMinutes(wordCount: number) {
@@ -944,6 +971,10 @@ function BookmarkRow({
   onRetryExtraction: (bookmark: Bookmark) => Promise<void>;
 }) {
   const auth = useAuth();
+  const classification = classifyBookmarkUrl(bookmark.normalized_url);
+  const autoExtract = classification.autoExtract;
+  const canRead = autoExtract && bookmark.extraction_status === "complete";
+  const primaryActionLabel = classification.defaultAction ?? (canRead ? "read" : "open");
   const [editing, setEditing] = useState(false);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [title, setTitle] = useState(bookmark.title);
@@ -991,6 +1022,7 @@ function BookmarkRow({
         bookmarkId: bookmark.id,
         sourceUrl: bookmark.url,
         extractionStatus: bookmark.extraction_status,
+        preferReaderLink: canRead,
         online,
         onNotice: onShareNotice,
       });
@@ -1013,16 +1045,16 @@ function BookmarkRow({
           </span>
         </span>
         <button
-          aria-label={shareBusy ? "copying article link" : "copy article link"}
+          aria-label={shareBusy ? "copying link" : "copy link"}
           className="icon-action bookmark-meta-share"
           disabled={shareBusy}
           onClick={() => void copyArticleLink()}
-          title={shareBusy ? "Copying article link" : "Copy article link"}
+          title={shareBusy ? "Copying link" : "Copy link"}
           type="button"
         >
           <Share2 aria-hidden="true" size={16} strokeWidth={1.75} />
         </button>
-        {bookmark.extraction_status && bookmark.extraction_status !== "complete" ? (
+        {autoExtract && bookmark.extraction_status && bookmark.extraction_status !== "complete" ? (
           <span className="extraction-status">
             {bookmark.extraction_status}
             {online && (bookmark.extraction_status === "pending" || bookmark.extraction_status === "failed" || bookmark.extraction_status === "skipped") ? (
@@ -1092,18 +1124,28 @@ function BookmarkRow({
       </div>
       <div className="bookmark-side">
         <div className="bookmark-actions">
-          {bookmark.extraction_status === "complete" ? (
-            <div className="bookmark-primary-actions">
+          <div className="bookmark-primary-actions">
+            {canRead ? (
               <Link
-                className="text-action bookmark-read-link"
+                className="text-action bookmark-primary-link"
                 state={{ bookmark }}
                 to={`/read/${bookmark.id}`}
               >
                 <BookOpen aria-hidden="true" size={14} strokeWidth={1.75} />
                 <span>read</span>
               </Link>
-            </div>
-          ) : null}
+            ) : (
+              <a
+                className="text-action bookmark-primary-link"
+                href={bookmarkHref}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                <ArrowUpRight aria-hidden="true" size={13} strokeWidth={1.9} />
+                <span>{primaryActionLabel}</span>
+              </a>
+            )}
+          </div>
           <div className="icon-actions">
             {editing ? (
               <button
@@ -1178,11 +1220,13 @@ function MainPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ id: number; message: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const activeTab = parseMainTab(searchParams.get("tab"));
   const query = searchParams.get("q") ?? "";
+  const hasQuery = query.trim().length > 0;
 
   const loadOfflineBookmarks = async () => {
     const items = await offline.manager.getBookmarks();
-    setBookmarks(filterBookmarks(items, query));
+    setBookmarks(filterBookmarksByTab(items, query, activeTab));
   };
 
   const loadBookmarks = async () => {
@@ -1197,6 +1241,7 @@ function MainPage() {
 
     try {
       const response = await auth.client.listBookmarks({
+        bucket: activeTab === "all" ? undefined : activeTab,
         q: query || undefined,
       });
       setBookmarks(response.items);
@@ -1213,7 +1258,7 @@ function MainPage() {
 
   useEffect(() => {
     void loadBookmarks();
-  }, [query, offline.online, offline.syncVersion]);
+  }, [activeTab, query, offline.online, offline.syncVersion]);
 
   useEffect(() => {
     if (!notice) {
@@ -1284,6 +1329,18 @@ function MainPage() {
     setSearchParams(next, { replace: true });
   };
 
+  const getTabHref = (tab: MainTab) => {
+    const next = new URLSearchParams(searchParams);
+    if (tab === "all") {
+      next.delete("tab");
+    } else {
+      next.set("tab", tab);
+    }
+
+    const serialized = next.toString();
+    return serialized ? `/?${serialized}` : "/";
+  };
+
   return (
     <div className="page">
       {notice ? (
@@ -1303,16 +1360,37 @@ function MainPage() {
         {offline.syncing ? (
           <p className="muted block-muted">syncing offline cache</p>
         ) : null}
-        <input
-          aria-label="search"
-          placeholder="search"
-          value={query}
-          onChange={(event) => onSearchChange(event.target.value)}
-        />
+        <div className="toolbar-main">
+          <nav aria-label="bookmark filters" className="list-tabs">
+            {([
+              { label: "ALL", value: "all" },
+              { label: "READING", value: "reading" },
+              { label: "VIDEOS", value: "videos" },
+            ] as const).map((tab) => (
+              <Link
+                key={tab.value}
+                aria-current={activeTab === tab.value ? "page" : undefined}
+                className={`list-tab${activeTab === tab.value ? " is-active" : ""}`}
+                to={getTabHref(tab.value)}
+              >
+                {tab.label}
+              </Link>
+            ))}
+          </nav>
+          <input
+            aria-label="search"
+            placeholder="search"
+            value={query}
+            onChange={(event) => onSearchChange(event.target.value)}
+          />
+        </div>
       </section>
 
       {error ? <p className="error">{error}</p> : null}
       {loading ? <p>loading</p> : null}
+      {!loading && !error && bookmarks.length === 0 ? (
+        <p className="muted block-muted">{getEmptyStateMessage(activeTab, hasQuery)}</p>
+      ) : null}
 
       <section className="bookmark-list">
         {bookmarks.map((bookmark) => (
@@ -2044,6 +2122,7 @@ function ReaderPage() {
         bookmarkId: bookmark.id,
         sourceUrl: bookmark.url,
         extractionStatus: article?.extraction_status ?? bookmark.extraction_status,
+        preferReaderLink: true,
         online: offline.online,
         onNotice: showNotice,
       });

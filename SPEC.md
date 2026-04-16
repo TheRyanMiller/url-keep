@@ -161,6 +161,7 @@ CREATE TABLE bookmarks (
   user_id TEXT NOT NULL,
   url TEXT NOT NULL,
   normalized_url TEXT NOT NULL,
+  bucket TEXT NOT NULL,
   title TEXT NOT NULL,
   title_source TEXT NOT NULL,
   image_url TEXT,
@@ -170,12 +171,16 @@ CREATE TABLE bookmarks (
   updated_at TEXT NOT NULL,
   FOREIGN KEY (user_id) REFERENCES users(id),
   UNIQUE(user_id, normalized_url),
+  CHECK (bucket IN ('reading', 'videos')),
   CHECK (title_source IN ('fallback', 'client', 'user')),
   CHECK (saved_via IN ('web', 'mobile_web', 'extension', 'ios_shortcut'))
 );
 
 CREATE INDEX idx_bookmarks_user_created
   ON bookmarks(user_id, created_at DESC);
+
+CREATE INDEX idx_bookmarks_user_bucket_created
+  ON bookmarks(user_id, bucket, created_at DESC, id DESC);
 
 CREATE INDEX idx_bookmarks_user_normalized_url
   ON bookmarks(user_id, normalized_url);
@@ -206,6 +211,9 @@ Login-issued tokens and manually created tokens are the same access-token object
 
 - `url` stores the original submitted URL
 - `normalized_url` is used for uniqueness and lookup
+- `bucket` stores the list grouping used by the web app:
+  - `reading`
+  - `videos`
 - `title` is always stored
 - `title_source` tracks whether the title came from:
   - server fallback
@@ -503,6 +511,7 @@ Auth required.
 Query params:
 
 - `q` optional search string
+- `bucket` optional, one of `reading` or `videos`
 - `limit` optional, default `50`, max `100`
 - `cursor` optional opaque cursor
 
@@ -516,6 +525,7 @@ Search behavior:
   - `title`
   - `url`
   - `site_name`
+- if `bucket` is present, filter by bucket before pagination
 
 Response:
 
@@ -526,6 +536,7 @@ Response:
       "id": "b_123",
       "url": "https://example.com/article",
       "normalized_url": "https://example.com/article",
+      "bucket": "reading",
       "title": "Example article",
       "image_url": "https://example.com/og.jpg",
       "site_name": "Example",
@@ -561,6 +572,7 @@ Response:
     "id": "b_123",
     "url": "https://example.com/article",
     "normalized_url": "https://example.com/article",
+    "bucket": "reading",
     "title": "Example article",
     "image_url": "https://example.com/og.jpg",
     "site_name": "Example",

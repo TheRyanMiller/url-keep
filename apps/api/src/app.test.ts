@@ -218,8 +218,9 @@ describe("api", () => {
     });
 
     expect(create.status).toBe(201);
-    const created = await json<{ item: { title: string; extraction_status: string } }>(create);
+    const created = await json<{ item: { title: string; bucket: string; extraction_status: string } }>(create);
     expect(created.item.title).toBe("example.com");
+    expect(created.item.bucket).toBe("reading");
     expect(created.item.extraction_status).toBe("pending");
 
     const upgrade = await request("http://localhost/v1/bookmarks", {
@@ -263,6 +264,106 @@ describe("api", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("content-type")).toBeNull();
     expect(await response.text()).toBe("");
+  });
+
+  it("classifies video bookmarks into videos and filters them server-side", async () => {
+    const { token } = await login();
+
+    const videoCreate = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://youtu.be/abc123",
+        saved_via: "extension",
+      }),
+    }, TEST_ENV);
+
+    expect(videoCreate.status).toBe(201);
+    const video = await json<{
+      item: {
+        id: string;
+        bucket: string;
+        extraction_status: string | null;
+      };
+    }>(videoCreate);
+    expect(video.item.bucket).toBe("videos");
+    expect(video.item.extraction_status).toBeNull();
+    expect(extractCalls).toHaveLength(0);
+
+    const articleCreate = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://example.com/article",
+        saved_via: "web",
+      }),
+    }, TEST_ENV);
+    expect(articleCreate.status).toBe(201);
+    expect(extractCalls).toHaveLength(1);
+
+    const videosResponse = await request("http://localhost/v1/bookmarks?bucket=videos", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(videosResponse.status).toBe(200);
+    const videos = await json<{ items: Array<{ id: string; bucket: string }> }>(videosResponse);
+    expect(videos.items).toHaveLength(1);
+    expect(videos.items[0]?.id).toBe(video.item.id);
+    expect(videos.items[0]?.bucket).toBe("videos");
+
+    const readingResponse = await request("http://localhost/v1/bookmarks?bucket=reading", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(readingResponse.status).toBe(200);
+    const reading = await json<{ items: Array<{ bucket: string }> }>(readingResponse);
+    expect(reading.items).toHaveLength(1);
+    expect(reading.items[0]?.bucket).toBe("reading");
+  });
+
+  it("does not auto-extract non-reader reading urls", async () => {
+    const { token } = await login();
+
+    const create = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://x.com/example/status/12345",
+        saved_via: "web",
+      }),
+    }, TEST_ENV);
+
+    expect(create.status).toBe(201);
+    const created = await json<{
+      item: {
+        id: string;
+        bucket: string;
+        extraction_status: string | null;
+      };
+    }>(create);
+    expect(created.item.bucket).toBe("reading");
+    expect(created.item.extraction_status).toBeNull();
+    expect(extractCalls).toHaveLength(0);
+
+    const extract = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/extract`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      TEST_ENV,
+    );
+
+    expect(extract.status).toBe(409);
+    const error = await json<{ error: { code: string } }>(extract);
+    expect(error.error.code).toBe("extraction_unavailable");
   });
 
   it("preserves user edited titles on later duplicate saves", async () => {
@@ -500,7 +601,8 @@ another paragraph keeps the content comfortably above the minimum length require
     const listResponse = await request("http://localhost/v1/bookmarks", {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const list = await json<{ items: Array<{ extraction_status: string | null }> }>(listResponse);
+    const list = await json<{ items: Array<{ bucket: string; extraction_status: string | null }> }>(listResponse);
+    expect(list.items[0]?.bucket).toBe("reading");
     expect(list.items[0]?.extraction_status).toBe("complete");
 
     const bundleResponse = await request("http://localhost/v1/offline/bundle", {
@@ -510,12 +612,13 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(bundleResponse.status).toBe(200);
     const bundle = await json<{
       items: Array<{
-        bookmark: { id: string };
+        bookmark: { id: string; bucket: string };
         content: { extraction_status: string } | null;
       }>;
       has_more: boolean;
     }>(bundleResponse);
     expect(bundle.items[0]?.bookmark.id).toBe(created.item.id);
+    expect(bundle.items[0]?.bookmark.bucket).toBe("reading");
     expect(bundle.items[0]?.content?.extraction_status).toBe("complete");
     expect(bundle.has_more).toBe(false);
   });

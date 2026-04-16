@@ -1,7 +1,7 @@
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
 import { scryptAsync } from "@noble/hashes/scrypt";
 import { sha256 } from "@noble/hashes/sha2";
-import { canonicalizeBookmarkUrl } from "@url-keep/shared";
+import { canonicalizeBookmarkUrl, classifyBookmarkUrl } from "@url-keep/shared";
 import type { BookmarkRecord } from "./types";
 
 const textEncoder = new TextEncoder();
@@ -229,17 +229,19 @@ export function validateHttpsImageUrl(input: string | undefined): string | null 
 }
 
 export function bookmarkToApi(bookmark: BookmarkRecord) {
+  const classification = classifyBookmarkUrl(bookmark.normalizedUrl);
   return {
     id: bookmark.id,
     url: bookmark.url,
     normalized_url: bookmark.normalizedUrl,
+    bucket: bookmark.bucket ?? classification.bucket,
     title: bookmark.title,
     image_url: bookmark.imageUrl,
     site_name: bookmark.siteName,
     saved_via: bookmark.savedVia,
     created_at: bookmark.createdAt,
     updated_at: bookmark.updatedAt,
-    extraction_status: bookmark.extractionStatus ?? null,
+    extraction_status: classification.autoExtract ? bookmark.extractionStatus ?? null : null,
   };
 }
 

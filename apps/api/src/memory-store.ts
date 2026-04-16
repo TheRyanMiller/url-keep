@@ -1,4 +1,5 @@
 import { decodeCursor, encodeCursor, nowIso } from "./utils";
+import { classifyBookmarkUrl } from "@url-keep/shared";
 import type {
   AccessTokenRecord,
   ArticleContentRecord,
@@ -101,9 +102,13 @@ export class MemoryStore implements Store {
 
   private attachExtractionStatus(bookmark: BookmarkRecord): BookmarkRecord {
     const content = this.articleContent.get(bookmark.id);
+    const classification = classifyBookmarkUrl(bookmark.normalizedUrl);
     return {
       ...structuredClone(bookmark),
-      extractionStatus: content?.extractionStatus ?? null,
+      bucket: bookmark.bucket ?? classification.bucket,
+      extractionStatus: classification.autoExtract
+        ? content?.extractionStatus ?? null
+        : null,
     };
   }
 
@@ -134,6 +139,14 @@ export class MemoryStore implements Store {
     const query = options.q?.toLowerCase() ?? "";
     const filtered = [...this.bookmarks.values()]
       .filter((bookmark) => bookmark.userId === userId)
+      .filter((bookmark) => {
+        if (!options.bucket) {
+          return true;
+        }
+
+        const bucket = bookmark.bucket ?? classifyBookmarkUrl(bookmark.normalizedUrl).bucket;
+        return bucket === options.bucket;
+      })
       .filter((bookmark) => {
         if (!query) {
           return true;

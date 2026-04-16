@@ -1,3 +1,4 @@
+import { classifyBookmarkUrl } from "@url-keep/shared";
 import { createStoredClient } from "./settings";
 
 type CapturedContent = {
@@ -8,7 +9,12 @@ type CapturedContent = {
   site_name: string | null;
 };
 
-async function handleCapture(tabId: number, bookmarkId: string): Promise<void> {
+async function handleCapture(tabId: number, bookmarkId: string, url: string): Promise<void> {
+  if (!classifyBookmarkUrl(url).autoExtract) {
+    console.log("[url-keep] skipping capture for non-reader url:", url);
+    return;
+  }
+
   const client = await createStoredClient();
   let captured: CapturedContent | null = null;
 
@@ -18,8 +24,9 @@ async function handleCapture(tabId: number, bookmarkId: string): Promise<void> {
       files: ["capture.js"],
     });
     captured = (result?.result as CapturedContent | null) ?? null;
-  } catch {
-    // Injection failed (CSP, chrome:// page, tab closed, etc.)
+    console.log("[url-keep] capture result:", captured ? `${captured.content_html.length} chars` : "null");
+  } catch (error) {
+    console.warn("[url-keep] capture injection failed:", error);
   }
 
   if (captured?.content_html) {
@@ -31,24 +38,29 @@ async function handleCapture(tabId: number, bookmarkId: string): Promise<void> {
         published_date: captured.published_date,
         site_name: captured.site_name,
       });
-      return; // Success — content is in D1
-    } catch {
-      // Upload failed (network error, 413, 422, etc.)
+      console.log("[url-keep] upload success for", bookmarkId);
+      return;
+    } catch (error) {
+      console.warn("[url-keep] upload failed:", error);
     }
   }
 
   // Capture or upload failed — trigger server extraction as explicit fallback
   try {
+    console.log("[url-keep] falling back to server extraction for", bookmarkId);
     await client.extractBookmark(bookmarkId);
-  } catch {
-    // Server extraction also failed to queue. Content stays pending.
-    // User can retry from the web app.
+  } catch (error) {
+    console.warn("[url-keep] server extraction fallback failed:", error);
   }
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.action === "capture") {
-    handleCapture(message.tabId as number, message.bookmarkId as string)
+    handleCapture(
+      message.tabId as number,
+      message.bookmarkId as string,
+      message.url as string,
+    )
       .then(() => sendResponse({ ok: true }))
       .catch(() => sendResponse({ ok: false }));
     return true; // Keep the message channel open for async response
