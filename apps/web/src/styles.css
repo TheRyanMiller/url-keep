@@ -255,29 +255,66 @@ input {
   text-decoration: none;
 }
 
-.bookmark-title-edit {
-  align-items: center;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  display: inline-flex;
-  flex-shrink: 0;
-  justify-content: center;
-  min-height: auto;
-  padding: 0;
-}
-
 .bookmark-title:hover,
 .text-action:hover,
-.text-action:focus-visible,
-.bookmark-title-edit:hover,
-.bookmark-title-edit:focus-visible {
+.text-action:focus-visible {
   text-decoration: underline;
   background: var(--hover);
 }
 
 .bookmark-domain {
   margin: 0;
+}
+
+.bookmark-meta-date {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+}
+
+.bookmark-meta-date:focus-visible {
+  outline: 1px solid var(--border);
+  outline-offset: 3px;
+}
+
+.bookmark-meta-tooltip-card {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 2;
+  min-width: max-content;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.08);
+  color: var(--fg);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  opacity: 0;
+  pointer-events: none;
+  text-transform: none;
+  transform: translateY(-2px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease,
+    visibility 0.14s ease;
+  visibility: hidden;
+  white-space: nowrap;
+}
+
+.bookmark-meta-date:hover .bookmark-meta-tooltip-card,
+.bookmark-meta-date:focus-visible .bookmark-meta-tooltip-card,
+.bookmark-meta-date:focus-within .bookmark-meta-tooltip-card {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.bookmark-meta-share {
+  justify-content: flex-start;
+  margin-left: -4px;
 }
 
 .bookmark-side {
@@ -305,14 +342,6 @@ input {
   display: inline-flex;
   gap: 6px;
   justify-content: flex-end;
-}
-
-.bookmark-share-link {
-  line-height: 1;
-}
-
-.bookmark-share-link:disabled {
-  opacity: 0.55;
 }
 
 .bookmark-image {
@@ -490,6 +519,7 @@ input {
   color: var(--muted);
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   font-size: 11px;
   gap: 8px 14px;
   letter-spacing: 0.04em;
@@ -498,6 +528,13 @@ input {
 
 .reader-meta-tooltip {
   cursor: help;
+}
+
+.reader-inline-share {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  margin-left: -4px;
 }
 
 .reader-text-size-control {
@@ -785,14 +822,7 @@ input {
   .bookmark-meta {
     grid-row: 2;
     grid-column: 1;
-    display: flex;
-    gap: 6px;
-    align-items: center;
-  }
-
-  /* hide saved_via label on mobile */
-  .bookmark-meta > span:nth-child(2) {
-    display: none;
+    gap: 4px;
   }
 
   .bookmark-side {

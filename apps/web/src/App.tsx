@@ -253,6 +253,81 @@ function formatOptionalDate(value: string | null | undefined) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
 
+function formatSavedViaLabel(value: Bookmark["saved_via"]) {
+  switch (value) {
+    case "mobile_web":
+      return "mobile web";
+    case "ios_shortcut":
+      return "iPhone shortcut";
+    default:
+      return value;
+  }
+}
+
+function normalizeMetadataLabel(value: string | null | undefined) {
+  return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
+}
+
+async function copyToClipboard(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "");
+  input.style.position = "absolute";
+  input.style.left = "-9999px";
+  document.body.append(input);
+  input.select();
+
+  const copied = document.execCommand("copy");
+  input.remove();
+
+  if (!copied) {
+    throw new Error("copy failed");
+  }
+}
+
+async function copyPreferredArticleLink({
+  client,
+  bookmarkId,
+  sourceUrl,
+  extractionStatus,
+  online,
+  onNotice,
+}: {
+  client: UrlKeepClient;
+  bookmarkId: string;
+  sourceUrl: string;
+  extractionStatus?: Bookmark["extraction_status"] | ArticleContent["extraction_status"] | null;
+  online: boolean;
+  onNotice: (message: string) => void;
+}) {
+  let urlToCopy = toReadableBookmarkUrl(sourceUrl);
+  let copiedReaderLink = false;
+
+  if (online && extractionStatus === "complete") {
+    try {
+      const response = await client.enableBookmarkShare(bookmarkId);
+      if (response.item.share_url) {
+        urlToCopy = response.item.share_url;
+        copiedReaderLink = true;
+      }
+    } catch {
+      // Fall back to the source article URL when a public reader URL is unavailable.
+    }
+  }
+
+  try {
+    await copyToClipboard(urlToCopy);
+    onNotice(copiedReaderLink ? "reader link copied" : "source link copied");
+  } catch {
+    onNotice(copiedReaderLink ? "reader link ready, but copy failed" : "source link ready, but copy failed");
+  }
+}
+
 function formatError(caught: unknown, fallback: string) {
   if (caught instanceof ApiError) {
     if (caught.code === "invalid_response") {
@@ -691,6 +766,7 @@ function ReaderDocument({
   contentHtml,
   extractionStatus,
   extractionError,
+  shareAction,
 }: {
   header: ReactNode;
   title: string;
@@ -702,6 +778,10 @@ function ReaderDocument({
   contentHtml?: string | null;
   extractionStatus: ArticleContent["extraction_status"];
   extractionError?: string | null;
+  shareAction?: {
+    busy: boolean;
+    onClick: () => void;
+  };
 }) {
   const [textSize, setTextSize] = useState<ReaderTextSize>(() => readStoredReaderTextSize());
   const [textSizeMenuOpen, setTextSizeMenuOpen] = useState(false);
@@ -747,6 +827,13 @@ function ReaderDocument({
   const resolvedPublishedDate = formatOptionalDate(publishedDate);
   const readMinutes = wordCount ? estimateReadMinutes(wordCount) : null;
   const sourceHref = toReadableBookmarkUrl(sourceUrl);
+  const normalizedAuthor = normalizeMetadataLabel(author);
+  const normalizedSiteName = normalizeMetadataLabel(siteName);
+  const primarySourceLabel = siteName?.trim() || author?.trim() || null;
+  const secondaryAuthorLabel =
+    siteName?.trim() && author?.trim() && normalizedAuthor !== normalizedSiteName
+      ? author.trim()
+      : null;
 
   return (
     <>
@@ -755,7 +842,20 @@ function ReaderDocument({
         <header className="reader-header">
           <h1>{title}</h1>
           <div className="reader-meta">
-            {author ? <span>{author}</span> : null}
+            {shareAction ? (
+              <button
+                aria-label={shareAction.busy ? "copying article link" : "copy article link"}
+                className="icon-action reader-inline-share"
+                disabled={shareAction.busy}
+                onClick={shareAction.onClick}
+                title={shareAction.busy ? "Copying article link" : "Copy article link"}
+                type="button"
+              >
+                <Share2 aria-hidden="true" size={14} strokeWidth={1.75} />
+              </button>
+            ) : null}
+            {primarySourceLabel ? <span>{primarySourceLabel}</span> : null}
+            {secondaryAuthorLabel ? <span>{secondaryAuthorLabel}</span> : null}
             {readMinutes && wordCount ? (
               <span
                 aria-label={`${readMinutes} min read, ${wordCount.toLocaleString()} words`}
@@ -765,7 +865,6 @@ function ReaderDocument({
                 {readMinutes} min read
               </span>
             ) : null}
-            {siteName ? <span>{siteName}</span> : null}
             {resolvedPublishedDate ? <span>{resolvedPublishedDate}</span> : null}
             <div className="reader-text-size-control" ref={textSizeControlRef}>
               <button
@@ -883,39 +982,18 @@ function BookmarkRow({
   };
   const bookmarkHref = toReadableBookmarkUrl(bookmark.url);
 
-  const enableShare = async () => {
-    if (!online) {
-      onShareNotice("sharing requires a connection");
-      return;
-    }
-
+  const copyArticleLink = async () => {
     setShareBusy(true);
     setDeleteArmed(false);
     try {
-      const response = await auth.client.enableBookmarkShare(bookmark.id);
-      if (!response.item.share_url) {
-        onShareNotice("share is unavailable right now");
-        return;
-      }
-
-      try {
-        await navigator.clipboard.writeText(response.item.share_url);
-        onShareNotice("share link copied");
-      } catch {
-        onShareNotice("share link ready, but copy failed");
-      }
-    } catch (caught) {
-      if (caught instanceof ApiError) {
-        if (caught.code === "invalid_response") {
-          onShareNotice("share is unavailable right now");
-          return;
-        }
-        if (caught.code === "share_unavailable") {
-          onShareNotice("article is not ready to share yet");
-          return;
-        }
-      }
-      onShareNotice(formatError(caught, "share failed"));
+      await copyPreferredArticleLink({
+        client: auth.client,
+        bookmarkId: bookmark.id,
+        sourceUrl: bookmark.url,
+        extractionStatus: bookmark.extraction_status,
+        online,
+        onNotice: onShareNotice,
+      });
     } finally {
       setShareBusy(false);
     }
@@ -924,8 +1002,26 @@ function BookmarkRow({
   return (
     <article className="bookmark-row">
       <div className="bookmark-meta">
-        <span>{formatDate(bookmark.created_at)}</span>
-        <span>{bookmark.saved_via}</span>
+        <span
+          aria-label={`Saved ${formatDate(bookmark.created_at)} via ${formatSavedViaLabel(bookmark.saved_via)}`}
+          className="bookmark-meta-date"
+          tabIndex={0}
+        >
+          <span>{formatDate(bookmark.created_at)}</span>
+          <span className="bookmark-meta-tooltip-card" role="tooltip">
+            saved via {formatSavedViaLabel(bookmark.saved_via)}
+          </span>
+        </span>
+        <button
+          aria-label={shareBusy ? "copying article link" : "copy article link"}
+          className="icon-action bookmark-meta-share"
+          disabled={shareBusy}
+          onClick={() => void copyArticleLink()}
+          title={shareBusy ? "Copying article link" : "Copy article link"}
+          type="button"
+        >
+          <Share2 aria-hidden="true" size={16} strokeWidth={1.75} />
+        </button>
         {bookmark.extraction_status && bookmark.extraction_status !== "complete" ? (
           <span className="extraction-status">
             {bookmark.extraction_status}
@@ -985,19 +1081,6 @@ function BookmarkRow({
                   >
                     {bookmark.title}
                   </a>
-                  <button
-                    aria-label="edit title"
-                    className="bookmark-title-edit"
-                    disabled={!online}
-                    onClick={() => {
-                      setDeleteArmed(false);
-                      setEditing(true);
-                    }}
-                    title={online ? "Edit title" : "Editing requires a connection"}
-                    type="button"
-                  >
-                    <PencilLine aria-hidden="true" size={14} strokeWidth={1.75} />
-                  </button>
                 </div>
                 <p className="bookmark-domain">{getDomain(bookmark.url)}</p>
               </>
@@ -1034,18 +1117,19 @@ function BookmarkRow({
                 <Check aria-hidden="true" size={16} strokeWidth={2.25} />
               </button>
             ) : (
-              bookmark.extraction_status === "complete" ? (
-                <button
-                  aria-label={shareBusy ? "copying share link" : "share article"}
-                  className="icon-action bookmark-share-link"
-                  disabled={!online || shareBusy}
-                  onClick={() => void enableShare()}
-                  title={shareBusy ? "Copying share link" : "Copy share link"}
-                  type="button"
-                >
-                  <Share2 aria-hidden="true" size={16} strokeWidth={1.75} />
-                </button>
-              ) : null
+              <button
+                aria-label="edit title"
+                className="icon-action"
+                disabled={!online}
+                onClick={() => {
+                  setDeleteArmed(false);
+                  setEditing(true);
+                }}
+                title={online ? "Edit title" : "Editing requires a connection"}
+                type="button"
+              >
+                <PencilLine aria-hidden="true" size={16} strokeWidth={1.75} />
+              </button>
             )}
 
             {editing ? (
@@ -1847,6 +1931,27 @@ function ReaderPage() {
   const [article, setArticle] = useState<ArticleContent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<{ id: number; message: string } | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setNotice((current) => (current?.id === notice.id ? null : current));
+    }, 2800);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
+
+  const showNotice = (message: string) => {
+    setNotice({
+      id: Date.now(),
+      message,
+    });
+  };
 
   useEffect(() => {
     let active = true;
@@ -1927,8 +2032,33 @@ function ReaderPage() {
     };
   }, [id, offline.online, offline.syncVersion]);
 
+  const copyArticleLink = async () => {
+    if (!bookmark) {
+      return;
+    }
+
+    setShareBusy(true);
+    try {
+      await copyPreferredArticleLink({
+        client: auth.client,
+        bookmarkId: bookmark.id,
+        sourceUrl: bookmark.url,
+        extractionStatus: article?.extraction_status ?? bookmark.extraction_status,
+        online: offline.online,
+        onNotice: showNotice,
+      });
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
   return (
     <div className="page reader-page">
+      {notice ? (
+        <div aria-live="polite" className="app-notice" role="status">
+          {notice.message}
+        </div>
+      ) : null}
       {loading ? <p>loading</p> : null}
       {error ? <p className="error">{error}</p> : null}
 
@@ -1945,6 +2075,12 @@ function ReaderPage() {
             </>
           )}
           publishedDate={article?.published_date}
+          shareAction={{
+            busy: shareBusy,
+            onClick: () => {
+              void copyArticleLink();
+            },
+          }}
           siteName={bookmark.site_name}
           sourceUrl={bookmark.url}
           title={bookmark.title}
