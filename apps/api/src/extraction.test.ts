@@ -153,4 +153,70 @@ this second paragraph makes the sample comfortably longer than the readability t
     expect(updatedBookmark?.title).toBe("Uptime Kuma x Yearn User Guide");
     expect(updatedBookmark?.siteName).toBe("HackMD");
   });
+
+  it("normalizes malformed html roots before running readability", async () => {
+    const store = new MemoryStore();
+    const bookmark = {
+      ...makeBookmark(),
+      url: "https://vitalik.eth.limo/general/2026/04/02/secure_llms.html",
+      normalizedUrl: "https://vitalik.eth.limo/general/2026/04/02/secure_llms.html",
+    };
+    await store.insertBookmark(bookmark);
+
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url === bookmark.url) {
+        return new Response(
+          `
+            <!DOCTYPE html>
+            <html>
+              <head>
+                <title>Secure LLM Setup</title>
+              </head>
+              <body></body>
+              <div id="doc" class="markdown-body">
+                <article>
+                  <h1>Secure LLM Setup</h1>
+                  <p>
+                    This first paragraph is intentionally long enough to look like article text
+                    instead of chrome or navigation. It should survive malformed html roots and
+                    still be extracted cleanly by the server reader.
+                  </p>
+                  <p>
+                    A second paragraph keeps the sample above the readability threshold and proves
+                    we recover content even when the parser places the article outside body.
+                  </p>
+                </article>
+              </div>
+            </html>
+          `,
+          {
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+            },
+          },
+        );
+      }
+
+      return new Response("not found", { status: 404 });
+    };
+
+    const result = await runBookmarkExtraction({
+      env: {
+        DB: {} as D1Database,
+      } satisfies Bindings,
+      store,
+      bookmark,
+      fetchImpl,
+    });
+
+    expect(result.extractionStatus).toBe("complete");
+    expect(result.extractionError).toBeNull();
+    expect(result.contentHtml).toContain("This first paragraph is intentionally long enough");
+    expect(result.wordCount).toBeGreaterThan(20);
+
+    const updatedBookmark = await store.getBookmarkById(bookmark.userId, bookmark.id);
+    expect(updatedBookmark?.title).toBe("Secure LLM Setup");
+  });
 });

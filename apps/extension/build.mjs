@@ -32,11 +32,15 @@ await Promise.all([
       __API_ORIGIN__: JSON.stringify(apiOrigin),
     },
   }),
-  // Capture script (injected into tabs) — IIFE so executeScript({ files }) gets the return value
+  // Capture script (injected into tabs) — IIFE with globalName so the
+  // exported `capture` function is accessible.  The footer calls it so
+  // executeScript({ files }) receives the return value as its result.
   build({
     entryPoints: [resolve(root, "src/capture.ts")],
     bundle: true,
     format: "iife",
+    globalName: "__urlKeepCapture",
+    footer: { js: "__urlKeepCapture.capture();" },
     outfile: resolve(outdir, "capture.js"),
   }),
 ]);

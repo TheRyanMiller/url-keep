@@ -421,6 +421,9 @@ function formatExtractionError(error: string | null | undefined): string {
         return `this page is not an article (${parsed.content_type ?? "unknown type"})`;
       case "no_readable_content":
         return "no article content found on this page";
+      case "parse_error":
+      case "readability_error":
+        return "this page's markup confused the server reader. save from the extension for full content.";
       default:
         return error;
     }

@@ -189,7 +189,7 @@ input {
 
 .toolbar-main {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 12px;
 }
 
@@ -200,39 +200,33 @@ input {
 
 .list-tabs {
   display: inline-flex;
-  border: 1px solid var(--border);
-  min-height: 44px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
 }
 
 .list-tab {
-  align-items: center;
-  background: var(--bg);
-  color: var(--fg);
+  color: var(--muted);
   display: inline-flex;
-  justify-content: center;
-  min-width: 88px;
-  padding: 0 14px;
+  padding: 10px 0;
   text-decoration: none;
-}
-
-.list-tab + .list-tab {
-  border-left: 1px solid var(--border);
+  text-underline-offset: 0.22em;
+  text-decoration-thickness: 1px;
 }
 
 .list-tab.is-active {
-  background: var(--fg);
-  color: var(--bg);
+  color: var(--fg);
+  text-decoration: underline;
 }
 
-.list-tab:hover,
+.list-tab:hover {
+  color: var(--fg);
+}
+
 .list-tab:focus-visible {
-  background: var(--hover);
-}
-
-.list-tab.is-active:hover,
-.list-tab.is-active:focus-visible {
-  background: var(--fg);
-  color: var(--bg);
+  color: var(--fg);
+  outline: 1px solid var(--subtle-border);
+  outline-offset: 4px;
 }
 
 .row-form {
@@ -857,16 +851,12 @@ input {
 @media (max-width: 720px) {
   .toolbar-main {
     flex-direction: column;
+    align-items: stretch;
   }
 
   .list-tabs {
-    display: flex;
-    width: 100%;
-  }
-
-  .list-tab {
-    flex: 1;
-    min-width: 0;
+    gap: 14px;
+    width: auto;
   }
 
   .bookmark-row {

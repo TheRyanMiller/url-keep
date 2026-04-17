@@ -2,7 +2,16 @@
   "permissions": {
     "allow": [
       "Bash(npm run:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(npm install:*)",
+      "Bash(npm test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(cd apps/extension && node build.mjs 2>&1)",
+      "Bash(npx wrangler:*)",
+      "Bash(find /Users/wavey/code/url-keep -type f \\\\\\( -name \"*.md\" -o -name \"README*\" \\\\\\) 2>/dev/null | grep -v node_modules)",
+      "Bash(node apps/extension/build.mjs 2>&1)"
     ]
   }
 }

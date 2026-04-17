@@ -250,6 +250,12 @@ input {
   min-height: auto;
 }
 
+.success-actions {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
 .hidden {
   display: none;
 }

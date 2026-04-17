@@ -42,5 +42,5 @@ export function capture(): CaptureResult | null {
   };
 }
 
-// IIFE — executeScript({ files }) uses the last evaluated expression as return value
-capture();
+// Exported so esbuild includes it in the IIFE's returned exports object.
+// The build step's footer appends the actual call outside the IIFE wrapper.

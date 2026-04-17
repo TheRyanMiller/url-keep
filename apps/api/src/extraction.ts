@@ -21,6 +21,17 @@ const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 10 * 1024 * 1024;
 const MIN_IMAGE_BYTES = 100;
 const USER_AGENT = "url-keep/1.0";
+const NON_BODY_ROOT_TAGS = new Set([
+  "BASE",
+  "HEAD",
+  "BODY",
+  "LINK",
+  "META",
+  "NOSCRIPT",
+  "SCRIPT",
+  "STYLE",
+  "TITLE",
+]);
 
 type RunBookmarkExtractionOptions = {
   env: Bindings;
@@ -35,6 +46,18 @@ type ExtractionMetadata = {
   publishedDate: string | null;
   siteName: string | null;
 };
+
+class ExtractionFailure extends Error {
+  readonly reason: string;
+  readonly extra: Record<string, unknown>;
+
+  constructor(reason: string, message: string, extra: Record<string, unknown> = {}) {
+    super(message);
+    this.name = "ExtractionFailure";
+    this.reason = reason;
+    this.extra = extra;
+  }
+}
 
 function cleanOptionalText(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
@@ -90,6 +113,76 @@ function readExtractionMetadata(document: Document): ExtractionMetadata {
       'meta[name="application-name"]',
     ]),
   };
+}
+
+function shouldMoveTopLevelNodeToBody(node: ChildNode): boolean {
+  if (node.nodeType === 1) {
+    return !NON_BODY_ROOT_TAGS.has((node as Element).tagName);
+  }
+
+  if (node.nodeType === 3) {
+    return Boolean(node.textContent?.trim());
+  }
+
+  return false;
+}
+
+// Some pages parse with content attached directly under <html> instead of <body>.
+// Hoist those stray nodes so Readability sees a sane ancestor chain.
+function normalizeDocumentForReadability(document: Document): number {
+  const html = document.documentElement;
+  const body = document.body;
+  if (!html || !body) {
+    return 0;
+  }
+
+  const topLevelNodes = [...html.childNodes];
+  let moved = 0;
+  for (const node of topLevelNodes) {
+    if (!shouldMoveTopLevelNodeToBody(node)) {
+      continue;
+    }
+
+    body.appendChild(node);
+    moved += 1;
+  }
+
+  return moved;
+}
+
+function parseReadableDocument(html: string): {
+  metadata: ExtractionMetadata;
+  readable: ReturnType<Readability["parse"]>;
+} {
+  let document: Document;
+  let hoistedNodes = 0;
+
+  try {
+    ({ document } = parseHTML(html));
+    hoistedNodes = normalizeDocumentForReadability(document);
+  } catch (error) {
+    throw new ExtractionFailure(
+      "parse_error",
+      "HTML parse failed",
+      error instanceof Error ? { message: error.message } : {},
+    );
+  }
+
+  const metadata = readExtractionMetadata(document);
+
+  try {
+    const readable = new Readability(document).parse();
+    return { metadata, readable };
+  } catch (error) {
+    throw new ExtractionFailure(
+      "readability_error",
+      "Readability parse failed",
+      {
+        ...(error instanceof Error ? { message: error.message } : {}),
+        hoisted_nodes: hoistedNodes,
+      },
+    );
+  }
 }
 
 async function readResponseTextWithLimit(
@@ -480,9 +573,7 @@ export async function runBookmarkExtraction(
     }
 
     const html = await readResponseTextWithLimit(response, ARTICLE_BODY_LIMIT_BYTES);
-    const { document } = parseHTML(html);
-    const metadata = readExtractionMetadata(document);
-    const readable = new Readability(document).parse();
+    const { metadata, readable } = parseReadableDocument(html);
 
     const textLength = cleanOptionalText(readable?.textContent)?.length ?? 0;
     if (!readable?.content || textLength < 100) {
@@ -556,14 +647,23 @@ export async function runBookmarkExtraction(
     await options.store.upsertArticleContent(complete);
     return complete;
   } catch (error) {
-    const reason = error instanceof Error && error.message.includes("timeout")
-      ? "timeout"
-      : "fetch_error";
+    const reason = error instanceof ExtractionFailure
+      ? error.reason
+      : error instanceof Error && error.message.includes("timeout")
+        ? "timeout"
+        : "fetch_error";
     const failed = failureArticleContent(
       options.bookmark,
       existing,
       "failed",
-      makeExtractionError(reason, error instanceof Error ? { message: error.message } : {}),
+      makeExtractionError(
+        reason,
+        error instanceof ExtractionFailure
+          ? error.extra
+          : error instanceof Error
+            ? { message: error.message }
+            : {},
+      ),
     );
     await options.store.upsertArticleContent(failed);
     return failed;
