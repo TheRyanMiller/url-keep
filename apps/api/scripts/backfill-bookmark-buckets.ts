@@ -106,11 +106,15 @@ ORDER BY created_at ASC, id ASC;
     return `UPDATE bookmarks SET bucket = '${escapeSql(bucket)}' WHERE id = '${escapeSql(row.id)}';`;
   });
 
-  const sql = [
-    "BEGIN TRANSACTION;",
-    ...updates,
-    "COMMIT;",
-  ].join("\n");
+  // Remote D1 execute rejects raw BEGIN/COMMIT statements. The updates are
+  // idempotent, so falling back to plain sequential statements is safe there.
+  const sql = (isRemote
+    ? updates
+    : [
+        "BEGIN TRANSACTION;",
+        ...updates,
+        "COMMIT;",
+      ]).join("\n");
 
   const tempDir = mkdtempSync(join(tmpdir(), "url-keep-bucket-backfill-"));
   const sqlFile = join(tempDir, "backfill-bookmark-buckets.sql");
