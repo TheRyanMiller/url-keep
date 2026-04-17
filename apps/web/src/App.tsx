@@ -1244,7 +1244,7 @@ function MainPage() {
         bucket: activeTab === "all" ? undefined : activeTab,
         q: query || undefined,
       });
-      setBookmarks(response.items);
+      setBookmarks(filterBookmarksByTab(response.items, query, activeTab));
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 0) {
         await loadOfflineBookmarks();
