@@ -748,6 +748,15 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(publicRead.headers.get("Cache-Control")).toBe("no-store");
     expect(publicRead.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
 
+    const publicReadWithInvalidAuth = await request(
+      `http://localhost/v1/public/shares/${publicToken}`,
+      {
+        headers: { Authorization: "Bearer invalid-token" },
+      },
+      TEST_ENV,
+    );
+    expect(publicReadWithInvalidAuth.status).toBe(200);
+
     const shareState = await request(
       `http://localhost/v1/bookmarks/${created!.item.id}/share`,
       {
@@ -756,7 +765,7 @@ another paragraph keeps the content comfortably above the minimum length require
       TEST_ENV,
     );
     const shareBody = await json<typeof enabled>(shareState);
-    expect(shareBody.item.hit_count).toBe(1);
+    expect(shareBody.item.hit_count).toBe(2);
     expect(shareBody.item.last_accessed_at).not.toBeNull();
   });
 

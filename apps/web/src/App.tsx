@@ -309,26 +309,43 @@ async function copyPreferredArticleLink({
   online: boolean;
   onNotice: (message: string) => void;
 }) {
-  let urlToCopy = toReadableBookmarkUrl(sourceUrl);
-  let copiedReaderLink = false;
+  if (preferReaderLink) {
+    if (extractionStatus !== "complete") {
+      onNotice("reader link unavailable");
+      return;
+    }
 
-  if (preferReaderLink && online && extractionStatus === "complete") {
+    if (!online) {
+      onNotice("reader link requires a connection");
+      return;
+    }
+
     try {
       const response = await client.enableBookmarkShare(bookmarkId);
       if (response.item.share_url) {
-        urlToCopy = response.item.share_url;
-        copiedReaderLink = true;
+        try {
+          await copyToClipboard(response.item.share_url);
+          onNotice("reader link copied");
+        } catch {
+          onNotice("reader link ready, but copy failed");
+        }
+        return;
       }
     } catch {
-      // Fall back to the source article URL when a public reader URL is unavailable.
+      onNotice("reader link unavailable");
+      return;
     }
+
+    onNotice("reader link unavailable");
+    return;
   }
 
+  const urlToCopy = toReadableBookmarkUrl(sourceUrl);
   try {
     await copyToClipboard(urlToCopy);
-    onNotice(copiedReaderLink ? "reader link copied" : "source link copied");
+    onNotice("source link copied");
   } catch {
-    onNotice(copiedReaderLink ? "reader link ready, but copy failed" : "source link ready, but copy failed");
+    onNotice("source link ready, but copy failed");
   }
 }
 
@@ -874,11 +891,11 @@ function ReaderDocument({
           <div className="reader-meta">
             {shareAction ? (
               <button
-                aria-label={shareAction.busy ? "copying article link" : "copy article link"}
+                aria-label={shareAction.busy ? "copying public reader link" : "copy public reader link"}
                 className="icon-action reader-inline-share"
                 disabled={shareAction.busy}
                 onClick={shareAction.onClick}
-                title={shareAction.busy ? "Copying article link" : "Copy article link"}
+                title={shareAction.busy ? "Copying public reader link" : "Copy public reader link"}
                 type="button"
               >
                 <Share2 aria-hidden="true" size={14} strokeWidth={1.75} />
@@ -984,6 +1001,8 @@ function BookmarkRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [shareBusy, setShareBusy] = useState(false);
+  const copyLinkLabel = canRead ? "copy public reader link" : "copy source link";
+  const copyingLinkLabel = canRead ? "copying public reader link" : "copying source link";
 
   useEffect(() => {
     setTitle(bookmark.title);
@@ -1048,11 +1067,11 @@ function BookmarkRow({
           </span>
         </span>
         <button
-          aria-label={shareBusy ? "copying link" : "copy link"}
+          aria-label={shareBusy ? copyingLinkLabel : copyLinkLabel}
           className="icon-action bookmark-meta-share"
           disabled={shareBusy}
           onClick={() => void copyArticleLink()}
-          title={shareBusy ? "Copying link" : "Copy link"}
+          title={shareBusy ? copyingLinkLabel : copyLinkLabel}
           type="button"
         >
           <Share2 aria-hidden="true" size={16} strokeWidth={1.75} />
