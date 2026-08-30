@@ -1,186 +1,149 @@
-import type { UrlKeepClient } from "@url-keep/api-client";
-import { OFFLINE_BUNDLE_MAX_LIMIT, type OfflineBundleItem } from "@url-keep/shared";
+import { ApiError, type UrlKeepClient } from "@url-keep/api-client";
+import { MANIFEST_MAX_LIMIT, type ManifestItem } from "@url-keep/shared";
 import {
+  deleteUnreferencedBodies,
+  getMissingArticleBodies,
   getOfflineArticle,
+  getOfflineArticleMeta,
   getOfflineBookmark,
   getOfflineBookmarks,
-  getOfflineDb,
   getOfflineSyncState,
+  getReadyNarrations,
+  putOfflineArticleBody,
+  replaceOfflineManifest,
+  touchOfflineCheck,
 } from "./db";
-import { cacheNarrationAudio, retainCurrentNarrations } from "../audio/offline-audio";
+import { retainCurrentNarrations } from "../audio/offline-audio";
 
 const DEFAULT_SYNC_STALE_MS = 60_000;
 
-async function precacheArticleImages(
-  contentHtml: string,
-  apiOrigin: string,
-): Promise<void> {
-  if (typeof caches === "undefined") {
-    return;
-  }
-
-  const cache = await caches.open("article-images");
-  const urls = [...contentHtml.matchAll(/src="(\/images\/[^"]+)"/gi)]
-    .map((match) => match[1])
-    .filter(Boolean);
-
-  const batchSize = 5;
-  for (let index = 0; index < urls.length; index += batchSize) {
-    const batch = urls.slice(index, index + batchSize);
-    await Promise.allSettled(
-      batch.map(async (url) => {
-        const fullUrl = new URL(url, apiOrigin).toString();
-        const cached = await cache.match(fullUrl);
-        if (cached) {
-          return;
-        }
-
-        const response = await fetch(fullUrl, { credentials: "omit" });
-        if (response.ok) {
-          await cache.put(fullUrl, response);
-        }
-      }),
-    );
-  }
+function quotaExceeded(caught: unknown): boolean {
+  return caught instanceof DOMException && caught.name === "QuotaExceededError";
 }
 
 export class SyncManager {
   private activeSyncPromise: Promise<void> | null = null;
+  private hydrationPromise: Promise<void> | null = null;
+  private openedArticleId: string | null = null;
 
   constructor(
     private readonly client: UrlKeepClient,
-    private readonly apiOrigin: string,
+    _legacyApiOrigin?: string,
+    private readonly onPartialCoverage: (partial: boolean) => void = () => {},
   ) {}
 
   async isStale(maxAgeMs = DEFAULT_SYNC_STALE_MS): Promise<boolean> {
     const state = await getOfflineSyncState();
-    if (!state?.last_sync_at) {
-      return true;
-    }
-
-    const lastSyncMs = Date.parse(state.last_sync_at);
-    if (!Number.isFinite(lastSyncMs)) {
-      return true;
-    }
-
-    return Date.now() - lastSyncMs > maxAgeMs;
+    if (!state?.last_check_at) return true;
+    const lastCheck = Date.parse(state.last_check_at);
+    return !Number.isFinite(lastCheck) || Date.now() - lastCheck > maxAgeMs;
   }
 
-  async hasChanges(): Promise<boolean> {
-    const [local, remote] = await Promise.all([
-      getOfflineSyncState(),
-      this.client.getOfflineStatus(),
-    ]);
-
-    if (!local) {
-      return true;
-    }
-
-    if (local.bookmark_count !== remote.bookmark_count) {
-      return true;
-    }
-
-    if (local.sync_revision !== remote.sync_revision) {
-      return true;
-    }
-
-    return false;
+  prioritizeArticle(articleId: string | null) {
+    this.openedArticleId = articleId;
   }
 
   async syncOnce(): Promise<void> {
-    if (this.activeSyncPromise) {
-      return this.activeSyncPromise;
-    }
-
+    if (this.activeSyncPromise) return this.activeSyncPromise;
     this.activeSyncPromise = this.sync().finally(() => {
       this.activeSyncPromise = null;
     });
     return this.activeSyncPromise;
   }
 
-  async sync(): Promise<void> {
+  private async sync(): Promise<void> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      if (await this.tryStableSync()) {
-        return;
-      }
+      if (await this.tryStableSync()) return;
     }
-
-    throw new Error("offline snapshot changed while syncing");
+    throw new Error("metadata snapshot changed while syncing");
   }
 
   private async tryStableSync(): Promise<boolean> {
-    const start = await this.client.getOfflineStatus();
-    const items = new Map<string, OfflineBundleItem>();
+    const start = (await this.client.getSyncRevision()).revision;
+    const local = await getOfflineSyncState();
+    if (local?.accepted_revision === start) {
+      await touchOfflineCheck(new Date().toISOString());
+      this.startHydration();
+      return true;
+    }
+
+    const items = new Map<string, ManifestItem>();
     const seenCursors = new Set<string>();
     let cursor: string | undefined;
-
     do {
-      const response = await this.client.getOfflineBundle(
-        cursor,
-        OFFLINE_BUNDLE_MAX_LIMIT,
-      );
+      const response = await this.client.getManifest(cursor, MANIFEST_MAX_LIMIT);
+      if (response.items.length > MANIFEST_MAX_LIMIT) {
+        throw new Error("manifest page exceeded its limit");
+      }
       for (const item of response.items) {
+        if (items.has(item.bookmark.id)) {
+          throw new Error("manifest returned a duplicate bookmark");
+        }
         items.set(item.bookmark.id, item);
       }
-
-      if (!response.has_more) {
+      if (!response.next_cursor) {
         cursor = undefined;
-        continue;
+      } else {
+        if (seenCursors.has(response.next_cursor)) {
+          throw new Error("manifest returned a repeated cursor");
+        }
+        seenCursors.add(response.next_cursor);
+        cursor = response.next_cursor;
       }
-      if (!response.next_cursor || seenCursors.has(response.next_cursor)) {
-        throw new Error("offline bundle returned an invalid cursor");
-      }
-      seenCursors.add(response.next_cursor);
-      cursor = response.next_cursor;
     } while (cursor);
 
-    const end = await this.client.getOfflineStatus();
-    if (
-      start.sync_revision !== end.sync_revision
-      || start.bookmark_count !== end.bookmark_count
-      || items.size !== end.bookmark_count
-    ) {
-      return false;
-    }
-
-    const db = await getOfflineDb();
-    const syncedAt = new Date().toISOString();
-    const tx = db.transaction(["bookmarks", "articles", "sync_meta"], "readwrite");
-    await tx.objectStore("bookmarks").clear();
-    await tx.objectStore("articles").clear();
-    for (const item of items.values()) {
-      await tx.objectStore("bookmarks").put(item.bookmark);
-      if (item.content) {
-        await tx.objectStore("articles").put({ ...item.content, synced_at: syncedAt });
-      }
-    }
-    await tx.objectStore("sync_meta").put({
-      key: "state",
-      last_sync_at: syncedAt,
-      bookmark_count: end.bookmark_count,
-      sync_revision: end.sync_revision,
-    });
-    await tx.done;
-
-    const narrations = [...items.values()]
-      .map((item) => item.narration)
-      .filter((item) => item !== null);
-    await retainCurrentNarrations(narrations);
-    for (const item of items.values()) {
-      if (item.narration) {
-        await cacheNarrationAudio(this.client, item.bookmark.id, item.narration).catch(() => false);
-      }
-    }
-
-    if (typeof caches !== "undefined") {
-      await caches.delete("article-images");
-    }
-    await Promise.allSettled(
-      [...items.values()]
-        .filter((item) => item.content?.content_html)
-        .map((item) => precacheArticleImages(item.content!.content_html!, this.apiOrigin)),
-    );
+    const end = (await this.client.getSyncRevision()).revision;
+    if (start !== end) return false;
+    await replaceOfflineManifest([...items.values()], end);
+    this.startHydration();
+    void getReadyNarrations().then(retainCurrentNarrations).catch(() => undefined);
     return true;
+  }
+
+  private startHydration() {
+    if (this.hydrationPromise) return;
+    this.hydrationPromise = this.hydrateMissingBodies().finally(() => {
+      this.hydrationPromise = null;
+    });
+  }
+
+  private async hydrateMissingBodies() {
+    const missing = await getMissingArticleBodies();
+    missing.sort((left, right) => {
+      if (left.id === this.openedArticleId) return -1;
+      if (right.id === this.openedArticleId) return 1;
+      return right.updated_at.localeCompare(left.updated_at);
+    });
+    let index = 0;
+    let stop = false;
+    await Promise.all(Array.from({ length: Math.min(2, missing.length) }, async () => {
+      while (!stop && index < missing.length) {
+        const meta = missing[index++];
+        try {
+          const html = await this.client.getArticleBody(meta.id);
+          await putOfflineArticleBody(meta.id, html);
+        } catch (caught) {
+          if (quotaExceeded(caught)) {
+            this.onPartialCoverage(true);
+            stop = true;
+          } else if (caught instanceof ApiError && caught.status === 401) {
+            stop = true;
+          }
+        }
+      }
+    }));
+    await deleteUnreferencedBodies(25).catch(() => 0);
+  }
+
+  async hydrateArticle(articleId: string): Promise<void> {
+    this.prioritizeArticle(articleId);
+    try {
+      const html = await this.client.getArticleBody(articleId);
+      await putOfflineArticleBody(articleId, html);
+    } catch (caught) {
+      if (quotaExceeded(caught)) this.onPartialCoverage(true);
+      throw caught;
+    }
   }
 
   async getBookmarks() {
@@ -193,5 +156,13 @@ export class SyncManager {
 
   async getArticle(bookmarkId: string) {
     return getOfflineArticle(bookmarkId);
+  }
+
+  async getArticleMeta(bookmarkId: string) {
+    return getOfflineArticleMeta(bookmarkId);
+  }
+
+  async waitForHydrationForTests() {
+    await this.hydrationPromise;
   }
 }

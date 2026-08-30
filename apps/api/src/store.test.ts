@@ -86,24 +86,20 @@ describe("article write precedence", () => {
     const store = new MemoryStore();
     const item = bookmark();
     await store.insertBookmark(item);
-    const afterBookmark = await store.getOfflineStatus(item.userId);
+    const afterBookmark = await store.getSyncRevision(item.userId);
 
     await store.updateBookmark(item);
-    expect((await store.getOfflineStatus(item.userId)).syncRevision)
-      .toBe(afterBookmark.syncRevision);
+    expect(await store.getSyncRevision(item.userId)).toBe(afterBookmark);
 
     const content = article("client", "client");
     await store.putClientArticleContent(content);
-    const afterArticle = await store.getOfflineStatus(item.userId);
-    expect(afterArticle.syncRevision).toBeGreaterThan(afterBookmark.syncRevision);
+    const afterArticle = await store.getSyncRevision(item.userId);
+    expect(afterArticle).toBeGreaterThan(afterBookmark);
 
     await store.putClientArticleContent(content);
-    expect((await store.getOfflineStatus(item.userId)).syncRevision)
-      .toBe(afterArticle.syncRevision);
+    expect(await store.getSyncRevision(item.userId)).toBe(afterArticle);
 
     await store.enableBookmarkShare(item.userId, item.id, "share", nowIso());
-    await store.recordBookmarkShareHit(item.id, nowIso());
-    expect((await store.getOfflineStatus(item.userId)).syncRevision)
-      .toBe(afterArticle.syncRevision);
+    expect(await store.getSyncRevision(item.userId)).toBe(afterArticle);
   });
 });

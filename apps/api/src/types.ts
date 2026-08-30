@@ -10,7 +10,6 @@ import type {
 export type Bindings = {
   DB: D1Database;
   IMAGES?: R2Bucket;
-  NARRATIONS?: R2Bucket;
   APP_ORIGIN?: string;
   DEBUG_LOGS?: string;
   API_ORIGIN?: string;
@@ -18,10 +17,6 @@ export type Bindings = {
   ALLOWED_EXTENSION_ORIGINS?: string;
   NARRATION_SERVICE_ORIGIN?: string;
   NARRATION_SERVICE_TOKEN?: string;
-  VAPID_PUBLIC_KEY?: string;
-  VAPID_PRIVATE_KEY?: string;
-  VAPID_SUBJECT?: string;
-  PUSH_PROVIDER_HOSTS?: string;
 };
 
 export type UserRecord = {
@@ -82,8 +77,6 @@ export type BookmarkShareRecord = {
   shareId: string;
   enabledAt: string;
   revokedAt: string | null;
-  viewCount: number;
-  lastAccessedAt: string | null;
 };
 
 export type PublicShareLookupRecord = {
@@ -92,25 +85,30 @@ export type PublicShareLookupRecord = {
   share: BookmarkShareRecord;
 };
 
-export type ListBookmarksOptions = {
-  q?: string;
-  bucket?: BookmarkBucket;
+export type ManifestListOptions = {
   limit: number;
   cursor?: string;
 };
 
-export type ListBookmarksResult = {
-  items: BookmarkRecord[];
-  nextCursor: string | null;
-};
-
-export type OfflineBundleItemRecord = {
+export type ManifestItemRecord = {
   bookmark: BookmarkRecord;
   content: ArticleContentRecord | null;
   narration: ReadyNarrationSummary | null;
 };
 
-export type NarrationStatus = "pending" | "publishing" | "ready" | "failed";
+export type ManifestResult = {
+  items: ManifestItemRecord[];
+  nextCursor: string | null;
+};
+
+export type ArticleBodyRecord = {
+  articleId: string;
+  contentHtml: string;
+};
+
+export type PublicArticleBodyRecord = ArticleBodyRecord;
+
+export type NarrationStatus = "pending" | "ready" | "failed";
 
 export type NarrationRecord = {
   id: string;
@@ -119,10 +117,8 @@ export type NarrationRecord = {
   textSha256: string;
   status: NarrationStatus;
   retryCount: 0 | 1;
-  publishStartedAt: string | null;
   engineFingerprint: string | null;
   errorCode: string | null;
-  audioKey: string;
   audioSha256: string | null;
   byteSize: number | null;
   durationMs: number | null;
@@ -131,25 +127,9 @@ export type NarrationRecord = {
   finishedAt: string | null;
 };
 
-export type OfflineBundleResult = {
-  items: OfflineBundleItemRecord[];
-  nextCursor: string | null;
-  hasMore: boolean;
-};
-
-export type OfflineStatusResult = {
-  bookmarkCount: number;
-  syncRevision: number;
-};
-
 export type ArticleContentWriteResult = {
   written: boolean;
   replacedServerContent: boolean;
-};
-
-export type ArticleContentDeleteResult = {
-  deleted: boolean;
-  removedServerContent: boolean;
 };
 
 export type AuthContext = {

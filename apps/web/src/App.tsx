@@ -14,9 +14,11 @@ import {
   ArrowUpRight,
   BookOpen,
   Check,
+  Moon,
   PencilLine,
   RefreshCw,
   Share2,
+  Sun,
   Trash2,
   X,
 } from "lucide-react";
@@ -35,6 +37,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -47,20 +50,20 @@ import { sanitizeArticleHtml } from "./article-sanitize";
 import { detectStandaloneMode, shareLink } from "./pwa";
 import {
   clearOfflineData,
-  getOfflineDb,
   getOfflineReadableBookmarkIds,
 } from "./offline/db";
 import { SyncManager } from "./offline/sync";
 import { ArticleAudio } from "./audio/ArticleAudio";
 import { auditOfflineAudio } from "./audio/offline-audio";
-import { NotificationSettings } from "./settings/NotificationSettings";
 import { OfflineAudioSettings } from "./settings/OfflineAudioSettings";
 
 const TOKEN_KEY = "url_keep_token";
 const USER_KEY = "url_keep_user";
 const IOS_SHORTCUT_TOKEN_NAME = "iphone shortcut";
 const READER_TEXT_SIZE_KEY = "url_keep_reader_text_size";
+const READER_THEME_KEY = "url_keep_reader_theme";
 type ReaderTextSize = "s" | "m" | "l";
+type ReaderTheme = "light" | "dark";
 type MainTab = "all" | Bookmark["bucket"];
 
 type ReaderLocationState = {
@@ -131,6 +134,22 @@ function readStoredReaderTextSize(): ReaderTextSize {
 function writeStoredReaderTextSize(value: ReaderTextSize) {
   try {
     window.localStorage.setItem(READER_TEXT_SIZE_KEY, value);
+  } catch {
+    // Ignore storage errors and keep the in-memory preference.
+  }
+}
+
+function readStoredReaderTheme(): ReaderTheme {
+  try {
+    return window.localStorage.getItem(READER_THEME_KEY) === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+
+function writeStoredReaderTheme(value: ReaderTheme) {
+  try {
+    window.localStorage.setItem(READER_THEME_KEY, value);
   } catch {
     // Ignore storage errors and keep the in-memory preference.
   }
@@ -616,9 +635,14 @@ function OfflineProvider({ children }: { children: ReactNode }) {
   const online = useOnlineStatus();
   const [syncing, setSyncing] = useState(false);
   const [syncVersion, setSyncVersion] = useState(0);
+  const [storageNotice, setStorageNotice] = useState<string | null>(null);
 
   const manager = useMemo(
-    () => new SyncManager(auth.client, API_ORIGIN),
+    () => new SyncManager(
+      auth.client,
+      API_ORIGIN,
+      (partial) => setStorageNotice(partial ? "offline article coverage is partial" : null),
+    ),
     [auth.client],
   );
 
@@ -627,6 +651,14 @@ function OfflineProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void auditOfflineAudio();
+    const onBlocked = (event: Event) => {
+      setStorageNotice(
+        (event as CustomEvent<string>).detail
+          ?? "Close other URL Keep tabs, then reload.",
+      );
+    };
+    window.addEventListener("url-keep:database-blocked", onBlocked);
+    return () => window.removeEventListener("url-keep:database-blocked", onBlocked);
   }, []);
 
   const refresh = useCallback(async (force = false) => {
@@ -637,14 +669,6 @@ function OfflineProvider({ children }: { children: ReactNode }) {
     if (!force) {
       if (!(await managerRef.current.isStale())) {
         return;
-      }
-
-      try {
-        if (!(await managerRef.current.hasChanges())) {
-          return;
-        }
-      } catch {
-        // If change detection fails (network error), fall through to full sync
       }
     }
 
@@ -695,7 +719,12 @@ function OfflineProvider({ children }: { children: ReactNode }) {
     [online, syncing, syncVersion, manager, refresh],
   );
 
-  return <OfflineContext.Provider value={value}>{children}</OfflineContext.Provider>;
+  return (
+    <OfflineContext.Provider value={value}>
+      {storageNotice ? <div className="app-notice" role="alert">{storageNotice}</div> : null}
+      {children}
+    </OfflineContext.Provider>
+  );
 }
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -795,7 +824,7 @@ function BookmarkImage({ src, alt }: { src?: string | null; alt: string }) {
   );
 }
 
-function ReaderDocument({
+export function ReaderDocument({
   header,
   title,
   sourceUrl,
@@ -828,15 +857,34 @@ function ReaderDocument({
   audioControl?: ReactNode;
 }) {
   const [textSize, setTextSize] = useState<ReaderTextSize>(() => readStoredReaderTextSize());
-  const [textSizeMenuOpen, setTextSizeMenuOpen] = useState(false);
-  const textSizeControlRef = useRef<HTMLSpanElement | null>(null);
+  const [theme, setTheme] = useState<ReaderTheme>(() => readStoredReaderTheme());
+  const [preferencesMenuOpen, setPreferencesMenuOpen] = useState(false);
+  const preferencesControlRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
     writeStoredReaderTextSize(textSize);
   }, [textSize]);
 
   useEffect(() => {
-    if (!textSizeMenuOpen) {
+    writeStoredReaderTheme(theme);
+  }, [theme]);
+
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const previousTheme = root.dataset.readerTheme;
+    root.dataset.readerTheme = theme;
+
+    return () => {
+      if (previousTheme) {
+        root.dataset.readerTheme = previousTheme;
+      } else {
+        delete root.dataset.readerTheme;
+      }
+    };
+  }, [theme]);
+
+  useEffect(() => {
+    if (!preferencesMenuOpen) {
       return;
     }
 
@@ -846,16 +894,16 @@ function ReaderDocument({
         return;
       }
 
-      if (textSizeControlRef.current?.contains(target)) {
+      if (preferencesControlRef.current?.contains(target)) {
         return;
       }
 
-      setTextSizeMenuOpen(false);
+      setPreferencesMenuOpen(false);
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setTextSizeMenuOpen(false);
+        setPreferencesMenuOpen(false);
       }
     };
 
@@ -865,7 +913,7 @@ function ReaderDocument({
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [textSizeMenuOpen]);
+  }, [preferencesMenuOpen]);
 
   const html = contentHtml ? sanitizeArticleHtml(contentHtml, API_ORIGIN) : null;
   const resolvedPublishedDate = formatOptionalDate(publishedDate);
@@ -899,33 +947,69 @@ function ReaderDocument({
             </button>
           ) : null}
           {audioControl}
-          <span className="reader-text-size-control" ref={textSizeControlRef}>
+          <span className="reader-preferences-control" ref={preferencesControlRef}>
             <button
-              aria-expanded={textSizeMenuOpen}
-              aria-label="Text size"
-              className="reader-toolbar-action reader-text-size-trigger"
-              onClick={() => setTextSizeMenuOpen((open) => !open)}
-              title="Text size"
+              aria-expanded={preferencesMenuOpen}
+              aria-label="Reading preferences"
+              className="reader-toolbar-action reader-preferences-trigger"
+              onClick={() => setPreferencesMenuOpen((open) => !open)}
+              title="Reading preferences"
               type="button"
             >
               Aa
             </button>
-            {textSizeMenuOpen ? (
-              <span aria-label="Text size options" className="reader-text-size-menu" role="group">
-                {READER_TEXT_SIZE_OPTIONS.map((option) => (
+            {preferencesMenuOpen ? (
+              <span
+                aria-label="Reading preferences"
+                className="reader-preferences-menu"
+                role="group"
+              >
+                <span aria-label="Text size" className="reader-preferences-options" role="group">
+                  {READER_TEXT_SIZE_OPTIONS.map((option) => (
+                    <button
+                      aria-label={`${option.label} text size`}
+                      aria-pressed={textSize === option.value}
+                      className={`reader-preference-option${textSize === option.value ? " is-active" : ""}`}
+                      key={option.value}
+                      onClick={() => {
+                        setTextSize(option.value);
+                        setPreferencesMenuOpen(false);
+                      }}
+                      type="button"
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </span>
+                <span aria-hidden="true" className="reader-preferences-divider" />
+                <span aria-label="Reader theme" className="reader-preferences-options" role="group">
                   <button
-                    aria-pressed={textSize === option.value}
-                    className={`reader-text-size-option${textSize === option.value ? " is-active" : ""}`}
-                    key={option.value}
+                    aria-label="Light reader theme"
+                    aria-pressed={theme === "light"}
+                    className={`reader-preference-option${theme === "light" ? " is-active" : ""}`}
                     onClick={() => {
-                      setTextSize(option.value);
-                      setTextSizeMenuOpen(false);
+                      setTheme("light");
+                      setPreferencesMenuOpen(false);
                     }}
+                    title="Light"
                     type="button"
                   >
-                    {option.label}
+                    <Sun aria-hidden="true" size={14} strokeWidth={1.8} />
                   </button>
-                ))}
+                  <button
+                    aria-label="Dark reader theme"
+                    aria-pressed={theme === "dark"}
+                    className={`reader-preference-option${theme === "dark" ? " is-active" : ""}`}
+                    onClick={() => {
+                      setTheme("dark");
+                      setPreferencesMenuOpen(false);
+                    }}
+                    title="Dark"
+                    type="button"
+                  >
+                    <Moon aria-hidden="true" size={14} strokeWidth={1.8} />
+                  </button>
+                </span>
               </span>
             ) : null}
           </span>
@@ -1299,26 +1383,10 @@ function MainPage() {
   const loadBookmarks = async () => {
     setLoading(true);
     setError(null);
-
-    if (!offline.online) {
-      await loadOfflineBookmarks();
-      setLoading(false);
-      return;
-    }
-
     try {
-      const response = await auth.client.listBookmarks({
-        bucket: activeTab === "all" ? undefined : activeTab,
-        q: query || undefined,
-      });
-      setBookmarks(filterBookmarksByTab(response.items, query, activeTab));
-      setOfflineReadableIds(await getOfflineReadableBookmarkIds());
+      await loadOfflineBookmarks();
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 0) {
-        await loadOfflineBookmarks();
-      } else {
-        setError(formatError(caught, "load failed"));
-      }
+      setError(formatError(caught, "load failed"));
     } finally {
       setLoading(false);
     }
@@ -1369,7 +1437,7 @@ function MainPage() {
 
     const response = await auth.client.updateBookmarkTitle(bookmark.id, { title });
     setBookmarks((current) =>
-      current.map((item) => (item.id === bookmark.id ? response.item : item)),
+      current.map((item) => (item.id === bookmark.id ? response.item.bookmark : item)),
     );
     void offline.refresh(true);
   };
@@ -1383,7 +1451,10 @@ function MainPage() {
     setBookmarks((current) =>
       current.map((item) =>
         item.id === bookmark.id
-          ? { ...item, extraction_status: response.extraction_status }
+          ? {
+              ...response.item.bookmark,
+              extraction_status: response.item.article?.status ?? null,
+            }
           : item,
       ),
     );
@@ -1920,7 +1991,6 @@ function SettingsPage() {
       ) : null}
 
       <OfflineAudioSettings />
-      <NotificationSettings client={auth.client} online={offline.online} />
 
       <section className="profile-section">
         <h2 className="section-title">account</h2>
@@ -2152,18 +2222,16 @@ function ReaderPage() {
             setBookmark(syncedBookmark);
           }
         }
-
-        const response = await auth.client.getBookmarkContent(id);
-        if (!active) {
-          return;
+        let currentArticle = await offline.manager.getArticle(id);
+        if (currentArticle?.extraction_status === "complete" && !currentArticle.content_html) {
+          await offline.manager.hydrateArticle(currentArticle.id);
+          currentArticle = await offline.manager.getArticle(id);
         }
-
-        setArticle(response.item);
-        const db = await getOfflineDb();
-        await db.put("articles", {
-          ...response.item,
-          synced_at: new Date().toISOString(),
-        });
+        if (!active) return;
+        setArticle(currentArticle);
+        if (!currentArticle || currentArticle.extraction_status !== "complete") {
+          setError("article content is not available");
+        }
       } catch (caught) {
         if (caught instanceof ApiError && caught.status === 0) {
           if (!cachedArticle) {
@@ -2272,7 +2340,9 @@ function ReaderPage() {
 function PublicSharePage() {
   const auth = useAuth();
   const { token } = useParams();
-  const [article, setArticle] = useState<PublicShareArticle | null>(null);
+  const [article, setArticle] = useState<(
+    PublicShareArticle & { content_html: string }
+  ) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<{ id: number; message: string } | null>(null);
@@ -2297,11 +2367,14 @@ function PublicSharePage() {
       setLoading(true);
       setError(null);
       try {
-        const response = await auth.client.getPublicShareArticle(token);
+        const [response, contentHtml] = await Promise.all([
+          auth.client.getPublicShareArticle(token),
+          auth.client.getPublicShareBody(token),
+        ]);
         if (!active) {
           return;
         }
-        setArticle(response.item);
+        setArticle({ ...response.item, content_html: contentHtml });
       } catch (caught) {
         if (!active) {
           return;

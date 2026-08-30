@@ -35,17 +35,21 @@ beforeEach(() => {
 describe("Safari Shortcut capture source", () => {
   it("includes the live DOM under the preflight budget", () => {
     const result = runShortcutScript();
-    expect(result.saved_via).toBe("ios_shortcut");
-    expect(result.captured_page).toMatchObject({
-      base_url: "http://localhost:3000/article",
+    expect(result.bookmark).toMatchObject({
+      url: "http://localhost:3000/article",
+      saved_via: "ios_shortcut",
     });
+    expect(result.capture_html).toContain("<article>Readable page</article>");
+    expect(result).not.toHaveProperty("captured_page");
   });
 
   it("downgrades an oversized page to URL and title metadata", () => {
     document.body.textContent = "x".repeat(Math.ceil(4.5 * 1024 * 1024));
     const result = runShortcutScript();
-    expect(result.captured_page).toBeUndefined();
-    expect(result.url).toBe("http://localhost:3000/article");
-    expect(result.title).toBe("Subscriber article");
+    expect(result.capture_html).toBeUndefined();
+    expect(result.bookmark).toMatchObject({
+      url: "http://localhost:3000/article",
+      title: "Subscriber article",
+    });
   });
 });

@@ -1,13 +1,13 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { bytesToHex } from "@noble/hashes/utils";
 import { sha256 } from "@noble/hashes/sha2";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { D1Store } from "./d1-store";
-import { runMaintenance } from "./maintenance";
+import { runOneNarrationCleanup } from "./cleanup";
 import {
+  authorizedNarrationAudio,
   getBookmarkNarration,
-  reconcileNarration,
   requestNarration,
 } from "./narration";
 import type { ArticleContentRecord, Bindings } from "./types";
@@ -20,47 +20,6 @@ const AUDIO = new TextEncoder().encode("not a real mp3, but integrity-valid test
 const AUDIO_SHA256 = bytesToHex(sha256(AUDIO));
 
 let miniflare: Miniflare | null = null;
-
-class TestFixedLengthStream {
-  readonly readable: ReadableStream;
-  readonly writable: WritableStream;
-
-  constructor(_length: number) {
-    const transform = new TransformStream();
-    this.readable = transform.readable;
-    this.writable = transform.writable;
-  }
-}
-
-class TestBucket {
-  readonly objects = new Map<string, Uint8Array>();
-  readonly operations: string[] = [];
-
-  async put(key: string, value: ReadableStream, options: R2PutOptions) {
-    this.operations.push(`put:${key}`);
-    const bytes = new Uint8Array(await new Response(value).arrayBuffer());
-    const digest = sha256(bytes);
-    const expected = new Uint8Array(options.sha256 as ArrayBuffer);
-    expect(bytesToHex(digest)).toBe(bytesToHex(expected));
-    this.objects.set(key, bytes);
-    return {
-      key,
-      size: bytes.byteLength,
-      checksums: { sha256: digest.buffer as ArrayBuffer },
-    } as R2Object;
-  }
-
-  async head(key: string) {
-    this.operations.push(`head:${key}`);
-    const bytes = this.objects.get(key);
-    return bytes ? { key, size: bytes.byteLength } as R2Object : null;
-  }
-
-  async delete(key: string) {
-    this.operations.push(`delete:${key}`);
-    this.objects.delete(key);
-  }
-}
 
 function schemaStatements(sql: string): string[] {
   const statements: string[] = [];
@@ -94,9 +53,11 @@ async function environment(): Promise<Bindings> {
     d1Databases: ["DB"],
   }));
   const db = await miniflare.getD1Database("DB") as unknown as D1Database;
-  const bucket = new TestBucket();
-  const schema = readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8");
-  await db.batch(schemaStatements(schema).map((statement) => db.prepare(statement)));
+  const migrations = new URL("../migrations/", import.meta.url);
+  for (const filename of readdirSync(migrations).filter((name) => name.endsWith(".sql")).sort()) {
+    const sql = readFileSync(new URL(filename, migrations), "utf8");
+    await db.batch(schemaStatements(sql).map((statement) => db.prepare(statement)));
+  }
   const now = "2026-08-30T12:00:00.000Z";
   await db.batch([
     db.prepare("INSERT INTO users(id, email, password_hash, created_at) VALUES (?, ?, ?, ?)")
@@ -132,33 +93,60 @@ async function environment(): Promise<Bindings> {
   ]);
   return {
     DB: db,
-    NARRATIONS: bucket as unknown as R2Bucket,
     NARRATION_SERVICE_ORIGIN: "https://narration.example.test",
     NARRATION_SERVICE_TOKEN: "service-token",
   };
 }
 
 describe("URL Keep narration domain", () => {
-  it("publishes once, invalidates with immutable article replacement, and cleans both stores", async () => {
+  it("publishes once, invalidates with immutable article replacement, and cleans the service", async () => {
     const env = await environment();
-    vi.stubGlobal("FixedLengthStream", TestFixedLengthStream);
+    const columns = await env.DB.prepare("PRAGMA table_info(narrations)")
+      .all<{ name: string }>();
+    expect(columns.results.map(({ name }) => name)).not.toContain("audio_key");
+    expect(columns.results.map(({ name }) => name)).not.toContain("publish_started_at");
+    const schema = await env.DB.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'narrations'",
+    ).first<{ sql: string }>();
+    expect(schema?.sql).not.toContain("publishing");
     const calls: string[] = [];
+    let serviceJobExists = false;
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : String(input);
-      calls.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${new URL(url).pathname}`);
       const jobId = new URL(url).pathname.split("/").at(-1)!;
-      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (method === "DELETE") {
+        serviceJobExists = false;
+        return new Response(null, { status: 204 });
+      }
       if (url.endsWith("/audio")) {
-        return new Response(AUDIO, {
+        const requestHeaders = new Headers(init?.headers);
+        expect(requestHeaders.has("Cookie")).toBe(false);
+        expect(requestHeaders.get("Accept-Encoding")).toBe("identity");
+        const requestedRange = requestHeaders.get("Range");
+        const ranged = requestedRange === "bytes=4-10";
+        const body = ranged ? AUDIO.slice(4, 11) : AUDIO;
+        return new Response(body, {
+          status: ranged ? 206 : 200,
           headers: {
             "Content-Type": "audio/mpeg",
-            "Content-Length": String(AUDIO.byteLength),
+            "Content-Length": String(body.byteLength),
+            "Accept-Ranges": "bytes",
+            ...(ranged ? { "Content-Range": `bytes 4-10/${AUDIO.byteLength}` } : {}),
             "X-Content-SHA256": AUDIO_SHA256,
             "X-Audio-Duration-Ms": "1234",
             "X-Engine-Fingerprint": "sha256:engine",
           },
         });
       }
+      if (method === "GET" && !serviceJobExists) {
+        return Response.json(
+          { error: { code: "not_found", message: "Not found" } },
+          { status: 404 },
+        );
+      }
+      if (method === "PUT") serviceJobExists = true;
       return Response.json({
         id: jobId,
         status: "ready",
@@ -171,19 +159,36 @@ describe("URL Keep narration domain", () => {
       });
     }));
 
-    const requested = await requestNarration(env, USER_ID, TOKEN_ID, BOOKMARK_ID);
-    const duplicate = await requestNarration(env, USER_ID, TOKEN_ID, BOOKMARK_ID);
+    const requested = await requestNarration(env, USER_ID, BOOKMARK_ID);
+    const duplicate = await requestNarration(env, USER_ID, BOOKMARK_ID);
     expect(duplicate.narration.id).toBe(requested.narration.id);
 
-    await reconcileNarration(env, requested.narration.id);
     const ready = await getBookmarkNarration(env, USER_ID, BOOKMARK_ID);
     expect({ ready, calls }).toMatchObject({
       ready: { status: "ready", audioSha256: AUDIO_SHA256 },
     });
-    const testBucket = env.NARRATIONS as unknown as TestBucket;
-    expect({ keys: [...testBucket.objects.keys()], operations: testBucket.operations })
-      .toMatchObject({ keys: [ready!.audioKey] });
     expect(calls.filter((call) => call.startsWith("PUT "))).toHaveLength(1);
+    const audio = await authorizedNarrationAudio(
+      env,
+      USER_ID,
+      BOOKMARK_ID,
+      new Headers(),
+      "GET",
+    );
+    expect(audio.headers.get("X-Content-SHA256")).toBe(AUDIO_SHA256);
+    expect(audio.headers.get("X-Audio-Duration-Ms")).toBe("1234");
+    expect(audio.headers.get("X-Engine-Fingerprint")).toBe("sha256:engine");
+    expect(new Uint8Array(await audio.arrayBuffer())).toEqual(AUDIO);
+    const partial = await authorizedNarrationAudio(
+      env,
+      USER_ID,
+      BOOKMARK_ID,
+      new Headers({ Range: "bytes=4-10", Cookie: "not-forwarded" }),
+      "GET",
+    );
+    expect(partial.status).toBe(206);
+    expect(partial.headers.get("Content-Range")).toBe(`bytes 4-10/${AUDIO.byteLength}`);
+    expect(new Uint8Array(await partial.arrayBuffer())).toEqual(AUDIO.slice(4, 11));
 
     const replacementId = "00000000-0000-4000-8000-000000000005";
     const now = "2026-08-30T12:05:00.000Z";
@@ -216,9 +221,91 @@ describe("URL Keep narration domain", () => {
     expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM narration_cleanup_jobs")
       .first<{ count: number }>()).toEqual({ count: 1 });
 
-    await runMaintenance(env);
-    expect(await env.NARRATIONS!.head(ready!.audioKey)).toBeNull();
+    await runOneNarrationCleanup(env);
     expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM narration_cleanup_jobs")
       .first<{ count: number }>()).toEqual({ count: 0 });
+    expect(calls.filter((call) => call.startsWith("DELETE "))).toHaveLength(1);
+  });
+
+  it("requeues a submitted job when article replacement wins the submission race", async () => {
+    const env = await environment();
+    let releasePut!: () => void;
+    let markPutStarted!: () => void;
+    const putStarted = new Promise<void>((resolve) => {
+      markPutStarted = resolve;
+    });
+    const putGate = new Promise<void>((resolve) => {
+      releasePut = resolve;
+    });
+    let serviceJobExists = false;
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${url.pathname}`);
+      if (method === "PUT") {
+        markPutStarted();
+        await putGate;
+        serviceJobExists = true;
+        return Response.json({ id: url.pathname.split("/").at(-1), status: "queued" });
+      }
+      if (method === "DELETE") {
+        if (!serviceJobExists) {
+          return Response.json({ error: { code: "not_found" } }, { status: 404 });
+        }
+        serviceJobExists = false;
+        return new Response(null, { status: 204 });
+      }
+      throw new Error("unexpected service request");
+    }));
+
+    const request = requestNarration(env, USER_ID, BOOKMARK_ID);
+    await putStarted;
+    const pending = await env.DB.prepare(
+      "SELECT service_job_id FROM narrations WHERE article_id = ?",
+    ).bind(ARTICLE_ID).first<{ service_job_id: string }>();
+    expect(pending?.service_job_id).toBeTruthy();
+
+    const now = "2026-08-30T12:05:00.000Z";
+    const replacement: ArticleContentRecord = {
+      id: "00000000-0000-4000-8000-000000000006",
+      bookmarkId: BOOKMARK_ID,
+      userId: USER_ID,
+      title: "Replacement title",
+      contentHtml: `<p>${"Replacement article sentence ".repeat(8)}</p>`,
+      wordCount: 24,
+      author: null,
+      publishedDate: null,
+      extractionStatus: "complete",
+      extractionError: null,
+      extractedAt: now,
+      contentSource: "server",
+      createdAt: now,
+      updatedAt: now,
+    };
+    expect((await new D1Store(env.DB).putServerArticleContent(
+      replacement,
+      undefined,
+      ARTICLE_ID,
+    )).written).toBe(true);
+
+    expect(await runOneNarrationCleanup(env)).toBe(true);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM narration_cleanup_jobs")
+      .first<{ count: number }>()).toEqual({ count: 0 });
+
+    releasePut();
+    await expect(request).rejects.toMatchObject({
+      code: "article_changed",
+      status: 409,
+      retryable: true,
+    });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM narrations")
+      .first<{ count: number }>()).toEqual({ count: 0 });
+    expect(await env.DB.prepare("SELECT service_job_id FROM narration_cleanup_jobs")
+      .first<{ service_job_id: string }>()).toEqual({ service_job_id: pending!.service_job_id });
+
+    expect(await runOneNarrationCleanup(env)).toBe(true);
+    expect(serviceJobExists).toBe(false);
+    expect(calls.filter((call) => call.startsWith("DELETE "))).toHaveLength(2);
   });
 });

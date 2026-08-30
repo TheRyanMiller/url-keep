@@ -10,7 +10,7 @@ import {
   getCachedAudioForArticle,
 } from "./offline-audio";
 
-const POLL_DELAYS_MS = [1_500, 2_500, 4_000, 6_000, 8_000];
+const POLL_DELAYS_MS = [5_000, 10_000, 15_000];
 
 type NarrationView =
   | { kind: "idle" }
@@ -77,6 +77,7 @@ export function ArticleAudio({
   reveal?: boolean;
 }) {
   const online = useOnlineStatus();
+  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
   const [view, setView] = useState<NarrationView>({ kind: "idle" });
   const controllerRef = useRef<AbortController | null>(null);
   const audioUrlRef = useRef<string | null>(null);
@@ -120,7 +121,11 @@ export function ArticleAudio({
     });
   }
 
-  async function resolveNarration(current: Narration, controller: AbortController) {
+  async function resolveNarration(
+    current: Narration,
+    controller: AbortController,
+    submission: { used: boolean },
+  ) {
     if (current.status === "ready") {
       await showReady(current, controller.signal);
       return;
@@ -140,9 +145,23 @@ export function ArticleAudio({
         POLL_DELAYS_MS[Math.min(attempt, POLL_DELAYS_MS.length - 1)],
         controller.signal,
       );
-      const response = await client.getNarration(bookmarkId, controller.signal);
+      let response;
+      try {
+        response = await client.getNarration(bookmarkId, controller.signal);
+      } catch (caught) {
+        if (
+          caught instanceof ApiError
+          && caught.code === "submission_required"
+          && !submission.used
+        ) {
+          submission.used = true;
+          response = await client.requestNarration(bookmarkId, controller.signal);
+        } else {
+          throw caught;
+        }
+      }
       if (response.item.status !== "pending") {
-        await resolveNarration(response.item, controller);
+        await resolveNarration(response.item, controller, submission);
         return;
       }
       attempt += 1;
@@ -165,7 +184,7 @@ export function ArticleAudio({
       const response = retry
         ? await client.retryNarration(bookmarkId, controller.signal)
         : await client.requestNarration(bookmarkId, controller.signal);
-      await resolveNarration(response.item, controller);
+      await resolveNarration(response.item, controller, { used: true });
     } catch {
       if (!controller.signal.aborted) {
         setView({
@@ -180,11 +199,22 @@ export function ArticleAudio({
   }
 
   useEffect(() => {
+    const onVisibilityChange = () => {
+      const nextVisible = document.visibilityState !== "hidden";
+      if (!nextVisible) controllerRef.current?.abort();
+      setVisible(nextVisible);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
+
+  useEffect(() => {
     const controller = begin();
     replaceAudioUrl(null);
     setView({ kind: "idle" });
     void (async () => {
       try {
+        if (!visible) return;
         if (!online) {
           const cached = await getCachedAudioForArticle(articleId);
           if (!cached || controller.signal.aborted) return;
@@ -199,8 +229,23 @@ export function ArticleAudio({
           });
           return;
         }
-        const response = await client.getNarration(bookmarkId, controller.signal);
-        await resolveNarration(response.item, controller);
+        const submission = { used: false };
+        let response;
+        try {
+          response = await client.getNarration(bookmarkId, controller.signal);
+        } catch (caught) {
+          if (
+            caught instanceof ApiError
+            && caught.code === "submission_required"
+            && !submission.used
+          ) {
+            submission.used = true;
+            response = await client.requestNarration(bookmarkId, controller.signal);
+          } else {
+            throw caught;
+          }
+        }
+        await resolveNarration(response.item, controller, submission);
       } catch (caught) {
         if (
           !controller.signal.aborted
@@ -211,7 +256,7 @@ export function ArticleAudio({
       }
     })();
     return () => controller.abort();
-  }, [articleId, bookmarkId, client, online]);
+  }, [articleId, bookmarkId, client, online, visible]);
 
   useEffect(() => () => {
     controllerRef.current?.abort();

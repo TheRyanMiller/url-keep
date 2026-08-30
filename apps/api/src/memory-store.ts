@@ -2,19 +2,19 @@ import { decodeCursor, encodeCursor, nowIso } from "./utils";
 import { classifyBookmarkUrl } from "@url-keep/shared";
 import type {
   AccessTokenRecord,
-  ArticleContentDeleteResult,
+  ArticleBodyRecord,
   ArticleContentWriteResult,
   ArticleContentRecord,
   BookmarkRecord,
   BookmarkShareRecord,
-  ListBookmarksOptions,
-  ListBookmarksResult,
-  OfflineBundleResult,
-  OfflineStatusResult,
+  AuthContext,
+  ManifestListOptions,
+  ManifestResult,
   PublicShareLookupRecord,
+  PublicArticleBodyRecord,
   UserRecord,
 } from "./types";
-import type { Store } from "./store";
+import { InvalidCursorError, type Store } from "./store";
 
 export class MemoryStore implements Store {
   private users = new Map<string, UserRecord>();
@@ -70,17 +70,8 @@ export class MemoryStore implements Store {
       && left!.updatedAt === right.updatedAt;
   }
 
-  async getOfflineStatus(userId: string): Promise<OfflineStatusResult> {
-    let count = 0;
-    for (const bookmark of this.bookmarks.values()) {
-      if (bookmark.userId === userId) {
-        count++;
-      }
-    }
-    return {
-      bookmarkCount: count,
-      syncRevision: this.offlineRevisions.get(userId) ?? 0,
-    };
+  async getSyncRevision(userId: string): Promise<number> {
+    return this.offlineRevisions.get(userId) ?? 0;
   }
 
   async getUserByEmail(email: string): Promise<UserRecord | null> {
@@ -114,6 +105,13 @@ export class MemoryStore implements Store {
       }
     }
     return null;
+  }
+
+  async getAuthByTokenHash(tokenHash: string): Promise<AuthContext | null> {
+    const token = await this.getAccessTokenByHash(tokenHash);
+    if (!token) return null;
+    const user = this.users.get(token.userId);
+    return user ? { user, token } : null;
   }
 
   async getAccessTokenById(
@@ -179,32 +177,14 @@ export class MemoryStore implements Store {
       : null;
   }
 
-  async listBookmarks(
+  async listManifest(
     userId: string,
-    options: ListBookmarksOptions,
-  ): Promise<ListBookmarksResult> {
+    options: ManifestListOptions,
+  ): Promise<ManifestResult> {
     const cursor = decodeCursor(options.cursor);
-    const query = options.q?.toLowerCase() ?? "";
+    if (options.cursor && !cursor) throw new InvalidCursorError();
     const filtered = [...this.bookmarks.values()]
       .filter((bookmark) => bookmark.userId === userId)
-      .filter((bookmark) => {
-        if (!options.bucket) {
-          return true;
-        }
-
-        const bucket = bookmark.bucket ?? classifyBookmarkUrl(bookmark.normalizedUrl).bucket;
-        return bucket === options.bucket;
-      })
-      .filter((bookmark) => {
-        if (!query) {
-          return true;
-        }
-
-        return [bookmark.title, bookmark.url, bookmark.siteName ?? ""]
-          .join(" ")
-          .toLowerCase()
-          .includes(query);
-      })
       .sort((a, b) => {
         const created = b.createdAt.localeCompare(a.createdAt);
         if (created !== 0) {
@@ -225,29 +205,13 @@ export class MemoryStore implements Store {
     const slice = filtered.slice(0, options.limit + 1);
     const hasMore = slice.length > options.limit;
     const items = hasMore ? slice.slice(0, options.limit) : slice;
-    const mapped = items.map((bookmark) => this.attachExtractionStatus(bookmark));
-    const nextCursor = hasMore ? encodeCursor(items[items.length - 1]) : null;
-    return { items: structuredClone(mapped), nextCursor };
-  }
-
-  async listOfflineBundle(
-    userId: string,
-    options: Pick<ListBookmarksOptions, "limit" | "cursor">,
-  ): Promise<OfflineBundleResult> {
-    const bookmarks = await this.listBookmarks(userId, {
-      limit: options.limit,
-      cursor: options.cursor,
-    });
-    const items = bookmarks.items.map((bookmark) => ({
-      bookmark,
-      content: structuredClone(this.articleContent.get(bookmark.id) ?? null),
-      narration: null,
-    }));
-
     return {
-      items,
-      nextCursor: bookmarks.nextCursor,
-      hasMore: bookmarks.nextCursor !== null,
+      items: items.map((bookmark) => ({
+        bookmark: this.attachExtractionStatus(bookmark),
+        content: structuredClone(this.articleContent.get(bookmark.id) ?? null),
+        narration: null,
+      })),
+      nextCursor: hasMore ? encodeCursor(items[items.length - 1]) : null,
     };
   }
 
@@ -283,15 +247,12 @@ export class MemoryStore implements Store {
       return null;
     }
 
-    const existing = this.bookmarkShares.get(bookmarkId);
     const share: BookmarkShareRecord = {
       bookmarkId,
       userId,
       shareId,
       enabledAt,
       revokedAt: null,
-      viewCount: existing?.shareId === shareId ? existing.viewCount : 0,
-      lastAccessedAt: existing?.shareId === shareId ? existing.lastAccessedAt : null,
     };
     this.bookmarkShares.set(bookmarkId, structuredClone(share));
     return share;
@@ -326,14 +287,14 @@ export class MemoryStore implements Store {
     return null;
   }
 
-  async recordBookmarkShareHit(bookmarkId: string, accessedAt: string): Promise<void> {
-    const share = this.bookmarkShares.get(bookmarkId);
-    if (!share) {
-      return;
-    }
-
-    share.viewCount += 1;
-    share.lastAccessedAt = accessedAt;
+  async getPublicShareBodyById(
+    shareId: string,
+  ): Promise<PublicArticleBodyRecord | null> {
+    const result = await this.getPublicShareById(shareId);
+    const content = result?.content;
+    return content?.extractionStatus === "complete" && content.contentHtml
+      ? { articleId: content.id, contentHtml: content.contentHtml }
+      : null;
   }
 
   async getArticleContentByBookmarkId(
@@ -342,6 +303,23 @@ export class MemoryStore implements Store {
   ): Promise<ArticleContentRecord | null> {
     const content = this.articleContent.get(bookmarkId) ?? null;
     return content && content.userId === userId ? structuredClone(content) : null;
+  }
+
+  async getArticleBodyById(
+    userId: string,
+    articleId: string,
+  ): Promise<ArticleBodyRecord | null> {
+    for (const content of this.articleContent.values()) {
+      if (
+        content.userId === userId
+        && content.id === articleId
+        && content.extractionStatus === "complete"
+        && content.contentHtml
+      ) {
+        return { articleId: content.id, contentHtml: content.contentHtml };
+      }
+    }
+    return null;
   }
 
   private putArticleContent(
@@ -412,23 +390,6 @@ export class MemoryStore implements Store {
     expectedArticleId: string | null,
   ): Promise<ArticleContentWriteResult> {
     return this.putArticleContent(content, undefined, "server", expectedArticleId);
-  }
-
-  async deleteArticleContent(
-    userId: string,
-    bookmarkId: string,
-  ): Promise<ArticleContentDeleteResult> {
-    const content = this.articleContent.get(bookmarkId);
-    if (content?.userId === userId) {
-      this.articleContent.delete(bookmarkId);
-      this.revokeBookmarkShare(userId, bookmarkId);
-      this.bumpOfflineRevision(userId);
-      return {
-        deleted: true,
-        removedServerContent: content.contentSource === "server",
-      };
-    }
-    return { deleted: false, removedServerContent: false };
   }
 
   async deleteBookmarkByNormalizedUrl(

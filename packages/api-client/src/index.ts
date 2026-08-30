@@ -1,44 +1,35 @@
 import {
-  articleContentResponseSchema,
+  bookmarkMutationResponseSchema,
   bookmarkShareResponseSchema,
-  bookmarkListResponseSchema,
   bookmarkResponseSchema,
   changePasswordRequestSchema,
   createBookmarkRequestSchema,
   createTokenRequestSchema,
   createTokenResponseSchema,
   errorResponseSchema,
-  extractBookmarkResponseSchema,
-  listBookmarksRequestSchema,
   loginRequestSchema,
   loginResponseSchema,
+  manifestResponseSchema,
   meResponseSchema,
-  offlineBundleResponseSchema,
-  offlineStatusResponseSchema,
   narrationResponseSchema,
-  pushConfigResponseSchema,
-  pushSubscriptionRequestSchema,
+  syncRevisionResponseSchema,
   publicShareArticleResponseSchema,
   tokenListResponseSchema,
   updateBookmarkTitleRequestSchema,
   uploadBookmarkContentRequestSchema,
-  type ArticleContentResponse,
+  type BookmarkMutationResponse,
   type BookmarkShareResponse,
-  type BookmarkListResponse,
   type BookmarkResponse,
   type ChangePasswordRequest,
   type CreateBookmarkRequest,
   type CreateTokenRequest,
   type CreateTokenResponse,
-  type ExtractBookmarkResponse,
   type LoginRequest,
   type LoginResponse,
+  type ManifestResponse,
   type MeResponse,
-  type OfflineBundleResponse,
-  type OfflineStatusResponse,
   type NarrationResponse,
-  type PushConfigResponse,
-  type PushSubscriptionRequest,
+  type SyncRevisionResponse,
   type PublicShareArticleResponse,
   type TokenListResponse,
   type UpdateBookmarkTitleRequest,
@@ -48,12 +39,14 @@ import {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly retryable: boolean;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, retryable = false) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.retryable = retryable;
   }
 }
 
@@ -96,6 +89,8 @@ type ClientOptions = {
 type RequestOptions<T = unknown> = {
   method?: string;
   body?: unknown;
+  rawBody?: BodyInit;
+  headers?: HeadersInit;
   token?: string | null;
   signal?: AbortSignal;
   cache?: RequestCache;
@@ -154,31 +149,6 @@ export class UrlKeepClient {
     });
   }
 
-  async listBookmarks(
-    query: Partial<{ q: string; bucket: "reading" | "videos"; limit: number; cursor: string }> = {},
-  ): Promise<BookmarkListResponse> {
-    const parsed = listBookmarksRequestSchema.parse(query);
-    const search = new URLSearchParams();
-
-    if (parsed.q) {
-      search.set("q", parsed.q);
-    }
-    if (parsed.bucket) {
-      search.set("bucket", parsed.bucket);
-    }
-    if (parsed.limit) {
-      search.set("limit", String(parsed.limit));
-    }
-    if (parsed.cursor) {
-      search.set("cursor", parsed.cursor);
-    }
-
-    const suffix = search.size > 0 ? `?${search.toString()}` : "";
-    return this.request(`/bookmarks${suffix}`, {
-      schema: bookmarkListResponseSchema,
-    });
-  }
-
   async getBookmarkByUrl(url: string): Promise<BookmarkResponse> {
     const search = new URLSearchParams({ url });
     return this.request(`/bookmarks/by-url?${search.toString()}`, {
@@ -186,31 +156,31 @@ export class UrlKeepClient {
     });
   }
 
-  async saveBookmark(input: CreateBookmarkRequest): Promise<BookmarkResponse> {
+  async saveBookmark(input: CreateBookmarkRequest): Promise<BookmarkMutationResponse> {
     const body = createBookmarkRequestSchema.parse(input);
     return this.request("/bookmarks", {
       method: "POST",
       body,
-      schema: bookmarkResponseSchema,
+      schema: bookmarkMutationResponseSchema,
     });
   }
 
   async updateBookmarkTitle(
     id: string,
     input: UpdateBookmarkTitleRequest,
-  ): Promise<BookmarkResponse> {
+  ): Promise<BookmarkMutationResponse> {
     const body = updateBookmarkTitleRequestSchema.parse(input);
     return this.request(`/bookmarks/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body,
-      schema: bookmarkResponseSchema,
+      schema: bookmarkMutationResponseSchema,
     });
   }
 
   async extractBookmark(
     id: string,
     force = false,
-  ): Promise<ExtractBookmarkResponse> {
+  ): Promise<BookmarkMutationResponse> {
     const search = new URLSearchParams();
     if (force) {
       search.set("force", "true");
@@ -219,14 +189,7 @@ export class UrlKeepClient {
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return this.request(`/bookmarks/${encodeURIComponent(id)}/extract${suffix}`, {
       method: "POST",
-      schema: extractBookmarkResponseSchema,
-    });
-  }
-
-  async getBookmarkContent(id: string): Promise<ArticleContentResponse> {
-    return this.request(`/bookmarks/${encodeURIComponent(id)}/content`, {
-      cache: "no-store",
-      schema: articleContentResponseSchema,
+      schema: bookmarkMutationResponseSchema,
     });
   }
 
@@ -256,29 +219,48 @@ export class UrlKeepClient {
     });
   }
 
-  async getOfflineStatus(): Promise<OfflineStatusResponse> {
-    return this.request("/offline/status", {
+  async getSyncRevision(): Promise<SyncRevisionResponse> {
+    return this.request("/sync/revision", {
       cache: "no-store",
-      schema: offlineStatusResponseSchema,
+      schema: syncRevisionResponseSchema,
     });
   }
 
-  async getOfflineBundle(
-    cursor?: string,
-    limit?: number,
-  ): Promise<OfflineBundleResponse> {
+  async getManifest(cursor?: string, limit?: number): Promise<ManifestResponse> {
     const search = new URLSearchParams();
-    if (cursor) {
-      search.set("cursor", cursor);
-    }
-    if (limit) {
-      search.set("limit", String(limit));
-    }
-
+    if (cursor) search.set("cursor", cursor);
+    if (limit) search.set("limit", String(limit));
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
-    return this.request(`/offline/bundle${suffix}`, {
+    return this.request(`/sync/manifest${suffix}`, {
       cache: "no-store",
-      schema: offlineBundleResponseSchema,
+      schema: manifestResponseSchema,
+    });
+  }
+
+  async getArticleBody(articleId: string, signal?: AbortSignal): Promise<string> {
+    const response = await this.fetchResponse(
+      `/articles/${encodeURIComponent(articleId)}/body`,
+      { cache: "no-store", signal },
+    );
+    if (!response.ok) await this.throwResponseError(response, true);
+    return response.text();
+  }
+
+  async getPublicShareBody(token: string, signal?: AbortSignal): Promise<string> {
+    const response = await this.fetchResponse(
+      `/public/shares/${encodeURIComponent(token)}/body`,
+      { cache: "no-store", signal, token: null },
+    );
+    if (!response.ok) await this.throwResponseError(response, false);
+    return response.text();
+  }
+
+  async captureBookmark(id: string, html: string): Promise<BookmarkMutationResponse> {
+    return this.request(`/bookmarks/${encodeURIComponent(id)}/capture`, {
+      method: "PUT",
+      rawBody: html,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      schema: bookmarkMutationResponseSchema,
     });
   }
 
@@ -315,37 +297,15 @@ export class UrlKeepClient {
     return response;
   }
 
-  async getPushConfig(): Promise<PushConfigResponse> {
-    return this.request("/push/config", {
-      cache: "no-store",
-      schema: pushConfigResponseSchema,
-    });
-  }
-
-  async putPushSubscription(input: PushSubscriptionRequest): Promise<void> {
-    const body = pushSubscriptionRequestSchema.parse(input);
-    await this.request("/push/subscription", { method: "PUT", body });
-  }
-
-  async deletePushSubscription(): Promise<void> {
-    await this.request("/push/subscription", { method: "DELETE" });
-  }
-
   async uploadBookmarkContent(
     id: string,
     input: UploadBookmarkContentRequest,
-  ): Promise<ArticleContentResponse> {
+  ): Promise<BookmarkMutationResponse> {
     const body = uploadBookmarkContentRequestSchema.parse(input);
     return this.request(`/bookmarks/${encodeURIComponent(id)}/content`, {
       method: "PUT",
       body,
-      schema: articleContentResponseSchema,
-    });
-  }
-
-  async deleteBookmarkContent(id: string): Promise<void> {
-    await this.request(`/bookmarks/${encodeURIComponent(id)}/content`, {
-      method: "DELETE",
+      schema: bookmarkMutationResponseSchema,
     });
   }
 
@@ -395,6 +355,7 @@ export class UrlKeepClient {
           response.status,
           parsedError.data.error.code,
           parsedError.data.error.message,
+          parsedError.data.error.retryable ?? false,
         );
       }
       throw new ApiError(response.status, "unknown_error", "Unknown API error");
@@ -419,13 +380,17 @@ export class UrlKeepClient {
   ): Promise<Response> {
     const token = options.token !== undefined ? options.token : this.getToken?.() ?? null;
     try {
+      const headers = new Headers(options.headers);
+      if (options.body !== undefined && !headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json");
+      }
+      if (token) headers.set("Authorization", `Bearer ${token}`);
       return await fetch(`${this.baseUrl}${path}`, {
         method: options.method ?? "GET",
-        headers: {
-          ...(options.body ? { "Content-Type": "application/json" } : {}),
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: options.body ? JSON.stringify(options.body) : undefined,
+        headers,
+        body: options.rawBody ?? (options.body !== undefined
+          ? JSON.stringify(options.body)
+          : undefined),
         cache: options.cache,
         signal: options.signal ?? signal,
       });
@@ -443,7 +408,12 @@ export class UrlKeepClient {
     try {
       const parsed = errorResponseSchema.safeParse(await response.json());
       if (parsed.success) {
-        throw new ApiError(response.status, parsed.data.error.code, parsed.data.error.message);
+        throw new ApiError(
+          response.status,
+          parsed.data.error.code,
+          parsed.data.error.message,
+          parsed.data.error.retryable ?? false,
+        );
       }
     } catch (caught) {
       if (caught instanceof ApiError) throw caught;

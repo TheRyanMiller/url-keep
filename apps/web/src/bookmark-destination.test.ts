@@ -9,6 +9,7 @@ function bookmark(overrides: Partial<Bookmark> = {}): Bookmark {
     normalized_url: "https://example.com/article",
     bucket: "reading",
     title: "Article",
+    title_source: "client",
     image_url: null,
     site_name: null,
     saved_via: "web",

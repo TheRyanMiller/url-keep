@@ -1,122 +1,105 @@
 # Architecture
 
-url-keep is a private, single-user reading list. The design has one current API, one current D1 schema, one browser-storage schema, and one synthesis path.
+url-keep has one API contract, one D1 schema, one IndexedDB read model, and one narration path. It favors bounded, eventually consistent reconciliation over coordination machinery.
 
 ## System boundary
 
 ```text
-capture client ──► URL Keep Worker ──► D1 bookmarks/articles/narrations
-                         │                         │
-                         │ final plaintext         │ bounded reconciliation
-                         ▼                         │
-                 private narration service ◄──────┘
-                         │ authenticated MP3 pull
-                         ▼
-                  private narration R2
-                    │             │
-                    ▼             ▼
-             online Blob URL   verified browser cache
-                    └──────┬──────┘
-                           ▼
-                    native audio element
-
-ready D1 state ──► durable notification outbox ──► Web Push
+capture client ───────► URL Keep Worker ───────► D1 source of truth
+                             │                         │
+                             │ bounded plaintext       │ revision + manifest
+                             ▼                         ▼
+                    narration service          IndexedDB read model
+                             │                         │
+                             │ authenticated stream    │ immutable body hydrate
+                             ▼                         ▼
+                    URL Keep audio route          React reader
+                             │
+                      verified cache / Blob URL
 ```
 
-The standalone narration service owns only its model, voice, encoder, compute queue, recovery, and temporary spool. It receives exact plaintext plus its SHA-256. It never receives a URL, HTML, user identity, browser token, callback, push subscription, or product database access.
+The narration service owns synthesis, its queue, canonical MP3s, and recovery. It receives exact plaintext plus its SHA-256. It never receives a source URL, HTML, user identity, browser token, callback, or product database access.
 
-URL Keep owns article identity, service-job orchestration, durable MP3s, authorization, deletion, push, offline policy, and playback. Centralizing synthesis does not centralize product state.
+URL Keep owns bookmark and article identity, service-job orchestration, authorization, cleanup delivery, offline policy, sharing, and playback URLs. D1 stores narration identity and integrity metadata, never MP3 bytes or storage paths.
 
 ## Capture and immutable articles
 
-Web URL saves use server Readability extraction. Chrome/Brave inject bundled Readability into the active tab. Safari Shortcut captures submit bounded DOM transport input. All paths resolve links, sanitize HTML, bound metadata and stored bytes, and persist only the readable result.
+`POST /bookmarks` creates metadata only. It never starts hidden background extraction.
 
-`article_content.id` identifies one immutable article generation. The extracted document title is stored with that generation; the bookmark title remains an editable library label. A successful replacement atomically:
+Chrome/Brave runs Readability in the active tab and uploads the readable result. Safari first creates bookmark metadata, then sends bounded raw DOM to `PUT /bookmarks/:id/capture`. The raw DOM is parsed and sanitized in memory and is never logged or persisted. Server extraction is an explicit synchronous fallback with one global budget of four external fetches, at most two manual redirects, and URL validation after every redirect.
 
-1. verifies the expected current generation;
-2. deletes that row;
-3. inserts the new generation with a new ID;
-4. updates winning bookmark metadata.
+Article images remain sanitized absolute HTTPS URLs. The server does not fetch or mirror new images. The existing R2 read route remains only for already-mirrored legacy objects.
 
-A failed recapture preserves existing complete content. Server writes never replace complete client content. Narrations reference the generation with `ON DELETE CASCADE`, so replacement and deletion invalidate audio without hash comparisons spread through the application.
+`article_content.id` identifies an immutable generation. A successful replacement conditionally verifies the observed generation, deletes it, inserts the new generation, updates eligible bookmark metadata, revokes public sharing, and cascades narration invalidation. Client title precedence is `user > client > server > fallback`.
 
-Server-extracted public images use:
+Failed or skipped client and server extraction never replaces an existing complete generation. An existing complete server generation is returned without fetching unless extraction is explicitly forced; a forced failure still preserves the complete generation.
+
+## Read model and reconciliation
+
+D1 is the source of truth. IndexedDB is the PWA read model:
+
+- `bookmarks` contains the complete local bookmark snapshot;
+- `article_meta` contains bounded metadata keyed by bookmark ID;
+- `article_bodies` contains sanitized HTML keyed by immutable article ID;
+- `sync_meta` contains the accepted revision and check timestamps;
+- `audio_settings` and `offline_audio` own offline-audio policy and its ledger.
+
+Reconciliation is single-flight within a tab:
+
+1. read `GET /sync/revision`;
+2. if it equals the accepted revision, refresh the last-check timestamp, reload IndexedDB into React, and hydrate missing bodies;
+3. otherwise page `GET /sync/manifest` with a maximum page size of 100;
+4. reject duplicate bookmarks, duplicate article identities, or malformed cursor progress;
+5. read the ending revision;
+6. if revisions differ, retry the whole snapshot once;
+7. atomically replace bookmarks, metadata, narration summaries, and sync state only for a stable snapshot;
+8. hydrate missing bodies with at most two concurrent requests and garbage-collect obsolete bodies in chunks of 25.
+
+The equality-path reload is intentional: another tab may already have committed the accepted revision while an older mutation response updated this tab's React state. Reloading IndexedDB prevents an indefinitely stale UI without locks, broadcasts, or a cross-tab protocol.
+
+The IndexedDB v1→v2 upgrade clears remotely reproducible records and offline audio, preserves `audio_settings`, and lets the next stable reconciliation repopulate data. Blocked upgrades close old connections and surface an explicit UI notice.
+
+## Narration state and races
+
+One narration belongs to exactly one article generation:
 
 ```text
-articles/{bookmarkId}/{generationId}/{hash}
+pending ─────► ready
+   │             │
+   └────────────► failed
 ```
 
-They are served only through `/images/articles/:bookmarkId/:generationId/:hash`. Winning generations remove obsolete image generations; losing attempts remove only their own files.
+Create and retry derive bounded NFC plaintext, hash its exact UTF-8 bytes, commit a pending D1 row, and synchronously issue the idempotent service `PUT`. Every service `PUT` attempt—including an ambiguous transport failure—is followed by a D1 identity check. If the narration row no longer belongs to the same current article generation, URL Keep upserts the service job into `narration_cleanup_jobs`, returns `409 article_changed`, and never recreates the deleted narration row.
 
-## Narration state
+Each narration status GET performs at most one service GET. Service absence returns `submission_required`; a visible client may issue the idempotent PUT once. The PWA polls after 5, 10, then repeated 15-second delays and aborts while hidden.
 
-One narration can exist for an article generation:
+Article replacement and deletion cascade the D1 narration row and enqueue the service job for cleanup. Retry also enqueues the superseded job. Sync and relevant mutation requests attempt at most one due cleanup DELETE. Success removes the outbox entry; failure increments bounded backoff state.
 
-```text
-pending → publishing → ready
-    │          │
-    └──────────┴────► failed
-```
+## Playback and authorization
 
-The public API exposes `publishing` as `pending`. One explicit retry is available only for a small retryable error allowlist.
+Bearer authentication protects every private bookmark, article, narration, and audio route. Public shares expose neither narration state nor audio.
 
-Requesting narration derives NFC plaintext from stored sanitized block content, excludes code/pre/table content, enforces 100,000 Unicode scalar values without truncation, and hashes the exact UTF-8 bytes. D1 commits the product row before the service call. A lost submission is repaired by repeating the same service PUT with the immutable article and job ID.
+The audio route authorizes through the current bookmark/article relationship and streams the service response without buffering it. It forwards only `Range`, `If-Range`, and `If-None-Match`, validates identity, checksum, duration, byte size, and engine fingerprint against D1, and returns bounded response headers. Missing or invalid canonical audio demotes the narration to retryable `audio_missing`.
 
-Reconciliation polls a bounded set once per minute. A ready service response is validated for ID, fingerprint, content type, known length, duration, and SHA-256. A `FixedLengthStream` writes it to:
+The browser never receives the service token or a direct service URL. Offline audio is accepted only after declared and computed SHA-256 plus byte length match. The cache entry is written before its ledger row; playback always uses a revocable Blob URL.
 
-```text
-narrations/{narrationId}/{serviceJobId}.mp3
-```
+## Public sharing
 
-R2 validates the supplied SHA-256. D1 becomes ready only after the object exists. A five-minute publishing claim can be retried safely at the same reserved key. The service job is acknowledged after commit and otherwise expires after seven days.
+Public share metadata and HTML use separate no-store routes. Metadata contains the immutable `article_id` but not the body. The body route returns sanitized `text/html` with `nosniff`, `noindex`, and an identity ETag. Reads perform no database writes. Replacing or deleting article content revokes the share.
 
-Deleting or retrying a narration writes its service job ID and R2 key to one `narration_cleanup_jobs` outbox. Scheduled cleanup idempotently removes both. This single row prevents either store from becoming an untracked cleanup concern.
+## Security and resource properties
 
-## API and authorization
-
-All product routes are unversioned. Normal user bearer authentication protects bookmarks, narration status, audio, push configuration, subscriptions, and offline bundles. Public shares expose article HTML only and never narration state or media.
-
-The audio route authorizes through the current article and bookmark, reads only the D1-reserved R2 key, and returns a complete MP3 with length, strong ETag, and SHA-256. Range and public bucket URLs are intentionally absent: the browser consumes one authenticated complete response before creating a Blob URL.
-
-The private narration-service credential exists only in Worker secrets. Each product uses a distinct token; the service stores only token hashes.
-
-## Web Push
-
-One browser access token owns at most one push subscription. Enrollment requires an explicit Settings action. Endpoint URLs require HTTPS, no credentials, fragment, or custom port, and a hostname in the configured provider allowlist. Key material is structurally and cryptographically bounded before storage.
-
-The notification table is both watcher set and durable outbox. Senders can see rows only after joining a committed ready narration. Success and terminal rejection delete the row; provider `404`/`410` deletes the subscription; transient failures use bounded retry delays within 24 hours. Push failure never changes audio readiness.
-
-The service worker accepts one bounded `narration.ready` payload and a same-origin `/read/{id}#audio` path. It contains no bearer token and never caches authenticated API responses or audio.
-
-## Offline ownership
-
-IndexedDB stores bookmarks, article HTML, sync metadata, audio settings, and the offline-audio ledger. Cache Storage owns the versioned app shell, public article images, and verified MP3 bytes. Each concern has one owner.
-
-Foreground text reconciliation reads the D1 revision and bookmark count, downloads a full paginated snapshot, rechecks identity, and atomically replaces IndexedDB only when the snapshot stayed stable. It retries one moving snapshot. There is no offline mutation queue, background bearer token, incremental event log, or tombstone protocol.
-
-Only current ready narration metadata appears in the offline bundle. When enabled, audio download:
-
-1. evicts audio-only LRU entries until the declared object fits;
-2. fetches the authenticated complete response;
-3. verifies content type, declared length, response hash header, byte length, and computed SHA-256;
-4. writes the immutable synthetic cache response;
-5. commits the ledger row last.
-
-Playback always becomes a revocable Blob URL, preferring verified cached bytes. Disabling or clearing offline audio touches only the audio cache and ledger. Logout or authenticated `401` clears all private offline data while retaining device-local audio settings and the app shell.
-
-## Security properties
-
-- Raw captured DOM is transport-only and never logged or persisted.
-- The shared sanitization policy removes scripts, events, forms, frames, SVG, active schemes, styling, and unsupported attributes.
-- Browser credentials never reach the narration service or service worker media paths.
-- Plaintext, HTML, URLs, titles, audio, credentials, push endpoints, and key material are excluded from logs.
-- Queue, text, request, output, storage, reconciliation, notification, and cleanup limits bound work.
-- D1 constraints encode legal narration states and safe error values.
-- Unique article, service-job, audio-key, token, endpoint, and outbox identities make retries idempotent.
-- Dependency audit, empty-schema application, typechecking, tests, production builds, and live smoke tests are release gates.
+- Raw capture DOM is transport-only and excluded from logs.
+- Browser credentials never reach the narration service or media cache keys.
+- Plaintext, HTML, URLs, titles, audio, and credentials are excluded from structured logs.
+- Request bodies, stored HTML, extraction fetches, redirects, manifest pages, hydration concurrency, cleanup work, narration retries, and error codes are bounded.
+- The private article-body query is scoped by both user ID and immutable article ID.
+- Authentication resolves token and user in one joined lookup.
+- D1 constraints encode legal narration states, while unique article, service-job, token, and outbox identities make retries idempotent.
+- No cron, Web Push, lock service, Durable Object, or cross-tab coordination protocol is required.
 
 ## Deployment boundaries
 
-The URL Keep API is one Cloudflare Worker with D1, image R2, narration R2, and a scheduled trigger. The PWA is a Vercel static deployment. The extension and Shortcut are separately built clients of the same current contract.
+The product API is one Cloudflare Worker with D1 and a legacy article-image R2 read binding. It has no scheduled trigger and no explicit paid CPU ceiling. The PWA is a static deployment.
 
-The narration service is an independent repository, virtual environment, SQLite database, spool, model cache, API unit, worker unit, and release lifecycle on Electro. Deploying or restarting Wavey Gist or URL Keep does not restart it; deploying or restarting it does not restart either product.
+The narration service is independently deployed and independently recoverable. Product deployments do not restart it, and narration-service deployments do not restart URL Keep.

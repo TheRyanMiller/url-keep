@@ -1,6 +1,4 @@
 import { Readability } from "@mozilla/readability";
-import { bytesToHex } from "@noble/hashes/utils";
-import { sha256 } from "@noble/hashes/sha2";
 import {
   ARTICLE_AUTHOR_MAX_CHARS,
   ARTICLE_CONTENT_MAX_BYTES,
@@ -22,12 +20,9 @@ import type {
 } from "./types";
 
 const ARTICLE_FETCH_TIMEOUT_MS = 10_000;
-const IMAGE_FETCH_TIMEOUT_MS = 5_000;
 const ARTICLE_BODY_LIMIT_BYTES = CAPTURE_REQUEST_MAX_BYTES;
-const MAX_IMAGES_PER_ARTICLE = 20;
-const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
-const MAX_TOTAL_IMAGE_BYTES = 10 * 1024 * 1024;
-const MIN_IMAGE_BYTES = 100;
+const MAX_EXTERNAL_FETCHES = 4;
+const MAX_REDIRECTS = 2;
 const USER_AGENT = "url-keep/1.0";
 const NON_BODY_ROOT_TAGS = new Set([
   "BASE",
@@ -240,7 +235,9 @@ function resolveArticleUrls(html: string, baseUrl: URL): string {
     const src = image.getAttribute("src");
     if (!src) continue;
     try {
-      image.setAttribute("src", new URL(src, baseUrl).toString());
+      const resolved = new URL(src, baseUrl);
+      if (resolved.protocol !== "https:") throw new Error("image URL must use HTTPS");
+      image.setAttribute("src", resolved.toString());
     } catch {
       image.removeAttribute("src");
     }
@@ -355,11 +352,51 @@ async function readResponseTextWithLimit(
   return text;
 }
 
+class FetchBudget {
+  requests = 0;
+  redirects = 0;
+
+  async fetch(fetchImpl: typeof fetch, input: string): Promise<{ response: Response; url: string }> {
+    let url = validateFetchUrl(input);
+    while (true) {
+      if (this.requests >= MAX_EXTERNAL_FETCHES) {
+        throw new ExtractionFailure("fetch_error", "Extraction fetch budget exhausted");
+      }
+      this.requests += 1;
+      const response = await fetchImpl(url.toString(), {
+        headers: { "User-Agent": USER_AGENT },
+        redirect: "manual",
+        signal: AbortSignal.timeout(ARTICLE_FETCH_TIMEOUT_MS),
+      });
+      if (response.status < 300 || response.status > 399) {
+        return { response, url: response.url || url.toString() };
+      }
+      const location = response.headers.get("location");
+      if (!location || this.redirects >= MAX_REDIRECTS) {
+        throw new ExtractionFailure("fetch_error", "Source redirect limit exceeded");
+      }
+      this.redirects += 1;
+      url = validateFetchUrl(new URL(location, url).toString());
+    }
+  }
+}
+
+function validateFetchUrl(input: string): URL {
+  const url = new URL(input);
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:")
+    || url.username
+    || url.password
+  ) {
+    throw new ExtractionFailure("fetch_error", "Source URL is not allowed");
+  }
+  return url;
+}
+
 async function tryExtractHackmdContent(
   bookmark: BookmarkRecord,
-  generationId: string,
   fetchImpl: typeof fetch,
-  images: R2Bucket | undefined,
+  budget: FetchBudget,
 ): Promise<{
   author: string | null;
   contentHtml: string;
@@ -373,10 +410,7 @@ async function tryExtractHackmdContent(
     return null;
   }
 
-  const response = await fetchImpl(rawUrl, {
-    headers: { "User-Agent": USER_AGENT },
-    signal: AbortSignal.timeout(ARTICLE_FETCH_TIMEOUT_MS),
-  });
+  const { response } = await budget.fetch(fetchImpl, rawUrl);
 
   if (!response.ok) {
     return null;
@@ -403,24 +437,9 @@ async function tryExtractHackmdContent(
     );
   }
 
-  let contentHtml = renderedHtml;
-  if (images) {
-    const rewrittenContentHtml = await extractAndStoreImages(
-      contentHtml,
-      bookmark.id,
-      generationId,
-      bookmark.url,
-      images,
-      fetchImpl,
-    );
-    if (rewrittenContentHtml.trim()) {
-      contentHtml = rewrittenContentHtml;
-    }
-  }
-
   return {
     author: null,
-    contentHtml,
+    contentHtml: renderedHtml,
     publishedDate: null,
     siteName: "HackMD",
     title: cleanOptionalText(extractMarkdownTitle(markdown), ARTICLE_TITLE_MAX_CHARS),
@@ -430,29 +449,6 @@ async function tryExtractHackmdContent(
 
 function makeExtractionError(reason: string, extra?: Record<string, unknown>): string {
   return JSON.stringify({ reason, ...extra });
-}
-
-export function pendingArticleContent(
-  bookmark: BookmarkRecord,
-  existing: ArticleContentRecord | null,
-): ArticleContentRecord {
-  const now = nowIso();
-  return {
-    id: makeId(),
-    bookmarkId: bookmark.id,
-    userId: bookmark.userId,
-    title: existing?.title ?? bookmark.title,
-    contentHtml: null,
-    wordCount: 0,
-    author: null,
-    publishedDate: null,
-    extractionStatus: "pending",
-    extractionError: null,
-    extractedAt: null,
-    contentSource: null,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-  };
 }
 
 function failureArticleContent(
@@ -475,232 +471,10 @@ function failureArticleContent(
     extractionStatus: status,
     extractionError: error,
     extractedAt: now,
-    contentSource: null,
+    contentSource: "server",
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  return bytesToHex(sha256(new TextEncoder().encode(value)));
-}
-
-async function maybeStoreImage(
-  src: string,
-  bookmarkId: string,
-  generationId: string,
-  r2: R2Bucket,
-  fetchImpl: typeof fetch,
-  totalBytes: number,
-): Promise<{ proxiedPath: string | null; bytesStored: number }> {
-  if (!src.startsWith("https://")) {
-    return { proxiedPath: null, bytesStored: 0 };
-  }
-
-  const response = await fetchImpl(src, {
-    headers: { "User-Agent": USER_AGENT },
-    signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    return { proxiedPath: null, bytesStored: 0 };
-  }
-
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.startsWith("image/") || contentType.includes("svg")) {
-    return { proxiedPath: null, bytesStored: 0 };
-  }
-
-  const declaredLength = Number(response.headers.get("content-length") ?? "");
-  if (
-    Number.isFinite(declaredLength) &&
-    (declaredLength > MAX_IMAGE_BYTES || totalBytes + declaredLength > MAX_TOTAL_IMAGE_BYTES)
-  ) {
-    return { proxiedPath: null, bytesStored: 0 };
-  }
-
-  const body = await response.arrayBuffer();
-  if (
-    body.byteLength > MAX_IMAGE_BYTES ||
-    body.byteLength < MIN_IMAGE_BYTES ||
-    totalBytes + body.byteLength > MAX_TOTAL_IMAGE_BYTES
-  ) {
-    return { proxiedPath: null, bytesStored: 0 };
-  }
-
-  const hash = await sha256Hex(src);
-  const key = `articles/${bookmarkId}/${generationId}/${hash}`;
-
-  await r2.put(key, body, {
-    httpMetadata: { contentType },
-  });
-
-  return {
-    proxiedPath: `/images/articles/${bookmarkId}/${generationId}/${hash}`,
-    bytesStored: body.byteLength,
-  };
-}
-
-async function extractAndStoreImages(
-  contentHtml: string,
-  bookmarkId: string,
-  generationId: string,
-  baseUrl: string,
-  r2: R2Bucket,
-  fetchImpl: typeof fetch,
-): Promise<string> {
-  const { document } = parseHTML("<html><body></body></html>");
-  const container = document.createElement("div");
-  container.innerHTML = contentHtml;
-  const images = [...container.querySelectorAll("img[src]")].slice(0, MAX_IMAGES_PER_ARTICLE);
-  let totalBytes = 0;
-
-  for (const image of images) {
-    const src = image.getAttribute("src");
-    if (!src) {
-      continue;
-    }
-
-    let absoluteUrl: string;
-    try {
-      absoluteUrl = new URL(src, baseUrl).toString();
-    } catch {
-      continue;
-    }
-
-    try {
-      const { proxiedPath, bytesStored } = await maybeStoreImage(
-        absoluteUrl,
-        bookmarkId,
-        generationId,
-        r2,
-        fetchImpl,
-        totalBytes,
-      );
-
-      if (proxiedPath) {
-        image.setAttribute("src", proxiedPath);
-        totalBytes += bytesStored;
-      }
-    } catch {
-      // Leave the original URL in place so images still work while online.
-    }
-  }
-
-  return container.innerHTML;
-}
-
-async function cleanupBookmarkImages(bookmarkId: string, r2: R2Bucket): Promise<void> {
-  let cursor: string | undefined;
-
-  do {
-    const listing = await r2.list({
-      prefix: `articles/${bookmarkId}/`,
-      cursor,
-    });
-    const keys = listing.objects.map((object) => object.key);
-    if (keys.length > 0) {
-      await r2.delete(keys);
-    }
-    cursor = listing.truncated ? listing.cursor : undefined;
-  } while (cursor);
-}
-
-async function cleanupBookmarkImageGeneration(
-  bookmarkId: string,
-  generationId: string,
-  r2: R2Bucket,
-): Promise<void> {
-  let cursor: string | undefined;
-  do {
-    const listing = await r2.list({
-      prefix: `articles/${bookmarkId}/${generationId}/`,
-      cursor,
-    });
-    const keys = listing.objects.map((object) => object.key);
-    if (keys.length > 0) {
-      await r2.delete(keys);
-    }
-    cursor = listing.truncated ? listing.cursor : undefined;
-  } while (cursor);
-}
-
-async function cleanupObsoleteBookmarkImages(
-  bookmarkId: string,
-  currentGenerationId: string,
-  r2: R2Bucket,
-): Promise<void> {
-  let cursor: string | undefined;
-  const keepPrefix = `articles/${bookmarkId}/${currentGenerationId}/`;
-  do {
-    const listing = await r2.list({
-      prefix: `articles/${bookmarkId}/`,
-      cursor,
-    });
-    const keys = listing.objects
-      .map((object) => object.key)
-      .filter((key) => !key.startsWith(keepPrefix));
-    if (keys.length > 0) {
-      await r2.delete(keys);
-    }
-    cursor = listing.truncated ? listing.cursor : undefined;
-  } while (cursor);
-}
-
-export async function removeBookmarkImages(
-  bookmarkId: string,
-  r2?: R2Bucket,
-): Promise<void> {
-  if (!r2) {
-    return;
-  }
-
-  try {
-    await cleanupBookmarkImages(bookmarkId, r2);
-  } catch {
-    console.warn(JSON.stringify({
-      event: "article_images.cleanup",
-      outcome: "failed",
-      failure_code: "r2_cleanup_failed",
-      cleanup_scope: "bookmark",
-    }));
-  }
-}
-
-async function cleanupServerAttemptImages(
-  bookmarkId: string,
-  generationId: string,
-  r2?: R2Bucket,
-): Promise<void> {
-  if (!r2) return;
-  try {
-    await cleanupBookmarkImageGeneration(bookmarkId, generationId, r2);
-  } catch {
-    console.warn(JSON.stringify({
-      event: "article_images.cleanup",
-      outcome: "failed",
-      failure_code: "r2_cleanup_failed",
-      cleanup_scope: "attempt",
-    }));
-  }
-}
-
-async function cleanupAfterWinningServerWrite(
-  bookmarkId: string,
-  generationId: string,
-  r2?: R2Bucket,
-): Promise<void> {
-  if (!r2) return;
-  try {
-    await cleanupObsoleteBookmarkImages(bookmarkId, generationId, r2);
-  } catch {
-    console.warn(JSON.stringify({
-      event: "article_images.cleanup",
-      outcome: "failed",
-      failure_code: "r2_cleanup_failed",
-      cleanup_scope: "obsolete",
-    }));
-  }
 }
 
 function bookmarkMetadataForSnapshot(
@@ -750,11 +524,6 @@ async function persistServerFailure(
   status: "failed" | "skipped",
   error: string,
 ): Promise<ArticleContentRecord> {
-  await cleanupServerAttemptImages(
-    options.bookmark.id,
-    generationId,
-    options.env.IMAGES,
-  );
   if (existing?.extractionStatus === "complete") {
     return existing;
   }
@@ -836,16 +605,12 @@ export async function runBookmarkExtraction(
   }
 
   const generationId = makeId();
+  const budget = new FetchBudget();
 
   try {
     let snapshot: ExtractedSnapshot | null = null;
     try {
-      const hackmd = await tryExtractHackmdContent(
-        options.bookmark,
-        generationId,
-        fetchImpl,
-        options.env.IMAGES,
-      );
+      const hackmd = await tryExtractHackmdContent(options.bookmark, fetchImpl, budget);
       if (hackmd) {
         snapshot = {
           ...hackmd,
@@ -857,10 +622,10 @@ export async function runBookmarkExtraction(
     }
 
     if (!snapshot) {
-      const response = await fetchImpl(options.bookmark.url, {
-        headers: { "User-Agent": USER_AGENT },
-        signal: AbortSignal.timeout(ARTICLE_FETCH_TIMEOUT_MS),
-      });
+      const { response, url: responseUrl } = await budget.fetch(
+        fetchImpl,
+        options.bookmark.url,
+      );
 
       if (!response.ok) {
         const reason = response.status === 401 || response.status === 403
@@ -891,18 +656,8 @@ export async function runBookmarkExtraction(
       const html = await readResponseTextWithLimit(response, ARTICLE_BODY_LIMIT_BYTES);
       snapshot = extractReadableSnapshot({
         documentHtml: html,
-        baseUrl: response.url || options.bookmark.url,
+        baseUrl: responseUrl,
       });
-      if (options.env.IMAGES) {
-        snapshot.contentHtml = await extractAndStoreImages(
-          snapshot.contentHtml,
-          options.bookmark.id,
-          generationId,
-          response.url || options.bookmark.url,
-          options.env.IMAGES,
-          fetchImpl,
-        );
-      }
     }
 
     const now = nowIso();
@@ -934,19 +689,8 @@ export async function runBookmarkExtraction(
       existing?.id ?? null,
     );
     if (!result.written) {
-      await cleanupServerAttemptImages(
-        options.bookmark.id,
-        generationId,
-        options.env.IMAGES,
-      );
       return currentContentAfterLostWrite(options, existing ?? complete);
     }
-
-    await cleanupAfterWinningServerWrite(
-      options.bookmark.id,
-      generationId,
-      options.env.IMAGES,
-    );
     return complete;
   } catch (error) {
     const reason = error instanceof ExtractionFailure

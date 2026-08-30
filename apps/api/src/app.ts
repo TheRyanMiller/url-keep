@@ -3,7 +3,7 @@ import { Hono, type Context } from "hono";
 import {
   ARTICLE_CONTENT_MAX_BYTES,
   CAPTURE_REQUEST_MAX_BYTES,
-  OFFLINE_BUNDLE_MAX_LIMIT,
+  MANIFEST_MAX_LIMIT,
   canonicalizeBookmarkUrl,
   classifyBookmarkUrl,
   changePasswordRequestSchema,
@@ -12,38 +12,30 @@ import {
   isHackmdUrl,
   createTokenRequestSchema,
   loginRequestSchema,
-  pushSubscriptionRequestSchema,
   updateBookmarkTitleRequestSchema,
   uploadBookmarkContentRequestSchema,
 } from "@url-keep/shared";
 import { extractMarkdownTitle, hasHtmlMarkup, renderMarkdownToHtml } from "./markdown";
 import { sanitizeClientHtml } from "./sanitize";
 import { D1Store } from "./d1-store";
+import { runOneNarrationCleanup } from "./cleanup";
 import {
   authorizedNarrationAudio,
-  getBookmarkNarration,
   NarrationDomainError,
   narrationToApi,
-  reconcileNarration,
+  pollBookmarkNarration,
   requestNarration,
   retryNarration,
 } from "./narration";
 import {
-  deletePushSubscription,
-  getPushConfig,
-  putPushSubscription,
-  validatePushSubscription,
-} from "./push";
-import {
   countWords,
   ExtractionFailure,
-  pendingArticleContent,
-  removeBookmarkImages,
   runCapturedPageExtraction,
   runBookmarkExtraction,
   utf8ByteLength,
 } from "./extraction";
 import type { Store } from "./store";
+import { InvalidCursorError } from "./store";
 import type {
   ArticleContentRecord,
   AuthContext,
@@ -85,13 +77,20 @@ function errorResponse(
   code: string,
   message: string,
   status: number,
+  retryable?: boolean,
 ): Response {
-  return Response.json({ error: { code, message } }, { status });
+  return Response.json({
+    error: {
+      code,
+      message,
+      ...(retryable === undefined ? {} : { retryable }),
+    },
+  }, { status });
 }
 
 function narrationErrorResponse(caught: unknown): Response {
   if (caught instanceof NarrationDomainError) {
-    return errorResponse(caught.code, caught.message, caught.status);
+    return errorResponse(caught.code, caught.message, caught.status, caught.retryable);
   }
   return errorResponse("server_error", "Narration request failed", 500);
 }
@@ -122,31 +121,6 @@ function debugLog(
       ...data,
     }),
   );
-}
-
-function captureLog(
-  env: Bindings,
-  data: {
-    outcome: "complete" | "fallback";
-    failureCode: string | null;
-    rawBytes: number;
-    sanitizedBytes: number;
-    durationMs: number;
-    preservedComplete: boolean;
-  },
-) {
-  if (!debugLogsEnabled(env)) return;
-  console.log(JSON.stringify({
-    ts: nowIso(),
-    event: "article.capture",
-    capture_path: "captured_page",
-    outcome: data.outcome,
-    failure_code: data.failureCode,
-    raw_bytes: data.rawBytes,
-    sanitized_bytes: data.sanitizedBytes,
-    duration_ms: data.durationMs,
-    preserved_complete: data.preservedComplete,
-  }));
 }
 
 function summarizeUrlField(value: unknown) {
@@ -197,14 +171,6 @@ function summarizeBookmarkBody(value: unknown) {
     title_type: record.title === undefined ? "missing" : typeof record.title,
     image_url_type: record.image_url === undefined ? "missing" : typeof record.image_url,
     site_name_type: record.site_name === undefined ? "missing" : typeof record.site_name,
-    captured_page_present: Boolean(record.captured_page),
-    captured_page_bytes:
-      record.captured_page
-      && typeof record.captured_page === "object"
-      && !Array.isArray(record.captured_page)
-      && typeof (record.captured_page as Record<string, unknown>).html === "string"
-        ? utf8ByteLength((record.captured_page as Record<string, string>).html)
-        : null,
   };
 }
 
@@ -296,32 +262,42 @@ async function readJsonBodyWithLimit(
   }
 }
 
-function parseListQuery(c: Context<AppEnv>) {
-  const q = c.req.query("q")?.trim() || undefined;
-  let bucket = c.req.query("bucket")?.trim() || undefined;
-  const cursor = c.req.query("cursor")?.trim() || undefined;
-  const rawLimit = c.req.query("limit");
-  const parsedLimit = rawLimit ? Number(rawLimit) : 50;
-
-  if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
-    return errorResponse("invalid_request", "limit must be an integer between 1 and 100", 400);
+async function readTextBodyWithLimit(
+  c: Context<AppEnv>,
+  maxBytes: number,
+): Promise<string | Response> {
+  const body = c.req.raw.body;
+  if (!body) return errorResponse("invalid_request", "Request body is required", 400);
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > maxBytes) {
+      await reader.cancel();
+      return errorResponse("payload_too_large", "Request body exceeds 5MB limit", 413);
+    }
+    chunks.push(value);
   }
-
-  if (bucket && bucket !== "reading" && bucket !== "videos") {
-    return errorResponse("invalid_request", "bucket must be reading or videos", 400);
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
   }
-
-  return { q, bucket: bucket as "reading" | "videos" | undefined, cursor, limit: parsedLimit };
+  return new TextDecoder().decode(bytes);
 }
 
-function parseOfflineBundleQuery(c: Context<AppEnv>) {
+function parseManifestQuery(c: Context<AppEnv>) {
   const cursor = c.req.query("cursor")?.trim() || undefined;
   const rawLimit = c.req.query("limit");
-  const limit = rawLimit ? Number(rawLimit) : OFFLINE_BUNDLE_MAX_LIMIT;
-  if (!Number.isInteger(limit) || limit < 1 || limit > OFFLINE_BUNDLE_MAX_LIMIT) {
+  const limit = rawLimit ? Number(rawLimit) : MANIFEST_MAX_LIMIT;
+  if (!Number.isInteger(limit) || limit < 1 || limit > MANIFEST_MAX_LIMIT) {
     return errorResponse(
       "invalid_request",
-      `limit must be an integer between 1 and ${OFFLINE_BUNDLE_MAX_LIMIT}`,
+      `limit must be an integer between 1 and ${MANIFEST_MAX_LIMIT}`,
       400,
     );
   }
@@ -330,10 +306,11 @@ function parseOfflineBundleQuery(c: Context<AppEnv>) {
 
 function bookmarkSaveResponse(
   c: Context<AppEnv>,
-  bookmark: ReturnType<typeof bookmarkToApi>,
+  bookmark: BookmarkRecord,
+  content: ArticleContentRecord | null,
   status: 200 | 201,
 ) {
-  return c.json({ item: bookmark }, status);
+  return c.json({ item: bookmarkMutationItem(bookmark, content) }, status);
 }
 
 function articleContentToApi(content: ArticleContentRecord) {
@@ -349,6 +326,55 @@ function articleContentToApi(content: ArticleContentRecord) {
     extraction_error: content.extractionError,
     extracted_at: content.extractedAt,
     content_source: content.contentSource ?? null,
+  };
+}
+
+const ARTICLE_FAILURE_CODES = new Set([
+  "access_denied",
+  "fetch_error",
+  "timeout",
+  "unsupported_content_type",
+  "transport_overflow",
+  "stored_content_too_large",
+  "no_readable_content",
+  "parse_error",
+  "readability_error",
+]);
+
+function articleFailureCode(content: ArticleContentRecord): string | null {
+  if (content.extractionStatus !== "failed" && content.extractionStatus !== "skipped") {
+    return null;
+  }
+  try {
+    const value = JSON.parse(content.extractionError ?? "null") as { reason?: unknown } | null;
+    return typeof value?.reason === "string" && ARTICLE_FAILURE_CODES.has(value.reason)
+      ? value.reason
+      : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function articleMetadataToApi(content: ArticleContentRecord | null) {
+  return content
+    ? {
+        id: content.id,
+        status: content.extractionStatus,
+        failure_code: articleFailureCode(content),
+        title: content.title,
+        word_count: content.wordCount,
+        author: content.author,
+        published_date: content.publishedDate,
+        content_source: content.contentSource,
+        updated_at: content.updatedAt,
+      }
+    : null;
+}
+
+function bookmarkMutationItem(bookmark: BookmarkRecord, content: ArticleContentRecord | null) {
+  return {
+    bookmark: bookmarkToApi(bookmark),
+    article: articleMetadataToApi(content),
   };
 }
 
@@ -378,34 +404,33 @@ function bookmarkShareToApi(
     return {
       enabled: false,
       share_url: null,
-      hit_count: 0,
       created_at: null,
-      last_accessed_at: null,
     };
   }
 
   return {
     enabled: true,
     share_url: `${getAppOrigin(c)}/s/${share.shareId}`,
-    hit_count: share.viewCount,
     created_at: share.enabledAt,
-    last_accessed_at: share.lastAccessedAt,
   };
 }
 
 function publicShareArticleToApi(bookmark: BookmarkRecord, content: ArticleContentRecord) {
   return {
+    article_id: content.id,
     title: content.title,
     url: bookmark.url,
     site_name: bookmark.siteName,
     author: content.author,
     published_date: content.publishedDate,
     word_count: content.wordCount,
-    content_html: content.contentHtml ?? "",
   };
 }
 
-function validateShareableContent(content: ArticleContentRecord | null): Response | null {
+function validateShareableContent(
+  content: ArticleContentRecord | null,
+  requireBody = true,
+): Response | null {
   if (!content || content.extractionStatus !== "complete") {
     return errorResponse(
       "share_unavailable",
@@ -414,7 +439,7 @@ function validateShareableContent(content: ArticleContentRecord | null): Respons
     );
   }
 
-  if (!content.contentHtml) {
+  if (requireBody && !content.contentHtml) {
     return errorResponse("share_unavailable", "article content is not available for sharing", 409);
   }
 
@@ -423,97 +448,6 @@ function validateShareableContent(content: ArticleContentRecord | null): Respons
 
 function stripTags(html: string): string {
   return html.replace(/<[^>]*>/g, "");
-}
-
-async function queueBookmarkExtraction(
-  c: Context<AppEnv>,
-  bookmark: BookmarkRecord,
-  extractBookmark: BookmarkExtractor,
-  force = false,
-) {
-  const store = c.get("store");
-  const existing = await store.getArticleContentByBookmarkId(bookmark.userId, bookmark.id);
-  if (!force && existing?.extractionStatus === "complete") {
-    return existing.extractionStatus;
-  }
-
-  if (existing?.extractionStatus !== "complete") {
-    const pending = await store.putServerArticleContent(
-      pendingArticleContent(bookmark, existing),
-      undefined,
-      existing?.id ?? null,
-    );
-    if (!pending.written) {
-      return (
-        await store.getArticleContentByBookmarkId(bookmark.userId, bookmark.id)
-      )?.extractionStatus ?? "pending";
-    }
-  }
-  c.executionCtx.waitUntil(
-    extractBookmark({
-      env: c.env,
-      store,
-      bookmark,
-      force,
-    }),
-  );
-
-  return "pending";
-}
-
-async function queueCapturedPageExtraction(
-  c: Context<AppEnv>,
-  bookmark: BookmarkRecord,
-  capturedPage: { html: string; base_url: string },
-  extractBookmark: BookmarkExtractor,
-) {
-  const store = c.get("store");
-  const existing = await store.getArticleContentByBookmarkId(bookmark.userId, bookmark.id);
-  if (existing?.extractionStatus !== "complete") {
-    await store.putServerArticleContent(
-      pendingArticleContent(bookmark, existing),
-      undefined,
-      existing?.id ?? null,
-    );
-  }
-
-  c.executionCtx.waitUntil((async () => {
-    const startedAt = Date.now();
-    const rawBytes = utf8ByteLength(capturedPage.html);
-    try {
-      const capture = await runCapturedPageExtraction({
-        store,
-        bookmark,
-        documentHtml: capturedPage.html,
-        baseUrl: capturedPage.base_url,
-      });
-      if (capture.replacedServerContent) {
-        await removeBookmarkImages(bookmark.id, c.env.IMAGES);
-      }
-      captureLog(c.env, {
-        outcome: "complete",
-        failureCode: null,
-        rawBytes,
-        sanitizedBytes: utf8ByteLength(capture.article.contentHtml ?? ""),
-        durationMs: Date.now() - startedAt,
-        preservedComplete: false,
-      });
-    } catch (caught) {
-      captureLog(c.env, {
-        outcome: "fallback",
-        failureCode: caught instanceof ExtractionFailure
-          ? caught.reason
-          : "capture_failed",
-        rawBytes,
-        sanitizedBytes: 0,
-        durationMs: Date.now() - startedAt,
-        preservedComplete: existing?.extractionStatus === "complete",
-      });
-      await extractBookmark({ env: c.env, store, bookmark });
-    }
-  })());
-
-  return existing?.extractionStatus === "complete" ? "complete" : "pending";
 }
 
 function getAllowedOrigins(env: Bindings): string[] {
@@ -551,9 +485,23 @@ export function createApp(options: CreateAppOptions = {}) {
         }
         return getAllowedOrigins(c.env).includes(origin) ? origin : undefined;
       },
-      allowHeaders: ["Authorization", "Content-Type"],
-      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      exposeHeaders: ["Content-Length", "ETag", "X-Content-SHA256"],
+      allowHeaders: [
+        "Authorization",
+        "Content-Type",
+        "Range",
+        "If-Range",
+        "If-None-Match",
+      ],
+      allowMethods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      exposeHeaders: [
+        "Accept-Ranges",
+        "Content-Length",
+        "Content-Range",
+        "ETag",
+        "X-Content-SHA256",
+        "X-Audio-Duration-Ms",
+        "X-Engine-Fingerprint",
+      ],
       maxAge: 86400,
     }),
   );
@@ -657,21 +605,14 @@ export function createApp(options: CreateAppOptions = {}) {
 
     const store = c.get("store");
     const tokenHash = hashToken(bearer, pepper);
-    const token = await store.getAccessTokenByHash(tokenHash);
-    if (!token || token.revokedAt) {
+    const auth = await store.getAuthByTokenHash(tokenHash);
+    if (!auth || auth.token.revokedAt) {
       debugLog(c, "auth.invalid_bearer", {
-        revoked: Boolean(token?.revokedAt),
+        revoked: Boolean(auth?.token.revokedAt),
       });
       return errorResponse("unauthorized", "Invalid bearer token", 401);
     }
-
-    const user = await store.getUserById(token.userId);
-    if (!user) {
-      debugLog(c, "auth.missing_user_for_token", {
-        token_id: token.id,
-      });
-      return errorResponse("unauthorized", "Invalid bearer token", 401);
-    }
+    const { user, token } = auth;
 
     const now = nowIso();
     if (shouldRefreshLastUsed(token.lastUsedAt, now)) {
@@ -806,70 +747,59 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.body(null, 204);
   });
 
-  app.get("/bookmarks", async (c) => {
-    const parsed = parseListQuery(c);
-    if (parsed instanceof Response) {
-      return parsed;
-    }
-
-    const { user } = c.get("auth");
-    const result = await c.get("store").listBookmarks(user.id, parsed);
-    return c.json({
-      items: result.items.map(bookmarkToApi),
-      next_cursor: result.nextCursor,
-    });
+  app.get("/sync/revision", async (c) => {
+    const revision = await c.get("store").getSyncRevision(c.get("auth").user.id);
+    c.header("Cache-Control", "no-store");
+    c.executionCtx.waitUntil(runOneNarrationCleanup(c.env));
+    return c.json({ revision });
   });
 
-  app.get("/offline/status", async (c) => {
-    const { user } = c.get("auth");
-    const status = await c.get("store").getOfflineStatus(user.id);
-    c.header("Cache-Control", "no-store");
-    return c.json({
-      bookmark_count: status.bookmarkCount,
-      sync_revision: status.syncRevision,
-    });
+  app.get("/sync/manifest", async (c) => {
+    const parsed = parseManifestQuery(c);
+    if (parsed instanceof Response) return parsed;
+    try {
+      const result = await c.get("store").listManifest(c.get("auth").user.id, parsed);
+      c.header("Cache-Control", "no-store");
+      return c.json({
+        items: result.items.map((item) => ({
+          ...bookmarkMutationItem(item.bookmark, item.content),
+          narration: item.narration,
+        })),
+        next_cursor: result.nextCursor,
+      });
+    } catch (caught) {
+      if (caught instanceof InvalidCursorError) {
+        return errorResponse("invalid_cursor", "Manifest cursor is invalid", 400);
+      }
+      throw caught;
+    }
   });
 
-  app.get("/offline/bundle", async (c) => {
-    const parsed = parseOfflineBundleQuery(c);
-    if (parsed instanceof Response) {
-      return parsed;
-    }
-
-    const { user } = c.get("auth");
-    const result = await c.get("store").listOfflineBundle(user.id, {
-      cursor: parsed.cursor,
-      limit: parsed.limit,
-    });
-
-    c.header("Cache-Control", "no-store");
-    return c.json({
-      items: result.items.map((item) => ({
-        bookmark: bookmarkToApi(item.bookmark),
-        content: item.content ? articleContentToApi(item.content) : null,
-        narration: item.narration,
-      })),
-      next_cursor: result.nextCursor,
-      has_more: result.hasMore,
-    });
+  app.get("/articles/:articleId/body", async (c) => {
+    const body = await c.get("store").getArticleBodyById(
+      c.get("auth").user.id,
+      c.req.param("articleId"),
+    );
+    if (!body) return errorResponse("not_found", "Article body not found", 404);
+    c.header("Content-Type", "text/html; charset=utf-8");
+    c.header("Cache-Control", "private, no-store");
+    c.header("ETag", `"${body.articleId}"`);
+    c.header("X-Content-Type-Options", "nosniff");
+    return c.body(body.contentHtml);
   });
 
   app.put("/bookmarks/:id/narration", async (c) => {
-    const { user, token } = c.get("auth");
+    const { user } = c.get("auth");
     try {
       const result = await requestNarration(
         c.env,
         user.id,
-        token.id,
         c.req.param("id"),
       );
-      if (result.narration.status === "pending" || result.narration.status === "publishing") {
-        c.executionCtx.waitUntil(reconcileNarration(c.env, result.narration.id));
-      }
       c.header("Cache-Control", "no-store");
       return c.json(
         { item: narrationToApi(result.narration) },
-        result.narration.status === "pending" || result.narration.status === "publishing"
+        result.narration.status === "pending"
           ? 202
           : 200,
       );
@@ -881,77 +811,49 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/bookmarks/:id/narration", async (c) => {
     const { user } = c.get("auth");
     try {
-      const narration = await getBookmarkNarration(c.env, user.id, c.req.param("id"));
-      if (!narration) return errorResponse("not_found", "Narration not found", 404);
-      if (narration.status === "pending" || narration.status === "publishing") {
-        c.executionCtx.waitUntil(reconcileNarration(c.env, narration.id));
-      }
+      const narration = await pollBookmarkNarration(c.env, user.id, c.req.param("id"));
       c.header("Cache-Control", "no-store");
-      return c.json({ item: narrationToApi(narration) });
+      return c.json(
+        { item: narrationToApi(narration) },
+        narration.status === "pending" ? 202 : 200,
+      );
     } catch (caught) {
       return narrationErrorResponse(caught);
     }
   });
 
   app.post("/bookmarks/:id/narration/retry", async (c) => {
-    const { user, token } = c.get("auth");
+    const { user } = c.get("auth");
     try {
       const narration = await retryNarration(
         c.env,
         user.id,
-        token.id,
         c.req.param("id"),
       );
-      c.executionCtx.waitUntil(reconcileNarration(c.env, narration.id));
+      c.executionCtx.waitUntil(runOneNarrationCleanup(c.env));
       c.header("Cache-Control", "no-store");
-      return c.json({ item: narrationToApi(narration) }, 202);
+      return c.json(
+        { item: narrationToApi(narration) },
+        narration.status === "pending" ? 202 : 200,
+      );
     } catch (caught) {
       return narrationErrorResponse(caught);
     }
   });
 
-  app.get("/bookmarks/:id/narration/audio", async (c) => {
+  app.on(["GET", "HEAD"], "/bookmarks/:id/narration/audio", async (c) => {
     const { user } = c.get("auth");
     try {
-      const { narration, object } = await authorizedNarrationAudio(
+      return await authorizedNarrationAudio(
         c.env,
         user.id,
         c.req.param("id"),
+        c.req.raw.headers,
+        c.req.method as "GET" | "HEAD",
       );
-      c.header("Content-Type", "audio/mpeg");
-      c.header("Content-Length", String(object.size));
-      c.header("ETag", `"${narration.audioSha256}"`);
-      c.header("X-Content-SHA256", narration.audioSha256!);
-      c.header("Cache-Control", "private, no-store");
-      c.header("X-Content-Type-Options", "nosniff");
-      return c.body(object.body);
     } catch (caught) {
       return narrationErrorResponse(caught);
     }
-  });
-
-  app.get("/push/config", async (c) => {
-    const { token } = c.get("auth");
-    c.header("Cache-Control", "no-store");
-    return c.json(await getPushConfig(c.env, token.id));
-  });
-
-  app.put("/push/subscription", async (c) => {
-    const parsed = await parseJsonBody(c, pushSubscriptionRequestSchema);
-    if (parsed instanceof Response) return parsed;
-    const { user, token } = c.get("auth");
-    try {
-      const subscription = validatePushSubscription(c.env, parsed);
-      await putPushSubscription(c.env, user.id, token.id, subscription);
-      return c.body(null, 204);
-    } catch {
-      return errorResponse("invalid_subscription", "Push subscription is invalid", 400);
-    }
-  });
-
-  app.delete("/push/subscription", async (c) => {
-    await deletePushSubscription(c.env, c.get("auth").token.id);
-    return c.body(null, 204);
   });
 
   app.get("/bookmarks/by-url", async (c) => {
@@ -1056,25 +958,6 @@ export function createApp(options: CreateAppOptions = {}) {
       } as const;
 
       await store.insertBookmark(bookmark);
-      let extractionStatus: BookmarkRecord["extractionStatus"];
-      if (!classification.autoExtract) {
-        extractionStatus = null;
-      } else if (parsed.captured_page) {
-        extractionStatus = await queueCapturedPageExtraction(
-          c,
-          bookmark,
-          parsed.captured_page,
-          extractBookmark,
-        );
-      } else if (parsed.saved_via === "extension") {
-        const pending = pendingArticleContent(bookmark, null);
-        const result = await store.putServerArticleContent(pending, undefined, null);
-        extractionStatus = result.written ? "pending" : (
-          await store.getArticleContentByBookmarkId(user.id, bookmark.id)
-        )?.extractionStatus ?? "pending";
-      } else {
-        extractionStatus = await queueBookmarkExtraction(c, bookmark, extractBookmark);
-      }
       debugLog(c, "bookmark.save.created", {
         auth_user_id: user.id,
         bookmark_id: bookmark.id,
@@ -1084,7 +967,8 @@ export function createApp(options: CreateAppOptions = {}) {
       });
       return bookmarkSaveResponse(
         c,
-        bookmarkToApi({ ...bookmark, extractionStatus }),
+        bookmark,
+        null,
         201,
       );
     }
@@ -1105,38 +989,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     await store.updateBookmark(nextBookmark);
-    let extractionStatus: BookmarkRecord["extractionStatus"];
-    if (!classification.autoExtract) {
-      extractionStatus = null;
-    } else if (parsed.captured_page) {
-      extractionStatus = await queueCapturedPageExtraction(
-        c,
-        nextBookmark,
-        parsed.captured_page,
-        extractBookmark,
-      );
-    } else if (parsed.saved_via === "extension") {
-      const existingContent = await store.getArticleContentByBookmarkId(user.id, nextBookmark.id);
-      if (
-        !existingContent
-        || existingContent.extractionStatus === "failed"
-        || existingContent.extractionStatus === "skipped"
-      ) {
-        const pending = pendingArticleContent(nextBookmark, existingContent);
-        const result = await store.putServerArticleContent(
-          pending,
-          undefined,
-          existingContent?.id ?? null,
-        );
-        extractionStatus = result.written ? "pending" : (
-          await store.getArticleContentByBookmarkId(user.id, nextBookmark.id)
-        )?.extractionStatus ?? "pending";
-      } else {
-        extractionStatus = existingContent.extractionStatus;
-      }
-    } else {
-      extractionStatus = await queueBookmarkExtraction(c, nextBookmark, extractBookmark);
-    }
+    const existingContent = await store.getArticleContentByBookmarkId(user.id, nextBookmark.id);
     debugLog(c, "bookmark.save.updated_existing", {
       auth_user_id: user.id,
       bookmark_id: nextBookmark.id,
@@ -1146,7 +999,8 @@ export function createApp(options: CreateAppOptions = {}) {
     });
     return bookmarkSaveResponse(
       c,
-      bookmarkToApi({ ...nextBookmark, extractionStatus }),
+      nextBookmark,
+      existingContent,
       200,
     );
   });
@@ -1169,8 +1023,11 @@ export function createApp(options: CreateAppOptions = {}) {
     bookmark.titleSource = "user";
     bookmark.updatedAt = nowIso();
     await c.get("store").updateBookmark(bookmark);
-
-    return c.json({ item: bookmarkToApi(bookmark) });
+    const content = await c.get("store").getArticleContentByBookmarkId(
+      c.get("auth").user.id,
+      bookmark.id,
+    );
+    return c.json({ item: bookmarkMutationItem(bookmark, content) });
   });
 
   app.get("/bookmarks/:id/share", async (c) => {
@@ -1228,6 +1085,65 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.body(null, 204);
   });
 
+  app.put("/bookmarks/:id/capture", async (c) => {
+    const { user } = c.get("auth");
+    const store = c.get("store");
+    const bookmark = await store.getBookmarkById(user.id, c.req.param("id"));
+    if (!bookmark) return errorResponse("not_found", "Bookmark not found", 404);
+    if (!classifyBookmarkUrl(bookmark.normalizedUrl).autoExtract) {
+      return errorResponse(
+        "extraction_unavailable",
+        "reader extraction is not available for this bookmark",
+        409,
+      );
+    }
+    const contentType = c.req.header("content-type")?.toLowerCase() ?? "";
+    if (!contentType.startsWith("text/html")) {
+      return errorResponse("unsupported_content_type", "Content-Type must be text/html", 415);
+    }
+    const html = await readTextBodyWithLimit(c, CAPTURE_REQUEST_MAX_BYTES);
+    if (html instanceof Response) return html;
+    const existing = await store.getArticleContentByBookmarkId(user.id, bookmark.id);
+    try {
+      const result = await runCapturedPageExtraction({
+        store,
+        bookmark,
+        documentHtml: html,
+        baseUrl: bookmark.url,
+      });
+      const currentBookmark = await store.getBookmarkById(user.id, bookmark.id) ?? bookmark;
+      c.executionCtx.waitUntil(runOneNarrationCleanup(c.env));
+      return c.json({ item: bookmarkMutationItem(currentBookmark, result.article) });
+    } catch (caught) {
+      if (existing?.extractionStatus === "complete") {
+        return c.json({ item: bookmarkMutationItem(bookmark, existing) });
+      }
+      const now = nowIso();
+      const reason = caught instanceof ExtractionFailure ? caught.reason : "parse_error";
+      const failed: ArticleContentRecord = {
+        id: makeId(),
+        bookmarkId: bookmark.id,
+        userId: user.id,
+        title: bookmark.title,
+        contentHtml: null,
+        wordCount: 0,
+        author: null,
+        publishedDate: null,
+        extractionStatus: "failed",
+        extractionError: JSON.stringify({ reason }),
+        extractedAt: now,
+        contentSource: "server",
+        createdAt: now,
+        updatedAt: now,
+      };
+      const write = await store.recordServerArticleFailure(failed, existing?.id ?? null);
+      const current = write.written
+        ? failed
+        : await store.getArticleContentByBookmarkId(user.id, bookmark.id);
+      return c.json({ item: bookmarkMutationItem(bookmark, current) });
+    }
+  });
+
   app.post("/bookmarks/:id/extract", async (c) => {
     const { user } = c.get("auth");
     const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
@@ -1254,21 +1170,25 @@ export function createApp(options: CreateAppOptions = {}) {
           409,
         );
       }
-      return c.json({ extraction_status: existing.extractionStatus });
+      return c.json({ item: bookmarkMutationItem(bookmark, existing) });
     }
 
     if (existing?.extractionStatus === "complete" && !force) {
-      return c.json({ extraction_status: existing.extractionStatus });
+      return c.json({ item: bookmarkMutationItem(bookmark, existing) });
     }
 
-    const extractionStatus = await queueBookmarkExtraction(
-      c,
+    const content = await extractBookmark({
+      env: c.env,
+      store: c.get("store"),
       bookmark,
-      extractBookmark,
       force,
-    );
-
-    return c.json({ extraction_status: extractionStatus }, 202);
+    });
+    const currentBookmark = await c.get("store").getBookmarkById(user.id, bookmark.id)
+      ?? bookmark;
+    if (!existing || content.id !== existing.id) {
+      c.executionCtx.waitUntil(runOneNarrationCleanup(c.env));
+    }
+    return c.json({ item: bookmarkMutationItem(currentBookmark, content) });
   });
 
   app.put("/bookmarks/:id/content", async (c) => {
@@ -1353,44 +1273,12 @@ export function createApp(options: CreateAppOptions = {}) {
       content,
       bookmarkChanged ? nextBookmark : undefined,
     );
-    if (write.replacedServerContent) {
-      c.executionCtx.waitUntil(removeBookmarkImages(bookmark.id, c.env.IMAGES));
+    if (write.written) {
+      c.executionCtx.waitUntil(runOneNarrationCleanup(c.env));
     }
-
-    return c.json({ item: articleContentToApi(content) });
-  });
-
-  app.get("/bookmarks/:id/content", async (c) => {
-    const { user } = c.get("auth");
-    const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
-    if (!bookmark) {
-      return errorResponse("not_found", "Bookmark not found", 404);
-    }
-
-    const content = await c.get("store").getArticleContentByBookmarkId(user.id, bookmark.id);
-    c.header("Cache-Control", "no-store");
-    if (!content) {
-      return c.json({
-        item: articleContentToApi(pendingArticleContent(bookmark, null)),
-      });
-    }
-
-    return c.json({ item: articleContentToApi(content) });
-  });
-
-  app.delete("/bookmarks/:id/content", async (c) => {
-    const { user } = c.get("auth");
-    const store = c.get("store");
-    const bookmark = await store.getBookmarkById(user.id, c.req.param("id"));
-    if (!bookmark) {
-      return errorResponse("not_found", "Bookmark not found", 404);
-    }
-
-    const deleted = await store.deleteArticleContent(user.id, bookmark.id);
-    if (deleted.deleted) {
-      c.executionCtx.waitUntil(removeBookmarkImages(bookmark.id, c.env.IMAGES));
-    }
-    return c.body(null, 204);
+    return c.json({
+      item: bookmarkMutationItem(bookmarkChanged ? nextBookmark : bookmark, content),
+    });
   });
 
   app.get("/public/shares/:token", async (c) => {
@@ -1400,18 +1288,28 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     const result = await c.get("store").getPublicShareById(shareId);
-    if (!result || !result.content || validateShareableContent(result.content)) {
+    if (!result || !result.content || validateShareableContent(result.content, false)) {
       return errorResponse("not_found", "Share not found", 404);
     }
-
-    const accessedAt = nowIso();
-    await c.get("store").recordBookmarkShareHit(result.bookmark.id, accessedAt);
 
     c.header("Cache-Control", "no-store");
     c.header("X-Robots-Tag", "noindex, nofollow");
     return c.json({
       item: publicShareArticleToApi(result.bookmark, result.content),
     });
+  });
+
+  app.get("/public/shares/:token/body", async (c) => {
+    const shareId = parsePublicShareToken(c.req.param("token"));
+    if (!shareId) return errorResponse("not_found", "Share not found", 404);
+    const body = await c.get("store").getPublicShareBodyById(shareId);
+    if (!body) return errorResponse("not_found", "Share not found", 404);
+    c.header("Content-Type", "text/html; charset=utf-8");
+    c.header("Cache-Control", "no-store");
+    c.header("ETag", `"${body.articleId}"`);
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("X-Robots-Tag", "noindex, nofollow");
+    return c.body(body.contentHtml);
   });
 
   app.get("/images/articles/:bookmarkId/:generationId/:hash", async (c) => {
@@ -1455,7 +1353,7 @@ export function createApp(options: CreateAppOptions = {}) {
       .deleteBookmarkByNormalizedUrl(c.get("auth").user.id, normalizedUrl);
 
     if (deletedBookmark) {
-      c.executionCtx.waitUntil(removeBookmarkImages(deletedBookmark.id, c.env.IMAGES));
+      c.executionCtx.waitUntil(runOneNarrationCleanup(c.env));
     }
 
     return c.body(null, 204);

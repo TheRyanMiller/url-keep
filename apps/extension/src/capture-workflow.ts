@@ -1,4 +1,5 @@
 import type { UrlKeepClient } from "@url-keep/api-client";
+import type { ArticleMetadata } from "@url-keep/shared";
 import type { CaptureResult } from "./capture";
 
 export type CaptureWorkflowDependencies = {
@@ -8,6 +9,7 @@ export type CaptureWorkflowDependencies = {
 
 export async function runCaptureWorkflow(
   bookmarkId: string,
+  existingArticle: ArticleMetadata | null,
   dependencies: CaptureWorkflowDependencies,
 ): Promise<"uploaded" | "preserved" | "fallback"> {
   const captured = await dependencies.injectCapture().catch(() => null);
@@ -20,17 +22,11 @@ export async function runCaptureWorkflow(
     }
   }
 
-  try {
-    const existing = await dependencies.client.getBookmarkContent(bookmarkId);
-    if (
-      existing.item.extraction_status === "complete"
-      && existing.item.content_source === "client"
-      && existing.item.content_html
-    ) {
-      return "preserved";
-    }
-  } catch {
-    // Extraction remains the best fallback when status lookup fails.
+  if (
+    existingArticle?.status === "complete"
+    && existingArticle.content_source === "client"
+  ) {
+    return "preserved";
   }
 
   await dependencies.client.extractBookmark(bookmarkId);

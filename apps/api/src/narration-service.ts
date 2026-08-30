@@ -104,6 +104,7 @@ async function serviceRequest(
   env: Bindings,
   path: string,
   init: RequestInit = {},
+  acceptedStatuses: ReadonlySet<number> = new Set(),
 ): Promise<Response> {
   const { origin, token } = requireConfig(env);
   const headers = new Headers(init.headers);
@@ -120,7 +121,7 @@ async function serviceRequest(
     throw new NarrationServiceError(0, "service_unavailable", true);
   }
 
-  if (!response.ok) {
+  if (!response.ok && !acceptedStatuses.has(response.status)) {
     let code = "service_error";
     try {
       const value = await response.json() as { error?: { code?: unknown } };
@@ -165,10 +166,18 @@ export async function getServiceJob(env: Bindings, jobId: string): Promise<Servi
   }
 }
 
-export function getServiceAudio(env: Bindings, jobId: string): Promise<Response> {
+export function getServiceAudio(
+  env: Bindings,
+  jobId: string,
+  options: { method?: "GET" | "HEAD"; headers?: HeadersInit } = {},
+): Promise<Response> {
+  const headers = new Headers(options.headers);
+  headers.set("Accept-Encoding", "identity");
   return serviceRequest(env, `/jobs/${encodeURIComponent(jobId)}/audio`, {
+    method: options.method ?? "GET",
+    headers,
     signal: AbortSignal.timeout(60_000),
-  });
+  }, new Set([304, 416]));
 }
 
 export async function deleteServiceJob(env: Bindings, jobId: string): Promise<void> {

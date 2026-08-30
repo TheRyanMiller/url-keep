@@ -1,19 +1,18 @@
 import { decodeCursor, encodeCursor } from "./utils";
 import { classifyBookmarkUrl } from "@url-keep/shared";
-import type { Store } from "./store";
+import { InvalidCursorError, type Store } from "./store";
 import type {
   AccessTokenRecord,
-  ArticleContentDeleteResult,
+  ArticleBodyRecord,
   ArticleContentWriteResult,
   ArticleContentRecord,
   BookmarkRecord,
   BookmarkShareRecord,
-  ListBookmarksOptions,
-  ListBookmarksResult,
-  OfflineBundleItemRecord,
-  OfflineBundleResult,
-  OfflineStatusResult,
+  AuthContext,
+  ManifestListOptions,
+  ManifestResult,
   PublicShareLookupRecord,
+  PublicArticleBodyRecord,
   UserRecord,
 } from "./types";
 
@@ -71,8 +70,6 @@ type BookmarkShareRow = {
   share_id: string | null;
   share_enabled_at: string | null;
   share_revoked_at: string | null;
-  share_view_count: number | null;
-  share_last_accessed_at: string | null;
 };
 
 type BookmarkWithContentRow = BookmarkRow & ArticleContentRow;
@@ -167,8 +164,6 @@ function mapBookmarkShare(
         shareId: row.share_id,
         enabledAt: row.share_enabled_at,
         revokedAt: row.share_revoked_at,
-        viewCount: row.share_view_count ?? 0,
-        lastAccessedAt: row.share_last_accessed_at,
       }
     : null;
 }
@@ -199,9 +194,7 @@ function bookmarkShareSelectSql(alias?: string) {
   return `
     ${prefix}share_id,
     ${prefix}share_enabled_at,
-    ${prefix}share_revoked_at,
-    ${prefix}share_view_count,
-    ${prefix}share_last_accessed_at
+    ${prefix}share_revoked_at
   `;
 }
 
@@ -224,29 +217,33 @@ function articleContentSelectSql() {
   `;
 }
 
+function articleMetadataSelectSql() {
+  return `
+    ac.id AS content_id,
+    ac.bookmark_id,
+    ac.user_id AS content_user_id,
+    ac.title AS content_title,
+    NULL AS content_html,
+    ac.word_count,
+    ac.author,
+    ac.published_date,
+    ac.extraction_status AS content_extraction_status,
+    ac.extraction_error,
+    ac.extracted_at,
+    ac.content_source,
+    ac.created_at AS content_created_at,
+    ac.updated_at AS content_updated_at
+  `;
+}
+
 export class D1Store implements Store {
   constructor(private readonly db: D1Database) {}
 
-  async getOfflineStatus(userId: string): Promise<OfflineStatusResult> {
-    const row = await this.db
-      .prepare(
-        `
-          SELECT
-            COUNT(*) AS cnt,
-            COALESCE(
-              (SELECT revision FROM offline_sync_state WHERE user_id = ?),
-              0
-            ) AS revision
-          FROM bookmarks
-          WHERE user_id = ?
-        `,
-      )
-      .bind(userId, userId)
-      .first<{ cnt: number; revision: number }>();
-    return {
-      bookmarkCount: row?.cnt ?? 0,
-      syncRevision: row?.revision ?? 0,
-    };
+  async getSyncRevision(userId: string): Promise<number> {
+    const row = await this.db.prepare(
+      "SELECT revision FROM offline_sync_state WHERE user_id = ? LIMIT 1",
+    ).bind(userId).first<{ revision: number }>();
+    return row?.revision ?? 0;
   }
 
   async getUserByEmail(email: string): Promise<UserRecord | null> {
@@ -293,6 +290,57 @@ export class D1Store implements Store {
       .bind(tokenHash)
       .first<AccessTokenRow>();
     return mapAccessToken(row ?? null);
+  }
+
+  async getAuthByTokenHash(tokenHash: string): Promise<AuthContext | null> {
+    const row = await this.db.prepare(
+      `
+        SELECT
+          t.id AS token_id,
+          t.user_id,
+          t.name AS token_name,
+          t.token_hash,
+          t.created_at AS token_created_at,
+          t.last_used_at,
+          t.revoked_at,
+          u.email,
+          u.password_hash,
+          u.created_at AS user_created_at
+        FROM access_tokens t
+        JOIN users u ON u.id = t.user_id
+        WHERE t.token_hash = ?
+        LIMIT 1
+      `,
+    ).bind(tokenHash).first<{
+      token_id: string;
+      user_id: string;
+      token_name: string;
+      token_hash: string;
+      token_created_at: string;
+      last_used_at: string | null;
+      revoked_at: string | null;
+      email: string;
+      password_hash: string;
+      user_created_at: string;
+    }>();
+    if (!row) return null;
+    return {
+      token: {
+        id: row.token_id,
+        userId: row.user_id,
+        name: row.token_name,
+        tokenHash: row.token_hash,
+        createdAt: row.token_created_at,
+        lastUsedAt: row.last_used_at,
+        revokedAt: row.revoked_at,
+      },
+      user: {
+        id: row.user_id,
+        email: row.email,
+        passwordHash: row.password_hash,
+        createdAt: row.user_created_at,
+      },
+    };
   }
 
   async getAccessTokenById(
@@ -375,100 +423,54 @@ export class D1Store implements Store {
     return mapBookmark(row ?? null);
   }
 
-  async listBookmarks(
+  async listManifest(
     userId: string,
-    options: ListBookmarksOptions,
-  ): Promise<ListBookmarksResult> {
+    options: ManifestListOptions,
+  ): Promise<ManifestResult> {
     const cursor = decodeCursor(options.cursor);
+    if (options.cursor && !cursor) throw new InvalidCursorError();
     const clauses = ["b.user_id = ?"];
     const bindings: Array<string | number> = [userId];
-
-    if (options.q) {
-      const needle = `%${options.q.toLowerCase()}%`;
-      clauses.push(
-        "(LOWER(b.title) LIKE ? OR LOWER(b.url) LIKE ? OR LOWER(COALESCE(b.site_name, '')) LIKE ?)",
-      );
-      bindings.push(needle, needle, needle);
-    }
-
-    if (options.bucket) {
-      clauses.push("b.bucket = ?");
-      bindings.push(options.bucket);
-    }
-
     if (cursor) {
       clauses.push("(b.created_at < ? OR (b.created_at = ? AND b.id < ?))");
       bindings.push(cursor.createdAt, cursor.createdAt, cursor.id);
     }
-
     bindings.push(options.limit + 1);
 
-    const sql = `
-      ${bookmarkSelectSql()}
-      WHERE ${clauses.join(" AND ")}
-      ORDER BY b.created_at DESC, b.id DESC
-      LIMIT ?
-    `;
-
-    const result = await this.db.prepare(sql).bind(...bindings).all<BookmarkRow>();
-    const allRows = (result.results ?? [])
-      .map((row) => mapBookmark(row)!)
-      .filter(Boolean);
-    const hasMore = allRows.length > options.limit;
-    const items = hasMore ? allRows.slice(0, options.limit) : allRows;
-    const nextCursor = hasMore ? encodeCursor(items[items.length - 1]) : null;
-    return { items, nextCursor };
-  }
-
-  async listOfflineBundle(
-    userId: string,
-    options: Pick<ListBookmarksOptions, "limit" | "cursor">,
-  ): Promise<OfflineBundleResult> {
-    const cursor = decodeCursor(options.cursor);
-    const clauses = ["b.user_id = ?"];
-    const bindings: Array<string | number> = [userId];
-
-    if (cursor) {
-      clauses.push("(b.created_at < ? OR (b.created_at = ? AND b.id < ?))");
-      bindings.push(cursor.createdAt, cursor.createdAt, cursor.id);
-    }
-
-    bindings.push(options.limit + 1);
-
-    const sql = `
-      SELECT
-        b.id,
-        b.user_id,
-        b.url,
-        b.normalized_url,
-        b.bucket,
-        b.title,
-        b.title_source,
-        b.image_url,
-        b.site_name,
-        b.saved_via,
-        b.created_at,
-        b.updated_at,
-        ac.extraction_status AS extraction_status,
-        ${articleContentSelectSql()},
-        n.id AS narration_id,
-        n.article_id AS narration_article_id,
-        n.audio_sha256 AS narration_audio_sha256,
-        n.byte_size AS narration_byte_size,
-        n.duration_ms AS narration_duration_ms
-      FROM bookmarks b
-      LEFT JOIN article_content ac ON ac.bookmark_id = b.id
-      LEFT JOIN narrations n ON n.article_id = ac.id AND n.status = 'ready'
-      WHERE ${clauses.join(" AND ")}
-      ORDER BY b.created_at DESC, b.id DESC
-      LIMIT ?
-    `;
-
-    const result = await this.db.prepare(sql).bind(...bindings).all<OfflineBundleRow>();
-    const rows = (result.results ?? []).filter(Boolean);
+    const result = await this.db.prepare(
+      `
+        SELECT
+          b.id,
+          b.user_id,
+          b.url,
+          b.normalized_url,
+          b.bucket,
+          b.title,
+          b.title_source,
+          b.image_url,
+          b.site_name,
+          b.saved_via,
+          b.created_at,
+          b.updated_at,
+          ac.extraction_status AS extraction_status,
+          ${articleMetadataSelectSql()},
+          n.id AS narration_id,
+          n.article_id AS narration_article_id,
+          n.audio_sha256 AS narration_audio_sha256,
+          n.byte_size AS narration_byte_size,
+          n.duration_ms AS narration_duration_ms
+        FROM bookmarks b
+        LEFT JOIN article_content ac ON ac.bookmark_id = b.id AND ac.user_id = b.user_id
+        LEFT JOIN narrations n ON n.article_id = ac.id AND n.status = 'ready'
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY b.created_at DESC, b.id DESC
+        LIMIT ?
+      `,
+    ).bind(...bindings).all<OfflineBundleRow>();
+    const rows = result.results ?? [];
     const hasMore = rows.length > options.limit;
-    const pageRows = hasMore ? rows.slice(0, options.limit) : rows;
-    const items = pageRows.map<OfflineBundleItemRecord>((row) => ({
+    const page = hasMore ? rows.slice(0, options.limit) : rows;
+    const items = page.map((row) => ({
       bookmark: mapBookmark(row)!,
       content: mapArticleContent(row),
       narration:
@@ -486,14 +488,9 @@ export class D1Store implements Store {
             }
           : null,
     }));
-    const nextCursor = hasMore
-      ? encodeCursor(items[items.length - 1].bookmark)
-      : null;
-
     return {
       items,
-      nextCursor,
-      hasMore,
+      nextCursor: hasMore ? encodeCursor(items[items.length - 1].bookmark) : null,
     };
   }
 
@@ -584,9 +581,7 @@ export class D1Store implements Store {
           SET
             share_id = ?,
             share_enabled_at = ?,
-            share_revoked_at = NULL,
-            share_view_count = 0,
-            share_last_accessed_at = NULL
+            share_revoked_at = NULL
           WHERE user_id = ? AND id = ?
         `,
       )
@@ -604,9 +599,7 @@ export class D1Store implements Store {
           SET
             share_id = NULL,
             share_enabled_at = NULL,
-            share_revoked_at = ?,
-            share_view_count = 0,
-            share_last_accessed_at = NULL
+            share_revoked_at = ?
           WHERE user_id = ? AND id = ?
         `,
       )
@@ -633,7 +626,7 @@ export class D1Store implements Store {
             b.updated_at,
             ac.extraction_status AS extraction_status,
             ${bookmarkShareSelectSql("b")},
-            ${articleContentSelectSql()}
+            ${articleMetadataSelectSql()}
           FROM bookmarks b
           LEFT JOIN article_content ac ON ac.bookmark_id = b.id
           WHERE b.share_id = ? AND b.share_enabled_at IS NOT NULL AND b.share_revoked_at IS NULL
@@ -664,21 +657,6 @@ export class D1Store implements Store {
     };
   }
 
-  async recordBookmarkShareHit(bookmarkId: string, accessedAt: string): Promise<void> {
-    await this.db
-      .prepare(
-        `
-          UPDATE bookmarks
-          SET
-            share_view_count = share_view_count + 1,
-            share_last_accessed_at = ?
-          WHERE id = ? AND share_id IS NOT NULL
-        `,
-      )
-      .bind(accessedAt, bookmarkId)
-      .run();
-  }
-
   async getArticleContentByBookmarkId(
     userId: string,
     bookmarkId: string,
@@ -695,6 +673,40 @@ export class D1Store implements Store {
       .bind(userId, bookmarkId)
       .first<ArticleContentRow>();
     return mapArticleContent(row ?? null);
+  }
+
+  async getArticleBodyById(
+    userId: string,
+    articleId: string,
+  ): Promise<ArticleBodyRecord | null> {
+    const row = await this.db.prepare(
+      `
+        SELECT id, content_html
+        FROM article_content
+        WHERE id = ? AND user_id = ? AND extraction_status = 'complete'
+          AND content_html IS NOT NULL
+        LIMIT 1
+      `,
+    ).bind(articleId, userId).first<{ id: string; content_html: string }>();
+    return row ? { articleId: row.id, contentHtml: row.content_html } : null;
+  }
+
+  async getPublicShareBodyById(
+    shareId: string,
+  ): Promise<PublicArticleBodyRecord | null> {
+    const row = await this.db.prepare(
+      `
+        SELECT ac.id, ac.content_html
+        FROM bookmarks b
+        JOIN article_content ac ON ac.bookmark_id = b.id AND ac.user_id = b.user_id
+        WHERE b.share_id = ? AND b.share_enabled_at IS NOT NULL
+          AND b.share_revoked_at IS NULL
+          AND ac.extraction_status = 'complete'
+          AND ac.content_html IS NOT NULL
+        LIMIT 1
+      `,
+    ).bind(shareId).first<{ id: string; content_html: string }>();
+    return row ? { articleId: row.id, contentHtml: row.content_html } : null;
   }
 
   private articleInsertStatement(
@@ -873,30 +885,6 @@ export class D1Store implements Store {
     expectedArticleId: string | null,
   ): Promise<ArticleContentWriteResult> {
     return this.putArticleContent(content, undefined, true, expectedArticleId);
-  }
-
-  async deleteArticleContent(
-    userId: string,
-    bookmarkId: string,
-  ): Promise<ArticleContentDeleteResult> {
-    const results = await this.db.batch([
-      this.db
-        .prepare(
-          "SELECT content_source FROM article_content WHERE user_id = ? AND bookmark_id = ? LIMIT 1",
-        )
-        .bind(userId, bookmarkId),
-      this.db
-        .prepare("DELETE FROM article_content WHERE user_id = ? AND bookmark_id = ?")
-        .bind(userId, bookmarkId),
-    ]);
-    const deleted = (results[1]?.meta.changes ?? 0) > 0;
-    const priorSource = (
-      results[0]?.results?.[0] as { content_source?: string | null } | undefined
-    )?.content_source;
-    return {
-      deleted,
-      removedServerContent: deleted && priorSource === "server",
-    };
   }
 
   async deleteBookmarkByNormalizedUrl(

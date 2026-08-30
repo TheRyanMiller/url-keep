@@ -1,7 +1,7 @@
 import { deriveNarrationText, NarrationTextError } from "./narration-text";
 import {
-  deleteServiceJob,
   getServiceAudio,
+  getServiceJob,
   NarrationServiceError,
   putServiceJob,
   type ServiceJob,
@@ -9,8 +9,6 @@ import {
 import type { Bindings, NarrationRecord } from "./types";
 import { makeId, nowIso } from "./utils";
 
-const MAX_AUDIO_BYTES = 64 * 1024 * 1024;
-const PUBLISH_CLAIM_MAX_AGE_MS = 5 * 60 * 1000;
 const SERVICE_FAILURES = new Set([
   "input_mismatch",
   "encoder_failed",
@@ -36,16 +34,22 @@ type NarrationRow = {
   text_sha256: string;
   status: NarrationRecord["status"];
   retry_count: 0 | 1;
-  publish_started_at: string | null;
   engine_fingerprint: string | null;
   error_code: string | null;
-  audio_key: string;
   audio_sha256: string | null;
   byte_size: number | null;
   duration_ms: number | null;
   created_at: string;
   updated_at: string;
   finished_at: string | null;
+};
+
+type NarrationContextRow = Partial<NarrationRow> & {
+  bookmark_id: string;
+  bucket: string;
+  article_id: string | null;
+  article_title: string | null;
+  extraction_status: string | null;
 };
 
 type NarratableSource = {
@@ -56,7 +60,12 @@ type NarratableSource = {
 };
 
 export class NarrationDomainError extends Error {
-  constructor(readonly code: string, readonly status: number, message: string) {
+  constructor(
+    readonly code: string,
+    readonly status: number,
+    message: string,
+    readonly retryable = false,
+  ) {
     super(message);
     this.name = "NarrationDomainError";
   }
@@ -70,10 +79,8 @@ function mapNarration(row: NarrationRow): NarrationRecord {
     textSha256: row.text_sha256,
     status: row.status,
     retryCount: row.retry_count,
-    publishStartedAt: row.publish_started_at,
     engineFingerprint: row.engine_fingerprint,
     errorCode: row.error_code,
-    audioKey: row.audio_key,
     audioSha256: row.audio_sha256,
     byteSize: row.byte_size,
     durationMs: row.duration_ms,
@@ -83,65 +90,94 @@ function mapNarration(row: NarrationRow): NarrationRecord {
   };
 }
 
-async function narrationById(db: D1Database, id: string): Promise<NarrationRecord | null> {
-  const row = await db.prepare("SELECT * FROM narrations WHERE id = ? LIMIT 1")
-    .bind(id)
-    .first<NarrationRow>();
-  return row ? mapNarration(row) : null;
+function contextNarration(row: NarrationContextRow): NarrationRecord | null {
+  if (!row.id || !row.service_job_id || !row.text_sha256 || !row.status) return null;
+  return mapNarration(row as NarrationRow);
 }
 
-async function narrationByArticle(
-  db: D1Database,
-  articleId: string,
-): Promise<NarrationRecord | null> {
-  const row = await db.prepare("SELECT * FROM narrations WHERE article_id = ? LIMIT 1")
-    .bind(articleId)
-    .first<NarrationRow>();
-  return row ? mapNarration(row) : null;
-}
-
-async function narratableSource(
+async function narrationContext(
   db: D1Database,
   userId: string,
   bookmarkId: string,
-): Promise<NarratableSource> {
+): Promise<NarrationContextRow> {
   const row = await db.prepare(
     `
       SELECT
         b.id AS bookmark_id,
         b.bucket,
         ac.id AS article_id,
-        ac.title,
-        ac.content_html,
-        ac.extraction_status
+        ac.title AS article_title,
+        ac.extraction_status,
+        n.id,
+        n.service_job_id,
+        n.text_sha256,
+        n.status,
+        n.retry_count,
+        n.engine_fingerprint,
+        n.error_code,
+        n.audio_sha256,
+        n.byte_size,
+        n.duration_ms,
+        n.created_at,
+        n.updated_at,
+        n.finished_at
       FROM bookmarks b
-      LEFT JOIN article_content ac ON ac.bookmark_id = b.id AND ac.user_id = b.user_id
+      LEFT JOIN article_content ac
+        ON ac.bookmark_id = b.id AND ac.user_id = b.user_id
+      LEFT JOIN narrations n ON n.article_id = ac.id
       WHERE b.id = ? AND b.user_id = ?
       LIMIT 1
     `,
-  ).bind(bookmarkId, userId).first<{
-    bookmark_id: string;
-    bucket: string;
-    article_id: string | null;
-    title: string | null;
-    content_html: string | null;
-    extraction_status: string | null;
-  }>();
+  ).bind(bookmarkId, userId).first<NarrationContextRow>();
+  if (!row) throw new NarrationDomainError("not_found", 404, "Bookmark not found");
+  return row;
+}
 
-  if (!row) {
-    throw new NarrationDomainError("not_found", 404, "Bookmark not found");
-  }
+function requireNarratableContext(row: NarrationContextRow): { articleId: string } {
   if (
     row.bucket !== "reading"
     || !row.article_id
     || row.extraction_status !== "complete"
-    || !row.title
-    || !row.content_html
+    || !row.article_title
   ) {
     throw new NarrationDomainError(
       "narration_unavailable",
       409,
       "Complete article content is required for narration",
+    );
+  }
+  return { articleId: row.article_id };
+}
+
+async function narratableSource(
+  db: D1Database,
+  userId: string,
+  bookmarkId: string,
+  articleId: string,
+): Promise<NarratableSource> {
+  const row = await db.prepare(
+    `
+      SELECT b.id AS bookmark_id, ac.id AS article_id, ac.title, ac.content_html
+      FROM bookmarks b
+      JOIN article_content ac ON ac.bookmark_id = b.id AND ac.user_id = b.user_id
+      WHERE b.id = ? AND b.user_id = ? AND ac.id = ?
+        AND b.bucket = 'reading'
+        AND ac.extraction_status = 'complete'
+        AND ac.content_html IS NOT NULL
+      LIMIT 1
+    `,
+  ).bind(bookmarkId, userId, articleId).first<{
+    bookmark_id: string;
+    article_id: string;
+    title: string;
+    content_html: string;
+  }>();
+  if (!row) {
+    throw new NarrationDomainError(
+      "article_changed",
+      409,
+      "Article content changed during narration submission.",
+      true,
     );
   }
   return {
@@ -163,73 +199,223 @@ function deriveSourceText(source: NarratableSource) {
   }
 }
 
-async function attachNotification(
-  db: D1Database,
-  narrationId: string,
-  accessTokenId: string,
-  now: string,
-): Promise<void> {
+async function narrationById(db: D1Database, id: string): Promise<NarrationRecord | null> {
+  const row = await db.prepare("SELECT * FROM narrations WHERE id = ? LIMIT 1")
+    .bind(id)
+    .first<NarrationRow>();
+  return row ? mapNarration(row) : null;
+}
+
+async function upsertCleanupJob(db: D1Database, serviceJobId: string): Promise<void> {
+  const now = nowIso();
   await db.prepare(
     `
-      INSERT INTO narration_notifications(
-        narration_id, subscription_id, attempt_count, next_attempt_at, created_at
-      )
-      SELECT ?, ps.id, 0, ?, ?
-      FROM push_subscriptions ps
-      JOIN narrations n ON n.id = ? AND n.status IN ('pending', 'publishing')
-      WHERE ps.access_token_id = ?
-      ON CONFLICT(narration_id, subscription_id) DO NOTHING
+      INSERT INTO narration_cleanup_jobs(
+        service_job_id, attempt_count, next_attempt_at, created_at
+      ) VALUES (?, 0, ?, ?)
+      ON CONFLICT(service_job_id) DO UPDATE SET
+        attempt_count = 0,
+        next_attempt_at = excluded.next_attempt_at
     `,
-  ).bind(narrationId, now, now, narrationId, accessTokenId).run();
+  ).bind(serviceJobId, now, now).run();
+}
+
+async function submissionIsCurrent(
+  db: D1Database,
+  userId: string,
+  bookmarkId: string,
+  narration: NarrationRecord,
+): Promise<boolean> {
+  const row = await db.prepare(
+    `
+      SELECT 1 AS present
+      FROM bookmarks b
+      JOIN article_content ac
+        ON ac.bookmark_id = b.id AND ac.user_id = b.user_id
+      JOIN narrations n ON n.article_id = ac.id
+      WHERE b.id = ? AND b.user_id = ? AND ac.id = ?
+        AND n.id = ? AND n.service_job_id = ?
+      LIMIT 1
+    `,
+  ).bind(
+    bookmarkId,
+    userId,
+    narration.articleId,
+    narration.id,
+    narration.serviceJobId,
+  ).first<{ present: number }>();
+  return Boolean(row?.present);
+}
+
+function serviceFailureCode(job: Extract<ServiceJob, { status: "failed" }>): string {
+  return SERVICE_FAILURES.has(job.errorCode) ? job.errorCode : "invalid_service_output";
+}
+
+async function markFailed(
+  env: Bindings,
+  narration: NarrationRecord,
+  errorCode: string,
+): Promise<NarrationRecord | null> {
+  const now = nowIso();
+  await env.DB.prepare(
+    `
+      UPDATE narrations
+      SET status = 'failed', engine_fingerprint = NULL,
+          error_code = ?, audio_sha256 = NULL, byte_size = NULL, duration_ms = NULL,
+          updated_at = ?, finished_at = ?
+      WHERE id = ? AND article_id = ? AND service_job_id = ? AND status = 'pending'
+    `,
+  ).bind(
+    errorCode,
+    now,
+    now,
+    narration.id,
+    narration.articleId,
+    narration.serviceJobId,
+  ).run();
+  return narrationById(env.DB, narration.id);
+}
+
+async function applyServiceJob(
+  env: Bindings,
+  narration: NarrationRecord,
+  job: ServiceJob,
+): Promise<NarrationRecord | null> {
+  if (job.status === "queued" || job.status === "running") {
+    return narrationById(env.DB, narration.id);
+  }
+  if (job.status === "failed") {
+    return markFailed(env, narration, serviceFailureCode(job));
+  }
+
+  const now = nowIso();
+  await env.DB.prepare(
+    `
+      UPDATE narrations
+      SET status = 'ready', engine_fingerprint = ?,
+          audio_sha256 = ?, byte_size = ?, duration_ms = ?, error_code = NULL,
+          updated_at = ?, finished_at = ?
+      WHERE id = ? AND article_id = ? AND service_job_id = ? AND status = 'pending'
+    `,
+  ).bind(
+    job.engineFingerprint,
+    job.audio.sha256,
+    job.audio.byteSize,
+    job.audio.durationMs,
+    now,
+    now,
+    narration.id,
+    narration.articleId,
+    narration.serviceJobId,
+  ).run();
+  return narrationById(env.DB, narration.id);
+}
+
+async function articleChangedAfterSubmission(
+  env: Bindings,
+  narration: NarrationRecord,
+): Promise<never> {
+  await upsertCleanupJob(env.DB, narration.serviceJobId);
+  throw new NarrationDomainError(
+    "article_changed",
+    409,
+    "Article content changed during narration submission.",
+    true,
+  );
+}
+
+async function submitNarration(
+  env: Bindings,
+  userId: string,
+  bookmarkId: string,
+  narration: NarrationRecord,
+  text: string,
+): Promise<NarrationRecord> {
+  let job: ServiceJob | null = null;
+  let submissionError: unknown = null;
+  try {
+    job = await putServiceJob(env, narration.serviceJobId, text, narration.textSha256);
+  } catch (caught) {
+    submissionError = caught;
+  }
+
+  if (!await submissionIsCurrent(env.DB, userId, bookmarkId, narration)) {
+    return articleChangedAfterSubmission(env, narration);
+  }
+
+  if (submissionError) {
+    if (submissionError instanceof NarrationServiceError && !submissionError.transient) {
+      const failed = await markFailed(env, narration, "invalid_service_output");
+      if (!failed) return articleChangedAfterSubmission(env, narration);
+      return failed;
+    }
+    throw new NarrationDomainError(
+      "narration_service_unavailable",
+      503,
+      "Narration service is temporarily unavailable.",
+      true,
+    );
+  }
+
+  const result = await applyServiceJob(env, narration, job!);
+  if (!result) return articleChangedAfterSubmission(env, narration);
+  return result;
 }
 
 export async function requestNarration(
   env: Bindings,
   userId: string,
-  accessTokenId: string,
   bookmarkId: string,
 ): Promise<{ narration: NarrationRecord; created: boolean }> {
-  const source = await narratableSource(env.DB, userId, bookmarkId);
-  const derived = deriveSourceText(source);
-  const existing = await narrationByArticle(env.DB, source.articleId);
-  if (existing) {
-    if (existing.status === "pending" || existing.status === "publishing") {
-      await attachNotification(env.DB, existing.id, accessTokenId, nowIso());
-    }
+  const initial = await narrationContext(env.DB, userId, bookmarkId);
+  const { articleId } = requireNarratableContext(initial);
+  const existing = contextNarration(initial);
+  if (existing && existing.status !== "pending") {
     return { narration: existing, created: false };
   }
 
-  const now = nowIso();
-  const id = makeId();
-  const serviceJobId = makeId();
-  const audioKey = `narrations/${id}/${serviceJobId}.mp3`;
-  await env.DB.batch([
-    env.DB.prepare(
+  const source = await narratableSource(env.DB, userId, bookmarkId, articleId);
+  const derived = deriveSourceText(source);
+  let created = false;
+  let narration = existing;
+  if (!narration) {
+    const now = nowIso();
+    const id = makeId();
+    const serviceJobId = makeId();
+    const result = await env.DB.prepare(
       `
         INSERT INTO narrations(
           id, article_id, service_job_id, text_sha256, status, retry_count,
-          audio_key, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
         ON CONFLICT(article_id) DO NOTHING
       `,
-    ).bind(id, source.articleId, serviceJobId, derived.sha256, audioKey, now, now),
-    env.DB.prepare(
-      `
-        INSERT INTO narration_notifications(
-          narration_id, subscription_id, attempt_count, next_attempt_at, created_at
-        )
-        SELECT n.id, ps.id, 0, ?, ?
-        FROM narrations n
-        JOIN push_subscriptions ps ON ps.access_token_id = ?
-        WHERE n.article_id = ? AND n.status IN ('pending', 'publishing')
-        ON CONFLICT(narration_id, subscription_id) DO NOTHING
-      `,
-    ).bind(now, now, accessTokenId, source.articleId),
-  ]);
-
-  const narration = await narrationByArticle(env.DB, source.articleId);
+    ).bind(id, articleId, serviceJobId, derived.sha256, now, now).run();
+    created = (result.meta.changes ?? 0) === 1;
+    const current = await narrationContext(env.DB, userId, bookmarkId);
+    if (current.article_id !== articleId) {
+      const inserted = await narrationById(env.DB, id);
+      if (inserted) await upsertCleanupJob(env.DB, inserted.serviceJobId);
+      throw new NarrationDomainError(
+        "article_changed",
+        409,
+        "Article content changed during narration submission.",
+        true,
+      );
+    }
+    narration = contextNarration(current);
+  }
   if (!narration) throw new Error("narration insert did not produce a row");
-  return { narration, created: narration.serviceJobId === serviceJobId };
+  if (narration.status !== "pending") return { narration, created: false };
+  if (narration.textSha256 !== derived.sha256) {
+    const failed = await markFailed(env, narration, "source_mismatch");
+    if (!failed) return articleChangedAfterSubmission(env, narration);
+    return { narration: failed, created };
+  }
+  return {
+    narration: await submitNarration(env, userId, bookmarkId, narration, derived.text),
+    created,
+  };
 }
 
 export async function getBookmarkNarration(
@@ -237,79 +423,122 @@ export async function getBookmarkNarration(
   userId: string,
   bookmarkId: string,
 ): Promise<NarrationRecord | null> {
-  const source = await narratableSource(env.DB, userId, bookmarkId);
-  return narrationByArticle(env.DB, source.articleId);
+  return contextNarration(await narrationContext(env.DB, userId, bookmarkId));
+}
+
+export async function pollBookmarkNarration(
+  env: Bindings,
+  userId: string,
+  bookmarkId: string,
+): Promise<NarrationRecord> {
+  const narration = await getBookmarkNarration(env, userId, bookmarkId);
+  if (!narration) throw new NarrationDomainError("not_found", 404, "Narration not found");
+  if (narration.status !== "pending") return narration;
+
+  let job: ServiceJob;
+  try {
+    job = await getServiceJob(env, narration.serviceJobId);
+  } catch (caught) {
+    if (caught instanceof NarrationServiceError && caught.status === 404) {
+      throw new NarrationDomainError(
+        "submission_required",
+        409,
+        "Narration must be submitted again.",
+        true,
+      );
+    }
+    if (caught instanceof NarrationServiceError && !caught.transient) {
+      const failed = await markFailed(env, narration, "invalid_service_output");
+      if (failed) return failed;
+    }
+    throw new NarrationDomainError(
+      "narration_service_unavailable",
+      503,
+      "Narration service is temporarily unavailable.",
+      true,
+    );
+  }
+
+  const result = await applyServiceJob(env, narration, job);
+  if (!result) {
+    throw new NarrationDomainError(
+      "article_changed",
+      409,
+      "Article content changed during narration submission.",
+      true,
+    );
+  }
+  return result;
 }
 
 export async function retryNarration(
   env: Bindings,
   userId: string,
-  accessTokenId: string,
   bookmarkId: string,
 ): Promise<NarrationRecord> {
-  const source = await narratableSource(env.DB, userId, bookmarkId);
-  const existing = await narrationByArticle(env.DB, source.articleId);
-  if (!existing) {
-    throw new NarrationDomainError("not_found", 404, "Narration not found");
-  }
+  const initial = await narrationContext(env.DB, userId, bookmarkId);
+  const { articleId } = requireNarratableContext(initial);
+  const existing = contextNarration(initial);
   if (
-    existing.status !== "failed"
+    !existing
+    || existing.status !== "failed"
     || existing.retryCount !== 0
     || !existing.errorCode
     || !RETRYABLE_FAILURES.has(existing.errorCode)
   ) {
-    throw new NarrationDomainError("retry_unavailable", 409, "Narration cannot be retried");
+    throw new NarrationDomainError(
+      "retry_unavailable",
+      409,
+      "Narration cannot be retried.",
+    );
   }
 
+  const source = await narratableSource(env.DB, userId, bookmarkId, articleId);
   const derived = deriveSourceText(source);
   const now = nowIso();
   const serviceJobId = makeId();
-  const audioKey = `narrations/${existing.id}/${serviceJobId}.mp3`;
   const results = await env.DB.batch([
     env.DB.prepare(
       `
         INSERT INTO narration_cleanup_jobs(
-          service_job_id, audio_key, attempt_count, next_attempt_at, created_at
-        )
-        SELECT service_job_id, audio_key, 0, ?, ?
-        FROM narrations
-        WHERE id = ? AND article_id = ? AND status = 'failed' AND retry_count = 0
+          service_job_id, attempt_count, next_attempt_at, created_at
+        ) VALUES (?, 0, ?, ?)
         ON CONFLICT(service_job_id) DO NOTHING
       `,
-    ).bind(now, now, existing.id, source.articleId),
-    env.DB.prepare("DELETE FROM narration_notifications WHERE narration_id = ?")
-      .bind(existing.id),
+    ).bind(existing.serviceJobId, now, now),
     env.DB.prepare(
       `
         UPDATE narrations
         SET service_job_id = ?, text_sha256 = ?, status = 'pending', retry_count = 1,
-            publish_started_at = NULL, engine_fingerprint = NULL, error_code = NULL,
-            audio_key = ?, audio_sha256 = NULL, byte_size = NULL, duration_ms = NULL,
+            engine_fingerprint = NULL, error_code = NULL,
+            audio_sha256 = NULL, byte_size = NULL, duration_ms = NULL,
             updated_at = ?, finished_at = NULL
         WHERE id = ? AND article_id = ? AND status = 'failed' AND retry_count = 0
       `,
-    ).bind(serviceJobId, derived.sha256, audioKey, now, existing.id, source.articleId),
-    env.DB.prepare(
-      `
-        INSERT INTO narration_notifications(
-          narration_id, subscription_id, attempt_count, next_attempt_at, created_at
-        )
-        SELECT n.id, ps.id, 0, ?, ?
-        FROM narrations n
-        JOIN push_subscriptions ps ON ps.access_token_id = ?
-        WHERE n.id = ? AND n.service_job_id = ? AND n.status = 'pending'
-        ON CONFLICT(narration_id, subscription_id) DO NOTHING
-      `,
-    ).bind(now, now, accessTokenId, existing.id, serviceJobId),
+    ).bind(serviceJobId, derived.sha256, now, existing.id, articleId),
   ]);
-  if ((results[2]?.meta.changes ?? 0) !== 1) {
-    throw new NarrationDomainError("retry_unavailable", 409, "Narration cannot be retried");
+  if ((results[1]?.meta.changes ?? 0) !== 1) {
+    throw new NarrationDomainError(
+      "retry_unavailable",
+      409,
+      "Narration cannot be retried.",
+    );
   }
-  return (await narrationById(env.DB, existing.id))!;
+  const narration = await narrationById(env.DB, existing.id);
+  if (!narration) {
+    await upsertCleanupJob(env.DB, serviceJobId);
+    throw new NarrationDomainError(
+      "article_changed",
+      409,
+      "Article content changed during narration submission.",
+      true,
+    );
+  }
+  return submitNarration(env, userId, bookmarkId, narration, derived.text);
 }
 
 export function narrationToApi(narration: NarrationRecord) {
-  const status = narration.status === "publishing" ? "pending" : narration.status;
+  const status = narration.status;
   return {
     id: narration.id,
     status,
@@ -330,253 +559,123 @@ export function narrationToApi(narration: NarrationRecord) {
   };
 }
 
-async function markFailed(env: Bindings, narration: NarrationRecord, errorCode: string) {
-  const now = nowIso();
-  await env.DB.batch([
-    env.DB.prepare(
-      `
-        UPDATE narrations
-        SET status = 'failed', publish_started_at = NULL, engine_fingerprint = NULL,
-            error_code = ?, audio_sha256 = NULL, byte_size = NULL, duration_ms = NULL,
-            updated_at = ?, finished_at = ?
-        WHERE id = ? AND article_id = ? AND service_job_id = ?
-          AND status IN ('pending', 'publishing')
-      `,
-    ).bind(errorCode, now, now, narration.id, narration.articleId, narration.serviceJobId),
-    env.DB.prepare(
-      `
-        DELETE FROM narration_notifications
-        WHERE narration_id = ?
-          AND EXISTS (SELECT 1 FROM narrations WHERE id = ? AND status = 'failed')
-      `,
-    ).bind(narration.id, narration.id),
-  ]);
-}
-
-function serviceFailureCode(job: Extract<ServiceJob, { status: "failed" }>): string {
-  return SERVICE_FAILURES.has(job.errorCode) ? job.errorCode : "invalid_service_output";
-}
-
-function bytesFromHex(value: string): ArrayBuffer {
-  const bytes = new Uint8Array(value.length / 2);
-  for (let index = 0; index < value.length; index += 2) {
-    bytes[index / 2] = Number.parseInt(value.slice(index, index + 2), 16);
+function forwardedAudioRequestHeaders(source: Headers): Headers {
+  const headers = new Headers();
+  for (const name of ["range", "if-range", "if-none-match"] as const) {
+    const value = source.get(name);
+    if (value) headers.set(name, value);
   }
-  return bytes.buffer as ArrayBuffer;
+  return headers;
 }
 
-function hexFromBytes(value: ArrayBuffer): string {
-  return [...new Uint8Array(value)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+function verifiedAudioResponse(
+  narration: NarrationRecord,
+  upstream: Response,
+  method: "GET" | "HEAD",
+): Response {
+  const passthrough = new Headers();
+  for (const name of ["accept-ranges", "content-length", "content-range", "etag"]) {
+    const value = upstream.headers.get(name);
+    if (value) passthrough.set(name, value);
+  }
+  passthrough.set("Content-Type", "audio/mpeg");
+  passthrough.set("X-Content-SHA256", narration.audioSha256!);
+  passthrough.set("X-Audio-Duration-Ms", String(narration.durationMs));
+  passthrough.set("X-Engine-Fingerprint", narration.engineFingerprint!);
+  if (!passthrough.has("ETag")) passthrough.set("ETag", `"${narration.audioSha256}"`);
+  passthrough.set("Cache-Control", "private, no-store, no-transform");
+  passthrough.set("X-Content-Type-Options", "nosniff");
+  return new Response(method === "HEAD" ? null : upstream.body, {
+    status: upstream.status,
+    headers: passthrough,
+  });
 }
 
-async function resetPublishingClaim(env: Bindings, narration: NarrationRecord): Promise<void> {
+async function failReadyAudio(env: Bindings, narration: NarrationRecord): Promise<void> {
+  const now = nowIso();
   await env.DB.prepare(
     `
       UPDATE narrations
-      SET status = 'pending', publish_started_at = NULL, updated_at = ?
-      WHERE id = ? AND service_job_id = ? AND status = 'publishing'
+      SET status = 'failed', engine_fingerprint = NULL, error_code = 'audio_missing',
+          audio_sha256 = NULL, byte_size = NULL, duration_ms = NULL,
+          updated_at = ?, finished_at = ?
+      WHERE id = ? AND article_id = ? AND service_job_id = ? AND status = 'ready'
     `,
-  ).bind(nowIso(), narration.id, narration.serviceJobId).run();
+  ).bind(
+    now,
+    now,
+    narration.id,
+    narration.articleId,
+    narration.serviceJobId,
+  ).run();
 }
 
-async function publishReadyAudio(
-  env: Bindings,
-  narration: NarrationRecord,
-  job: Extract<ServiceJob, { status: "ready" }>,
-): Promise<void> {
-  if (!env.NARRATIONS || job.audio.byteSize > MAX_AUDIO_BYTES) {
-    await markFailed(env, narration, "invalid_service_output");
-    return;
-  }
-
-  const claimed = await env.DB.prepare(
-    `
-      UPDATE narrations
-      SET status = 'publishing', publish_started_at = ?, updated_at = ?
-      WHERE id = ? AND article_id = ? AND service_job_id = ? AND status = 'pending'
-    `,
-  ).bind(nowIso(), nowIso(), narration.id, narration.articleId, narration.serviceJobId).run();
-  if ((claimed.meta.changes ?? 0) !== 1) return;
-
-  try {
-    const response = await getServiceAudio(env, narration.serviceJobId);
-    const contentLength = Number(response.headers.get("content-length"));
-    const durationMs = Number(response.headers.get("x-audio-duration-ms"));
-    const sha256 = response.headers.get("x-content-sha256");
-    const fingerprint = response.headers.get("x-engine-fingerprint");
-    if (
-      response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "audio/mpeg"
-      || !response.body
-      || contentLength !== job.audio.byteSize
-      || durationMs !== job.audio.durationMs
-      || sha256 !== job.audio.sha256
-      || fingerprint !== job.engineFingerprint
-    ) {
-      throw new NarrationServiceError(502, "invalid_service_output", false);
-    }
-
-    const fixedLength = new FixedLengthStream(contentLength);
-    const put = env.NARRATIONS.put(narration.audioKey, fixedLength.readable, {
-      sha256: bytesFromHex(job.audio.sha256),
-      httpMetadata: { contentType: "audio/mpeg" },
-    });
-    const [object] = await Promise.all([
-      put,
-      response.body.pipeTo(fixedLength.writable),
-    ]);
-    if (
-      object.size !== job.audio.byteSize
-      || !object.checksums.sha256
-      || hexFromBytes(object.checksums.sha256) !== job.audio.sha256
-    ) {
-      await env.NARRATIONS.delete(narration.audioKey);
-      throw new NarrationServiceError(502, "invalid_service_output", false);
-    }
-
-    const now = nowIso();
-    await env.DB.prepare(
-      `
-        UPDATE narrations
-        SET status = 'ready', publish_started_at = NULL, engine_fingerprint = ?,
-            audio_sha256 = ?, byte_size = ?, duration_ms = ?, error_code = NULL,
-            updated_at = ?, finished_at = ?
-        WHERE id = ? AND article_id = ? AND service_job_id = ? AND status = 'publishing'
-      `,
-    ).bind(
-      job.engineFingerprint,
-      job.audio.sha256,
-      job.audio.byteSize,
-      job.audio.durationMs,
-      now,
-      now,
-      narration.id,
-      narration.articleId,
-      narration.serviceJobId,
-    ).run();
-    const committed = await narrationById(env.DB, narration.id);
-    if (
-      !committed
-      || committed.status !== "ready"
-      || committed.articleId !== narration.articleId
-      || committed.serviceJobId !== narration.serviceJobId
-    ) {
-      await env.NARRATIONS.delete(narration.audioKey);
-      return;
-    }
-    try {
-      await deleteServiceJob(env, narration.serviceJobId);
-    } catch {
-      // Service expiry is the acknowledgement fallback.
-    }
-  } catch (caught) {
-    if (caught instanceof NarrationServiceError && !caught.transient) {
-      await env.NARRATIONS.delete(narration.audioKey);
-      await markFailed(env, narration, "invalid_service_output");
-      return;
-    }
-    await resetPublishingClaim(env, narration);
-  }
-}
-
-export async function reconcileNarration(env: Bindings, narrationId: string): Promise<void> {
-  let narration = await narrationById(env.DB, narrationId);
-  if (!narration || narration.status === "ready" || narration.status === "failed") return;
-
-  if (narration.status === "publishing") {
-    const claimAge = narration.publishStartedAt
-      ? Date.now() - Date.parse(narration.publishStartedAt)
-      : Number.POSITIVE_INFINITY;
-    if (claimAge < PUBLISH_CLAIM_MAX_AGE_MS) return;
-    await resetPublishingClaim(env, narration);
-    narration = await narrationById(env.DB, narrationId);
-    if (!narration || narration.status !== "pending") return;
-  }
-
-  const sourceRow = await env.DB.prepare(
-    `
-      SELECT ac.id, ac.title, ac.content_html
-      FROM article_content ac
-      WHERE ac.id = ? AND ac.extraction_status = 'complete' AND ac.content_html IS NOT NULL
-      LIMIT 1
-    `,
-  ).bind(narration.articleId).first<{
-    id: string;
-    title: string;
-    content_html: string;
-  }>();
-  if (!sourceRow) return;
-
-  let derived: { text: string; sha256: string };
-  try {
-    derived = deriveNarrationText({ title: sourceRow.title, contentHtml: sourceRow.content_html });
-  } catch {
-    await markFailed(env, narration, "source_mismatch");
-    return;
-  }
-  if (derived.sha256 !== narration.textSha256) {
-    await markFailed(env, narration, "source_mismatch");
-    return;
-  }
-
-  let job: ServiceJob;
-  try {
-    job = await putServiceJob(
-      env,
-      narration.serviceJobId,
-      derived.text,
-      narration.textSha256,
-    );
-  } catch (caught) {
-    if (caught instanceof NarrationServiceError && !caught.transient) {
-      await markFailed(env, narration, "invalid_service_output");
-    }
-    return;
-  }
-
-  if (job.status === "queued" || job.status === "running") return;
-  if (job.status === "failed") {
-    await markFailed(env, narration, serviceFailureCode(job));
-    return;
-  }
-  await publishReadyAudio(env, narration, job);
+function audioMissingError(): NarrationDomainError {
+  return new NarrationDomainError(
+    "audio_missing",
+    409,
+    "Narration audio is missing and can be retried.",
+    true,
+  );
 }
 
 export async function authorizedNarrationAudio(
   env: Bindings,
   userId: string,
   bookmarkId: string,
-): Promise<{ narration: NarrationRecord; object: R2ObjectBody }> {
+  requestHeaders: Headers,
+  method: "GET" | "HEAD",
+): Promise<Response> {
   const narration = await getBookmarkNarration(env, userId, bookmarkId);
-  if (!narration || narration.status !== "ready" || !narration.audioSha256 || !env.NARRATIONS) {
+  if (
+    !narration
+    || narration.status !== "ready"
+    || !narration.audioSha256
+    || !narration.byteSize
+  ) {
     throw new NarrationDomainError("not_found", 404, "Narration audio not found");
   }
-  const object = await env.NARRATIONS.get(narration.audioKey);
-  if (!object || object.size !== narration.byteSize) {
-    const now = nowIso();
-    await env.DB.batch([
-      env.DB.prepare(
-        `
-          INSERT INTO narration_cleanup_jobs(
-            service_job_id, audio_key, attempt_count, next_attempt_at, created_at
-          ) VALUES (?, ?, 0, ?, ?)
-          ON CONFLICT(service_job_id) DO NOTHING
-        `,
-      ).bind(narration.serviceJobId, narration.audioKey, now, now),
-      env.DB.prepare(
-        `
-          UPDATE narrations
-          SET status = 'failed', engine_fingerprint = NULL, error_code = 'audio_missing',
-              audio_sha256 = NULL, byte_size = NULL, duration_ms = NULL,
-              updated_at = ?, finished_at = ?
-          WHERE id = ? AND status = 'ready'
-        `,
-      ).bind(now, now, narration.id),
-      env.DB.prepare("DELETE FROM narration_notifications WHERE narration_id = ?")
-        .bind(narration.id),
-    ]);
-    throw new NarrationDomainError("not_found", 404, "Narration audio not found");
+
+  let upstream: Response;
+  try {
+    upstream = await getServiceAudio(env, narration.serviceJobId, {
+      method,
+      headers: forwardedAudioRequestHeaders(requestHeaders),
+    });
+  } catch (caught) {
+    if (caught instanceof NarrationServiceError && caught.status === 404) {
+      await failReadyAudio(env, narration);
+      throw audioMissingError();
+    }
+    throw new NarrationDomainError(
+      "narration_service_unavailable",
+      503,
+      "Narration service is temporarily unavailable.",
+      true,
+    );
   }
-  return { narration, object };
+  if (upstream.status === 304 || upstream.status === 416) {
+    return verifiedAudioResponse(narration, upstream, method);
+  }
+
+  const contentType = upstream.headers.get("content-type")
+    ?.split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  const checksum = upstream.headers.get("x-content-sha256");
+  const fingerprint = upstream.headers.get("x-engine-fingerprint");
+  const durationMs = Number(upstream.headers.get("x-audio-duration-ms"));
+  const valid = (upstream.status === 200 || upstream.status === 206)
+    && contentType === "audio/mpeg"
+    && checksum === narration.audioSha256
+    && fingerprint === narration.engineFingerprint
+    && durationMs === narration.durationMs
+    && (upstream.status !== 200
+      || Number(upstream.headers.get("content-length")) === narration.byteSize);
+  if (!valid) {
+    await upstream.body?.cancel();
+    await failReadyAudio(env, narration);
+    throw audioMissingError();
+  }
+  return verifiedAudioResponse(narration, upstream, method);
 }

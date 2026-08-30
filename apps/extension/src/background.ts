@@ -1,13 +1,18 @@
-import { classifyBookmarkUrl } from "@url-keep/shared";
+import { classifyBookmarkUrl, type ArticleMetadata } from "@url-keep/shared";
 import { createStoredClient } from "./settings";
 import type { CaptureResult } from "./capture";
 import { runCaptureWorkflow } from "./capture-workflow";
 
-async function handleCapture(tabId: number, bookmarkId: string, url: string): Promise<void> {
+async function handleCapture(
+  tabId: number,
+  bookmarkId: string,
+  url: string,
+  article: ArticleMetadata | null,
+): Promise<void> {
   if (!classifyBookmarkUrl(url).autoExtract) return;
 
   const client = await createStoredClient();
-  await runCaptureWorkflow(bookmarkId, {
+  await runCaptureWorkflow(bookmarkId, article, {
     client,
     injectCapture: async () => {
       const [result] = await chrome.scripting.executeScript({
@@ -26,6 +31,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     message.tabId as number,
     message.bookmarkId as string,
     message.url as string,
+    (message.article as ArticleMetadata | null | undefined) ?? null,
   )
     .then(() => sendResponse({ ok: true }))
     .catch(() => sendResponse({ ok: false }));

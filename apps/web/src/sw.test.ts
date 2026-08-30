@@ -15,8 +15,8 @@ describe("service worker cache ownership", () => {
     expect(source).not.toContain('addEventListener("sync"');
     expect(source).not.toContain("indexedDB");
     expect(source).toContain("article-images");
-    expect(source).toContain('addEventListener("push"');
-    expect(source).toContain('addEventListener("notificationclick"');
+    expect(source).not.toContain('addEventListener("push"');
+    expect(source).not.toContain('addEventListener("notificationclick"');
     expect(source).not.toContain("__audio");
   });
 });

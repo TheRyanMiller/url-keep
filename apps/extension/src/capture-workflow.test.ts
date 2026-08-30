@@ -13,14 +13,7 @@ const captured = {
 function client(overrides: Record<string, unknown> = {}) {
   return {
     uploadBookmarkContent: vi.fn().mockResolvedValue(undefined),
-    getBookmarkContent: vi.fn().mockResolvedValue({
-      item: {
-        extraction_status: "pending",
-        content_source: null,
-        content_html: null,
-      },
-    }),
-    extractBookmark: vi.fn().mockResolvedValue({ extraction_status: "pending" }),
+    extractBookmark: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   } as unknown as UrlKeepClient;
 }
@@ -28,7 +21,7 @@ function client(overrides: Record<string, unknown> = {}) {
 describe("extension capture workflow", () => {
   it("uploads Readability output without starting server extraction", async () => {
     const api = client();
-    await expect(runCaptureWorkflow("bookmark-1", {
+    await expect(runCaptureWorkflow("bookmark-1", null, {
       client: api,
       injectCapture: vi.fn().mockResolvedValue(captured),
     })).resolves.toBe("uploaded");
@@ -38,7 +31,7 @@ describe("extension capture workflow", () => {
 
   it("falls back exactly once when capture is unavailable", async () => {
     const api = client();
-    await expect(runCaptureWorkflow("bookmark-1", {
+    await expect(runCaptureWorkflow("bookmark-1", null, {
       client: api,
       injectCapture: vi.fn().mockResolvedValue(null),
     })).resolves.toBe("fallback");
@@ -48,15 +41,18 @@ describe("extension capture workflow", () => {
   it("preserves existing complete client content after an upload failure", async () => {
     const api = client({
       uploadBookmarkContent: vi.fn().mockRejectedValue(new Error("network")),
-      getBookmarkContent: vi.fn().mockResolvedValue({
-        item: {
-          extraction_status: "complete",
-          content_source: "client",
-          content_html: "<p>existing</p>",
-        },
-      }),
     });
     await expect(runCaptureWorkflow("bookmark-1", {
+      id: "00000000-0000-4000-8000-000000000001",
+      status: "complete",
+      failure_code: null,
+      title: "Existing",
+      word_count: 10,
+      author: null,
+      published_date: null,
+      content_source: "client",
+      updated_at: "2026-08-30T00:00:00.000Z",
+    }, {
       client: api,
       injectCapture: vi.fn().mockResolvedValue(captured),
     })).resolves.toBe("preserved");

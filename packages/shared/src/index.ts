@@ -7,7 +7,7 @@ export const ARTICLE_TITLE_MAX_CHARS = 300;
 export const ARTICLE_SITE_NAME_MAX_CHARS = 120;
 export const ARTICLE_AUTHOR_MAX_CHARS = 300;
 export const ARTICLE_PUBLISHED_DATE_MAX_CHARS = 100;
-export const OFFLINE_BUNDLE_MAX_LIMIT = 10;
+export const MANIFEST_MAX_LIMIT = 100;
 
 export const ARTICLE_SANITIZER_POLICY = {
   allowedTags: [
@@ -319,6 +319,7 @@ export const bookmarkSchema = z.object({
   normalized_url: z.string().url(),
   bucket: bookmarkBucketSchema,
   title: z.string(),
+  title_source: internalTitleSourceSchema,
   image_url: z.string().url().nullable().optional(),
   site_name: z.string().nullable().optional(),
   saved_via: savedViaSchema,
@@ -341,6 +342,31 @@ export const extractionStatusSchema = z.enum([
 
 export const contentSourceSchema = z.enum(["client", "server"]);
 
+export const articleFailureCodeSchema = z.enum([
+  "access_denied",
+  "fetch_error",
+  "timeout",
+  "unsupported_content_type",
+  "transport_overflow",
+  "stored_content_too_large",
+  "no_readable_content",
+  "parse_error",
+  "readability_error",
+  "unknown",
+]);
+
+export const articleMetadataSchema = z.object({
+  id: z.string().uuid(),
+  status: extractionStatusSchema,
+  failure_code: articleFailureCodeSchema.nullable(),
+  title: z.string(),
+  word_count: z.number().int().nonnegative(),
+  author: z.string().nullable(),
+  published_date: z.string().nullable(),
+  content_source: contentSourceSchema.nullable(),
+  updated_at: z.string(),
+});
+
 export const articleContentSchema = z.object({
   id: z.string(),
   bookmark_id: z.string(),
@@ -353,10 +379,6 @@ export const articleContentSchema = z.object({
   extracted_at: z.string().nullable(),
   extraction_error: z.string().nullable().optional(),
   content_source: contentSourceSchema.nullable().optional(),
-});
-
-export const articleContentResponseSchema = z.object({
-  item: articleContentSchema,
 });
 
 export const narrationAudioSchema = z.object({
@@ -382,27 +404,32 @@ export const readyNarrationSummarySchema = narrationAudioSchema.extend({
   article_id: z.string().uuid(),
 });
 
-export const pushConfigResponseSchema = z.object({
-  available: z.boolean(),
-  public_key: z.string().nullable(),
-  subscribed: z.boolean(),
+export const bookmarkMutationItemSchema = z.object({
+  bookmark: bookmarkSchema,
+  article: articleMetadataSchema.nullable(),
 });
 
-export const pushSubscriptionRequestSchema = z.object({
-  endpoint: z.string().url().max(2048),
-  expirationTime: z.number().nullable().optional(),
-  keys: z.object({
-    p256dh: z.string().min(1).max(512),
-    auth: z.string().min(1).max(512),
-  }).strict(),
-}).strict();
+export const bookmarkMutationResponseSchema = z.object({
+  item: bookmarkMutationItemSchema,
+});
+
+export const syncRevisionResponseSchema = z.object({
+  revision: z.number().int().nonnegative(),
+});
+
+export const manifestItemSchema = bookmarkMutationItemSchema.extend({
+  narration: readyNarrationSummarySchema.nullable(),
+});
+
+export const manifestResponseSchema = z.object({
+  items: z.array(manifestItemSchema).max(MANIFEST_MAX_LIMIT),
+  next_cursor: z.string().nullable(),
+});
 
 export const bookmarkShareSchema = z.object({
   enabled: z.boolean(),
   share_url: z.string().url().nullable(),
-  hit_count: z.number().int().nonnegative(),
   created_at: z.string().nullable(),
-  last_accessed_at: z.string().nullable(),
 });
 
 export const bookmarkShareResponseSchema = z.object({
@@ -410,44 +437,24 @@ export const bookmarkShareResponseSchema = z.object({
 });
 
 export const publicShareArticleSchema = z.object({
+  article_id: z.string().uuid(),
   title: z.string(),
   url: z.string().url(),
   site_name: z.string().nullable(),
   author: z.string().nullable(),
   published_date: z.string().nullable(),
   word_count: z.number().int().nonnegative(),
-  content_html: z.string(),
 });
 
 export const publicShareArticleResponseSchema = z.object({
   item: publicShareArticleSchema,
 });
 
-export const extractBookmarkResponseSchema = z.object({
-  extraction_status: extractionStatusSchema,
-});
-
-export const offlineStatusResponseSchema = z.object({
-  bookmark_count: z.number().int().nonnegative(),
-  sync_revision: z.number().int().nonnegative(),
-});
-
-export const offlineBundleItemSchema = z.object({
-  bookmark: bookmarkSchema,
-  content: articleContentSchema.nullable(),
-  narration: readyNarrationSummarySchema.nullable(),
-});
-
-export const offlineBundleResponseSchema = z.object({
-  items: z.array(offlineBundleItemSchema),
-  next_cursor: z.string().nullable(),
-  has_more: z.boolean(),
-});
-
 export const errorResponseSchema = z.object({
   error: z.object({
     code: z.string(),
     message: z.string(),
+    retryable: z.boolean().optional(),
   }),
 });
 
@@ -484,18 +491,6 @@ export const createTokenResponseSchema = z.object({
   token: z.string(),
 });
 
-export const listBookmarksRequestSchema = z.object({
-  q: z.string().optional(),
-  bucket: bookmarkBucketSchema.optional(),
-  limit: z.number().int().min(1).max(100).optional(),
-  cursor: z.string().optional(),
-});
-
-export const bookmarkListResponseSchema = z.object({
-  items: z.array(bookmarkSchema),
-  next_cursor: z.string().nullable(),
-});
-
 export const bookmarkResponseSchema = z.object({
   item: bookmarkSchema,
 });
@@ -506,10 +501,6 @@ export const createBookmarkRequestSchema = z.object({
   image_url: z.string().url().optional(),
   site_name: z.string().trim().min(1).max(ARTICLE_SITE_NAME_MAX_CHARS).optional(),
   saved_via: savedViaSchema,
-  captured_page: z.object({
-    html: z.string().min(1),
-    base_url: z.string().url(),
-  }).optional(),
 });
 
 export const updateBookmarkTitleRequestSchema = z.object({
@@ -536,11 +527,16 @@ export type TokenItem = z.infer<typeof tokenItemSchema>;
 export type Bookmark = z.infer<typeof bookmarkSchema>;
 export type ExtractionStatus = z.infer<typeof extractionStatusSchema>;
 export type ArticleContent = z.infer<typeof articleContentSchema>;
+export type ArticleFailureCode = z.infer<typeof articleFailureCodeSchema>;
+export type ArticleMetadata = z.infer<typeof articleMetadataSchema>;
 export type Narration = z.infer<typeof narrationSchema>;
 export type NarrationResponse = z.infer<typeof narrationResponseSchema>;
 export type ReadyNarrationSummary = z.infer<typeof readyNarrationSummarySchema>;
-export type PushConfigResponse = z.infer<typeof pushConfigResponseSchema>;
-export type PushSubscriptionRequest = z.infer<typeof pushSubscriptionRequestSchema>;
+export type BookmarkMutationItem = z.infer<typeof bookmarkMutationItemSchema>;
+export type BookmarkMutationResponse = z.infer<typeof bookmarkMutationResponseSchema>;
+export type SyncRevisionResponse = z.infer<typeof syncRevisionResponseSchema>;
+export type ManifestItem = z.infer<typeof manifestItemSchema>;
+export type ManifestResponse = z.infer<typeof manifestResponseSchema>;
 export type BookmarkShare = z.infer<typeof bookmarkShareSchema>;
 export type PublicShareArticle = z.infer<typeof publicShareArticleSchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
@@ -550,15 +546,9 @@ export type MeResponse = z.infer<typeof meResponseSchema>;
 export type TokenListResponse = z.infer<typeof tokenListResponseSchema>;
 export type CreateTokenRequest = z.infer<typeof createTokenRequestSchema>;
 export type CreateTokenResponse = z.infer<typeof createTokenResponseSchema>;
-export type BookmarkListResponse = z.infer<typeof bookmarkListResponseSchema>;
 export type BookmarkResponse = z.infer<typeof bookmarkResponseSchema>;
-export type ArticleContentResponse = z.infer<typeof articleContentResponseSchema>;
 export type BookmarkShareResponse = z.infer<typeof bookmarkShareResponseSchema>;
 export type PublicShareArticleResponse = z.infer<typeof publicShareArticleResponseSchema>;
-export type ExtractBookmarkResponse = z.infer<typeof extractBookmarkResponseSchema>;
-export type OfflineStatusResponse = z.infer<typeof offlineStatusResponseSchema>;
-export type OfflineBundleItem = z.infer<typeof offlineBundleItemSchema>;
-export type OfflineBundleResponse = z.infer<typeof offlineBundleResponseSchema>;
 export type CreateBookmarkRequest = z.infer<typeof createBookmarkRequestSchema>;
 export type UpdateBookmarkTitleRequest = z.infer<
   typeof updateBookmarkTitleRequestSchema

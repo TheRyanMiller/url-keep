@@ -76,13 +76,19 @@ function makePopupClient(baseUrl: string) {
   return createClient(baseUrl, () => currentToken);
 }
 
-function triggerCapture(tabId: number | null, bookmarkId: string | null, url: string | null) {
+function triggerCapture(
+  tabId: number | null,
+  bookmarkId: string | null,
+  url: string | null,
+  article: unknown,
+) {
   if (tabId && bookmarkId && url) {
     chrome.runtime.sendMessage({
       action: "capture",
       tabId,
       bookmarkId,
       url,
+      article,
     }).catch(() => {});
   }
 }
@@ -343,7 +349,12 @@ async function quickSave() {
       saved_via: "extension",
     });
 
-    triggerCapture(tab.id ?? null, response.item?.id ?? null, tab.url ?? null);
+    triggerCapture(
+      tab.id ?? null,
+      response.item.bookmark.id,
+      tab.url ?? null,
+      response.item.article,
+    );
 
     popupState = { ...popupState, saved: true };
     showSuccessView(new URL(tab.url).hostname);
@@ -545,7 +556,12 @@ actionButton.addEventListener("click", async () => {
       saved_via: "extension",
     });
 
-    triggerCapture(popupState.tabId, response.item?.id ?? null, popupState.url);
+    triggerCapture(
+      popupState.tabId,
+      response.item.bookmark.id,
+      popupState.url,
+      response.item.article,
+    );
 
     actionButton.textContent = "\u2713 saved";
     actionButton.classList.add("button--success");

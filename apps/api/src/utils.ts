@@ -186,6 +186,7 @@ export function bookmarkToApi(bookmark: BookmarkRecord) {
     normalized_url: bookmark.normalizedUrl,
     bucket: bookmark.bucket ?? classification.bucket,
     title: bookmark.title,
+    title_source: bookmark.titleSource,
     image_url: bookmark.imageUrl,
     site_name: bookmark.siteName,
     saved_via: bookmark.savedVia,

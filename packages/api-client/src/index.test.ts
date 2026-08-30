@@ -8,33 +8,32 @@ afterEach(() => {
 describe("UrlKeepClient request ownership", () => {
   it("uses no-store for private synchronization and content reads", async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(Response.json({ bookmark_count: 0, sync_revision: 0 }))
-      .mockResolvedValueOnce(Response.json({
-        item: {
-          id: "00000000-0000-4000-8000-000000000001",
-          bookmark_id: "bookmark-1",
-          title: "Example",
-          content_html: null,
-          word_count: 0,
-          author: null,
-          published_date: null,
-          extraction_status: "pending",
-          extraction_error: null,
-          extracted_at: null,
-          content_source: null,
-        },
-      }));
+      .mockResolvedValueOnce(Response.json({ revision: 0 }))
+      .mockResolvedValueOnce(new Response("<p>article</p>"));
     vi.stubGlobal("fetch", fetchMock);
     const client = new UrlKeepClient({
       baseUrl: "https://api.example.com",
       getToken: () => "token",
     });
 
-    await client.getOfflineStatus();
-    await client.getBookmarkContent("bookmark-1");
+    await client.getSyncRevision();
+    await client.getArticleBody("article-1");
 
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ cache: "no-store" });
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ cache: "no-store" });
+  });
+
+  it("preserves the server retryable classification", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(
+      { error: { code: "service_unavailable", message: "try later", retryable: true } },
+      { status: 503 },
+    )));
+    const client = new UrlKeepClient({ baseUrl: "https://api.example.com" });
+
+    await expect(client.getSyncRevision()).rejects.toMatchObject({
+      code: "service_unavailable",
+      retryable: true,
+    });
   });
 
   it("invalidates auth only for authenticated 401 responses", async () => {
