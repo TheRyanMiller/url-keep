@@ -1,4 +1,5 @@
 import "fake-indexeddb/auto";
+import { deleteDB, openDB } from "idb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearOfflineData,
@@ -14,6 +15,37 @@ afterEach(() => {
 });
 
 describe("offline account storage", () => {
+  it("opens the exact greenfield schema", async () => {
+    const db = await getOfflineDb();
+
+    expect(db.name).toBe("url-keep");
+    expect(db.version).toBe(1);
+    expect([...db.objectStoreNames]).toEqual([
+      "articles",
+      "audio_settings",
+      "bookmarks",
+      "offline_audio",
+      "sync_meta",
+    ]);
+  });
+
+  it("does not collide with the previous higher-version database", async () => {
+    const previous = await openDB("url-keep-offline", 2, {
+      upgrade(db) {
+        db.createObjectStore("previous");
+      },
+    });
+
+    try {
+      const db = await getOfflineDb();
+      expect(db.name).toBe("url-keep");
+      expect(db.version).toBe(1);
+    } finally {
+      previous.close();
+      await deleteDB("url-keep-offline");
+    }
+  });
+
   it("clears private IndexedDB rows and media caches without touching the shell", async () => {
     const db = await getOfflineDb();
     await db.put("bookmarks", {
