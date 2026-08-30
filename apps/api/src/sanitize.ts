@@ -1,22 +1,26 @@
 import sanitizeHtml from "sanitize-html";
+import { ARTICLE_SANITIZER_POLICY } from "@url-keep/shared";
 
 const SANITIZE_OPTIONS: sanitizeHtml.IOptions = {
-  allowedTags: [
-    "p", "h1", "h2", "h3", "h4", "h5", "h6",
-    "ul", "ol", "li", "a", "img",
-    "blockquote", "pre", "code",
-    "em", "strong", "b", "i", "br", "hr",
-    "figure", "figcaption",
-    "table", "thead", "tbody", "tr", "th", "td",
-    "sup", "sub", "del",
-    "div", "span",
-  ],
-  allowedAttributes: {
-    "a": ["href", "title"],
-    "img": ["src", "alt", "title"],
-  },
-  allowedSchemes: ["http", "https"],
+  allowedTags: [...ARTICLE_SANITIZER_POLICY.allowedTags],
+  allowedAttributes: Object.fromEntries(
+    Object.entries(ARTICLE_SANITIZER_POLICY.allowedAttributes).map(([tag, attributes]) => [
+      tag,
+      [...attributes],
+    ]),
+  ),
+  allowedSchemes: [...ARTICLE_SANITIZER_POLICY.allowedSchemes],
   disallowedTagsMode: "discard",
+  transformTags: {
+    a: (_tagName, attributes) => ({
+      tagName: "a",
+      attribs: {
+        ...attributes,
+        target: "_blank",
+        rel: "noopener noreferrer",
+      },
+    }),
+  },
 };
 
 export function sanitizeClientHtml(html: string): string {

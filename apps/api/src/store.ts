@@ -1,5 +1,7 @@
 import type {
   AccessTokenRecord,
+  ArticleContentDeleteResult,
+  ArticleContentWriteResult,
   ArticleContentRecord,
   BookmarkRecord,
   BookmarkShareRecord,
@@ -55,8 +57,23 @@ export interface Store {
     userId: string,
     bookmarkId: string,
   ): Promise<ArticleContentRecord | null>;
-  upsertArticleContent(content: ArticleContentRecord): Promise<void>;
-  deleteBookmarkContent(userId: string, bookmarkId: string): Promise<void>;
+  putClientArticleContent(
+    content: ArticleContentRecord,
+    bookmark?: BookmarkRecord,
+  ): Promise<ArticleContentWriteResult>;
+  putServerArticleContent(
+    content: ArticleContentRecord,
+    bookmark?: BookmarkRecord,
+    expectedArticleId?: string | null,
+  ): Promise<ArticleContentWriteResult>;
+  recordServerArticleFailure(
+    content: ArticleContentRecord,
+    expectedArticleId: string | null,
+  ): Promise<ArticleContentWriteResult>;
+  deleteArticleContent(
+    userId: string,
+    bookmarkId: string,
+  ): Promise<ArticleContentDeleteResult>;
   deleteBookmarkByNormalizedUrl(
     userId: string,
     normalizedUrl: string,

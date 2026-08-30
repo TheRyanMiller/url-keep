@@ -149,6 +149,7 @@ function normalizeLegacyApiPayload(path: string, value: unknown): unknown {
 type ClientOptions = {
   baseUrl: string;
   getToken?: () => string | null;
+  onUnauthorized?: () => void;
 };
 
 type RequestOptions = {
@@ -156,16 +157,19 @@ type RequestOptions = {
   body?: unknown;
   token?: string | null;
   signal?: AbortSignal;
+  cache?: RequestCache;
   schema?: { parse: (value: unknown) => any };
 };
 
 export class UrlKeepClient {
   private readonly baseUrl: string;
   private readonly getToken?: () => string | null;
+  private readonly onUnauthorized?: () => void;
 
   constructor(options: ClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.getToken = options.getToken;
+    this.onUnauthorized = options.onUnauthorized;
   }
 
   async health(signal?: AbortSignal): Promise<{ ok: boolean }> {
@@ -280,6 +284,7 @@ export class UrlKeepClient {
 
   async getBookmarkContent(id: string): Promise<ArticleContentResponse> {
     return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/content`, {
+      cache: "no-store",
       schema: articleContentResponseSchema,
     });
   }
@@ -312,6 +317,7 @@ export class UrlKeepClient {
 
   async getOfflineStatus(): Promise<OfflineStatusResponse> {
     return this.request("/v1/offline/status", {
+      cache: "no-store",
       schema: offlineStatusResponseSchema,
     });
   }
@@ -330,6 +336,7 @@ export class UrlKeepClient {
 
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return this.request(`/v1/offline/bundle${suffix}`, {
+      cache: "no-store",
       schema: offlineBundleResponseSchema,
     });
   }
@@ -384,6 +391,7 @@ export class UrlKeepClient {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: options.body ? JSON.stringify(options.body) : undefined,
+        cache: options.cache,
         signal: options.signal ?? signal,
       });
     } catch (caught) {
@@ -416,6 +424,9 @@ export class UrlKeepClient {
     data = normalizeLegacyApiPayload(path, data);
 
     if (!response.ok) {
+      if (response.status === 401 && token) {
+        this.onUnauthorized?.();
+      }
       const parsedError = errorResponseSchema.safeParse(data);
       if (parsedError.success) {
         throw new ApiError(

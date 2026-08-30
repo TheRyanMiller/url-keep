@@ -20,7 +20,6 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import DOMPurify from "dompurify";
 import {
   Navigate,
   Link,
@@ -43,51 +42,20 @@ import {
   type ReactNode,
 } from "react";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
-import { clearOfflineCredentials, getOfflineDb, putOfflineCredentials } from "./offline/db";
+import { resolveBookmarkDestination } from "./bookmark-destination";
+import { sanitizeArticleHtml } from "./article-sanitize";
+import { detectStandaloneMode, shareLink } from "./pwa";
+import {
+  clearOfflineData,
+  getOfflineDb,
+  getOfflineReadableBookmarkIds,
+} from "./offline/db";
 import { SyncManager } from "./offline/sync";
 
 const TOKEN_KEY = "url_keep_token";
 const USER_KEY = "url_keep_user";
 const IOS_SHORTCUT_TOKEN_NAME = "iphone shortcut";
 const READER_TEXT_SIZE_KEY = "url_keep_reader_text_size";
-const ALLOWED_TAGS = [
-  "p",
-  "h1",
-  "h2",
-  "h3",
-  "h4",
-  "h5",
-  "h6",
-  "ul",
-  "ol",
-  "li",
-  "a",
-  "img",
-  "blockquote",
-  "pre",
-  "code",
-  "em",
-  "strong",
-  "b",
-  "i",
-  "br",
-  "hr",
-  "figure",
-  "figcaption",
-  "table",
-  "thead",
-  "tbody",
-  "tr",
-  "th",
-  "td",
-  "sup",
-  "sub",
-  "del",
-  "div",
-  "span",
-];
-const ALLOWED_ATTR = ["href", "src", "alt", "title"];
-
 type ReaderTextSize = "s" | "m" | "l";
 type MainTab = "all" | Bookmark["bucket"];
 
@@ -292,6 +260,75 @@ async function copyToClipboard(value: string) {
   }
 }
 
+function useStandaloneMode() {
+  const [standalone, setStandalone] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia("(display-mode: standalone)");
+    const update = () => {
+      const iosStandalone = (navigator as Navigator & { standalone?: boolean }).standalone === true;
+      setStandalone(detectStandaloneMode(iosStandalone, media.matches));
+    };
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+
+  return standalone;
+}
+
+export function StandaloneControls({
+  share,
+  onNotice,
+  reload = () => window.location.reload(),
+}: {
+  share?: { title: string; url: string };
+  onNotice?: (message: string) => void;
+  reload?: () => void;
+}) {
+  const standalone = useStandaloneMode();
+  if (!standalone) return null;
+
+  const onShare = async () => {
+    if (!share) return;
+    try {
+      const result = await shareLink(
+        share,
+        navigator.share?.bind(navigator),
+        copyToClipboard,
+      );
+      if (result === "copied") onNotice?.("link copied");
+    } catch {
+      onNotice?.("could not share link");
+    }
+  };
+
+  return (
+    <span className="standalone-controls">
+      {share ? (
+        <button
+          aria-label="share"
+          className="icon-action standalone-action"
+          onClick={() => void onShare()}
+          title="Share"
+          type="button"
+        >
+          <Share2 aria-hidden="true" size={16} strokeWidth={1.75} />
+        </button>
+      ) : null}
+      <button
+        aria-label="refresh"
+        className="icon-action standalone-action"
+        onClick={reload}
+        title="Refresh"
+        type="button"
+      >
+        <RefreshCw aria-hidden="true" size={16} strokeWidth={1.75} />
+      </button>
+    </span>
+  );
+}
+
 async function copyPreferredArticleLink({
   client,
   bookmarkId,
@@ -411,10 +448,6 @@ function estimateReadMinutes(wordCount: number) {
   return Math.max(1, Math.ceil(wordCount / 230));
 }
 
-function resolveArticleHtml(contentHtml: string) {
-  return contentHtml.replaceAll('src="/v1/images/', `src="${API_ORIGIN}/v1/images/`);
-}
-
 function formatExtractionError(error: string | null | undefined): string {
   if (!error) {
     return "article extraction failed";
@@ -436,6 +469,10 @@ function formatExtractionError(error: string | null | undefined): string {
         return "page took too long to respond";
       case "unsupported_content_type":
         return `this page is not an article (${parsed.content_type ?? "unknown type"})`;
+      case "transport_overflow":
+        return "this page is too large for reader extraction";
+      case "stored_content_too_large":
+        return "the readable article is too large to store";
       case "no_readable_content":
         return "no article content found on this page";
       case "parse_error":
@@ -450,36 +487,11 @@ function formatExtractionError(error: string | null | undefined): string {
   }
 }
 
-function sanitizeArticleHtml(contentHtml: string) {
-  return DOMPurify.sanitize(resolveArticleHtml(contentHtml), {
-    ALLOWED_TAGS,
-    ALLOWED_ATTR,
-    ADD_ATTR: ["target", "rel"],
-  });
-}
-
-function BrandLogo({ onRefresh }: { onRefresh?: () => Promise<void> }) {
-  const [refreshing, setRefreshing] = useState(false);
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  const handleClick = (event: React.MouseEvent) => {
-    if (!onRefresh) return;
-    event.preventDefault();
-    if (refreshing) return;
-    if (location.pathname !== "/") {
-      navigate("/");
-      return;
-    }
-    setRefreshing(true);
-    onRefresh().finally(() => setRefreshing(false));
-  };
-
+function BrandLogo() {
   return (
     <Link
       aria-label="url-keep home"
-      className={`brand-mark${refreshing ? " refreshing" : ""}`}
-      onClick={handleClick}
+      className="brand-mark"
       to="/"
     >
       <img alt="url-keep" className="brand-logo" src={BRAND_LOGO_URL} />
@@ -493,6 +505,7 @@ function Nav() {
 
   return (
     <nav className="nav">
+      <StandaloneControls />
       {!offline.online ? <span className="offline-badge">offline</span> : null}
       <Link className="text-action" to="/add">add url</Link>
       <span aria-hidden="true" className="nav-sep">|</span>
@@ -510,24 +523,30 @@ function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(() => readStoredUser());
   const [loading, setLoading] = useState(true);
 
+  const clearLocalAuth = useCallback(() => {
+    setTokenState(null);
+    setUser(null);
+    writeStoredToken(null);
+    writeStoredUser(null);
+    void clearOfflineData();
+  }, []);
+
   const client = useMemo(
     () =>
       new UrlKeepClient({
         baseUrl: API_ORIGIN,
         getToken: () => token,
+        onUnauthorized: clearLocalAuth,
       }),
-    [token],
+    [token, clearLocalAuth],
   );
 
   const setToken = (value: string | null) => {
-    setTokenState(value);
-    writeStoredToken(value);
     if (value) {
-      void putOfflineCredentials(value, API_ORIGIN);
+      setTokenState(value);
+      writeStoredToken(value);
     } else {
-      setUser(null);
-      writeStoredUser(null);
-      void clearOfflineCredentials();
+      clearLocalAuth();
     }
   };
 
@@ -575,23 +594,6 @@ function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-function registerBackgroundSync() {
-  try {
-    const reg = navigator.serviceWorker?.ready;
-    if (!reg) {
-      return;
-    }
-
-    void reg.then((sw) => {
-      if ("sync" in sw) {
-        void (sw as ServiceWorkerRegistration & { sync: { register(tag: string): Promise<void> } }).sync.register("url-keep-retry");
-      }
-    });
-  } catch {
-    // Background Sync API not available
-  }
-}
-
 function OfflineProvider({ children }: { children: ReactNode }) {
   const auth = useAuth();
   const online = useOnlineStatus();
@@ -630,7 +632,7 @@ function OfflineProvider({ children }: { children: ReactNode }) {
       await managerRef.current.syncOnce();
       setSyncVersion((current) => current + 1);
     } catch {
-      registerBackgroundSync();
+      // Foreground state remains usable; the next foreground trigger retries.
     } finally {
       setSyncing(false);
     }
@@ -660,37 +662,6 @@ function OfflineProvider({ children }: { children: ReactNode }) {
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, [auth.token, online, refresh]);
-
-  // Foreground periodic timer (5 minutes)
-  useEffect(() => {
-    if (!auth.token || !online) {
-      return;
-    }
-
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") {
-        void refresh();
-      }
-    }, 5 * 60 * 1000);
-
-    return () => clearInterval(timer);
-  }, [auth.token, online, refresh]);
-
-  // Listen for service worker sync messages
-  useEffect(() => {
-    if (!navigator.serviceWorker) {
-      return;
-    }
-
-    const onMessage = (event: MessageEvent) => {
-      if (event.data?.type === "url-keep:sync-needed") {
-        void refresh(true);
-      }
-    };
-
-    navigator.serviceWorker.addEventListener("message", onMessage);
-    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
-  }, [refresh]);
 
   const value = useMemo<OfflineState>(
     () => ({
@@ -751,8 +722,9 @@ function LoginPage() {
 
   return (
     <div className="page narrow">
-      <header className="page-header">
+      <header className="page-header standalone-header">
         <BrandLogo />
+        <StandaloneControls />
       </header>
       <form className="stack" onSubmit={onSubmit}>
         <label className="field">
@@ -813,6 +785,7 @@ function ReaderDocument({
   contentHtml,
   extractionStatus,
   extractionError,
+  sourceAvailable = true,
   shareAction,
 }: {
   header: ReactNode;
@@ -825,6 +798,7 @@ function ReaderDocument({
   contentHtml?: string | null;
   extractionStatus: ArticleContent["extraction_status"];
   extractionError?: string | null;
+  sourceAvailable?: boolean;
   shareAction?: {
     busy: boolean;
     onClick: () => void;
@@ -870,7 +844,7 @@ function ReaderDocument({
     };
   }, [textSizeMenuOpen]);
 
-  const html = contentHtml ? sanitizeArticleHtml(contentHtml) : null;
+  const html = contentHtml ? sanitizeArticleHtml(contentHtml, API_ORIGIN) : null;
   const resolvedPublishedDate = formatOptionalDate(publishedDate);
   const readMinutes = wordCount ? estimateReadMinutes(wordCount) : null;
   const sourceHref = toReadableBookmarkUrl(sourceUrl);
@@ -943,15 +917,26 @@ function ReaderDocument({
                 </div>
               ) : null}
             </div>
-            <a
-              className="reader-meta-link"
-              href={sourceHref}
-              rel="noopener noreferrer"
-              target="_blank"
-            >
-              Read on web
-              <ArrowUpRight aria-hidden="true" size={11} strokeWidth={1.8} />
-            </a>
+            {sourceAvailable ? (
+              <a
+                className="reader-meta-link"
+                href={sourceHref}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                Read on web
+                <ArrowUpRight aria-hidden="true" size={11} strokeWidth={1.8} />
+              </a>
+            ) : (
+              <span
+                aria-disabled="true"
+                className="reader-meta-link is-disabled"
+                title="Unavailable offline"
+              >
+                Read on web
+                <ArrowUpRight aria-hidden="true" size={11} strokeWidth={1.8} />
+              </span>
+            )}
           </div>
         </header>
 
@@ -977,6 +962,7 @@ function ReaderDocument({
 
 function BookmarkRow({
   bookmark,
+  availableOffline,
   online,
   onDelete,
   onShareNotice,
@@ -984,6 +970,7 @@ function BookmarkRow({
   onRetryExtraction,
 }: {
   bookmark: Bookmark;
+  availableOffline: boolean;
   online: boolean;
   onDelete: (bookmark: Bookmark) => Promise<void>;
   onShareNotice: (message: string) => void;
@@ -994,6 +981,7 @@ function BookmarkRow({
   const classification = classifyBookmarkUrl(bookmark.normalized_url);
   const autoExtract = classification.autoExtract;
   const canRead = autoExtract && bookmark.extraction_status === "complete";
+  const destination = resolveBookmarkDestination(bookmark, online, availableOffline);
   const primaryActionLabel = classification.defaultAction ?? (canRead ? "read" : "open");
   const [editing, setEditing] = useState(false);
   const [deleteArmed, setDeleteArmed] = useState(false);
@@ -1033,8 +1021,6 @@ function BookmarkRow({
       setBusy(false);
     }
   };
-  const bookmarkHref = toReadableBookmarkUrl(bookmark.url);
-
   const copyArticleLink = async () => {
     setShareBusy(true);
     setDeleteArmed(false);
@@ -1127,14 +1113,28 @@ function BookmarkRow({
             ) : (
               <>
                 <div className="bookmark-title-row">
-                  <a
-                    className="bookmark-title"
-                    href={bookmarkHref}
-                    rel="noopener noreferrer"
-                    target="_blank"
-                  >
-                    {bookmark.title}
-                  </a>
+                  {destination.kind === "reader" ? (
+                    <Link
+                      className="bookmark-title"
+                      state={{ bookmark }}
+                      to={destination.href}
+                    >
+                      {bookmark.title}
+                    </Link>
+                  ) : destination.kind === "source" ? (
+                    <a
+                      className="bookmark-title"
+                      href={destination.href}
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    >
+                      {bookmark.title}
+                    </a>
+                  ) : (
+                    <span className="bookmark-title bookmark-title--unavailable">
+                      {bookmark.title}
+                    </span>
+                  )}
                 </div>
                 <p className="bookmark-domain">{getDomain(bookmark.url)}</p>
               </>
@@ -1147,25 +1147,34 @@ function BookmarkRow({
       <div className="bookmark-side">
         <div className="bookmark-actions">
           <div className="bookmark-primary-actions">
-            {canRead ? (
+            {destination.kind === "reader" ? (
               <Link
                 className="text-action bookmark-primary-link"
                 state={{ bookmark }}
-                to={`/read/${bookmark.id}`}
+                to={destination.href}
               >
                 <BookOpen aria-hidden="true" size={14} strokeWidth={1.75} />
                 <span>read</span>
               </Link>
-            ) : (
+            ) : destination.kind === "source" ? (
               <a
                 className="text-action bookmark-primary-link"
-                href={bookmarkHref}
+                href={destination.href}
                 rel="noopener noreferrer"
                 target="_blank"
               >
                 <ArrowUpRight aria-hidden="true" size={13} strokeWidth={1.9} />
                 <span>{primaryActionLabel}</span>
               </a>
+            ) : (
+              <span
+                aria-disabled="true"
+                className="text-action bookmark-primary-link is-disabled"
+                title="Unavailable offline"
+              >
+                <ArrowUpRight aria-hidden="true" size={13} strokeWidth={1.9} />
+                <span>{primaryActionLabel}</span>
+              </span>
             )}
           </div>
           <div className="icon-actions">
@@ -1239,6 +1248,7 @@ function MainPage() {
   const offline = useOffline();
   const [searchParams, setSearchParams] = useSearchParams();
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [offlineReadableIds, setOfflineReadableIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ id: number; message: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1247,8 +1257,12 @@ function MainPage() {
   const hasQuery = query.trim().length > 0;
 
   const loadOfflineBookmarks = async () => {
-    const items = await offline.manager.getBookmarks();
+    const [items, readableIds] = await Promise.all([
+      offline.manager.getBookmarks(),
+      getOfflineReadableBookmarkIds(),
+    ]);
     setBookmarks(filterBookmarksByTab(items, query, activeTab));
+    setOfflineReadableIds(readableIds);
   };
 
   const loadBookmarks = async () => {
@@ -1267,6 +1281,7 @@ function MainPage() {
         q: query || undefined,
       });
       setBookmarks(filterBookmarksByTab(response.items, query, activeTab));
+      setOfflineReadableIds(await getOfflineReadableBookmarkIds());
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 0) {
         await loadOfflineBookmarks();
@@ -1310,6 +1325,7 @@ function MainPage() {
     try {
       await auth.client.deleteBookmarkByUrl(bookmark.url);
       setBookmarks((current) => current.filter((item) => item.id !== bookmark.id));
+      void offline.refresh(true);
     } catch (caught) {
       setError(formatError(caught, "delete failed"));
     }
@@ -1324,6 +1340,7 @@ function MainPage() {
     setBookmarks((current) =>
       current.map((item) => (item.id === bookmark.id ? response.item : item)),
     );
+    void offline.refresh(true);
   };
 
   const onRetryExtraction = async (bookmark: Bookmark) => {
@@ -1339,6 +1356,7 @@ function MainPage() {
           : item,
       ),
     );
+    void offline.refresh(true);
   };
 
   const onSearchChange = (value: string) => {
@@ -1371,7 +1389,7 @@ function MainPage() {
         </div>
       ) : null}
       <header className="page-header row-between">
-        <BrandLogo onRefresh={loadBookmarks} />
+        <BrandLogo />
         <Nav />
       </header>
 
@@ -1418,6 +1436,7 @@ function MainPage() {
         {bookmarks.map((bookmark) => (
           <BookmarkRow
             key={bookmark.id}
+            availableOffline={offlineReadableIds.has(bookmark.id)}
             bookmark={bookmark}
             online={offline.online}
             onDelete={onDeleteConfirm}
@@ -1579,11 +1598,12 @@ function AutoSave({
 
   return (
     <div className="page narrow">
-      <header className="page-header">
+      <header className="page-header standalone-header">
         <div className="page-heading-group">
           <BrandLogo />
           <p className="page-kicker">save</p>
         </div>
+        <StandaloneControls />
       </header>
       <div className="stack">
         {status === "saving" ? <p>saving...</p> : null}
@@ -1659,11 +1679,12 @@ function MobileSavePage() {
 
   return (
     <div className="page narrow">
-      <header className="page-header">
+      <header className="page-header standalone-header">
         <div className="page-heading-group">
           <BrandLogo />
           <p className="page-kicker">save</p>
         </div>
+        <StandaloneControls />
       </header>
       <form className="stack" onSubmit={onSubmit}>
         <label className="field">
@@ -2083,8 +2104,13 @@ function ReaderPage() {
       }
 
       if (!offline.online) {
-        if (!cachedBookmark || !cachedArticle) {
+        if (
+          !cachedBookmark
+          || cachedArticle?.extraction_status !== "complete"
+          || !cachedArticle.content_html
+        ) {
           setError("article not available offline");
+          setArticle(null);
         }
         setLoading(false);
         return;
@@ -2173,6 +2199,10 @@ function ReaderPage() {
             <>
               <Link aria-label="back" className="text-action reader-back-link" to="/">&#x2190;</Link>
               {!offline.online ? <span className="offline-badge">offline</span> : null}
+              <StandaloneControls
+                onNotice={showNotice}
+                share={{ title: bookmark.title, url: bookmark.url }}
+              />
             </>
           )}
           publishedDate={article?.published_date}
@@ -2183,6 +2213,7 @@ function ReaderPage() {
             },
           }}
           siteName={bookmark.site_name}
+          sourceAvailable={offline.online}
           sourceUrl={bookmark.url}
           title={bookmark.title}
           wordCount={article?.word_count}
@@ -2198,6 +2229,13 @@ function PublicSharePage() {
   const [article, setArticle] = useState<PublicShareArticle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<{ id: number; message: string } | null>(null);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timeoutId = window.setTimeout(() => setNotice(null), 2800);
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
 
   useEffect(() => {
     let active = true;
@@ -2242,6 +2280,11 @@ function PublicSharePage() {
 
   return (
     <div className="page reader-page">
+      {notice ? (
+        <div aria-live="polite" className="app-notice" role="status">
+          {notice.message}
+        </div>
+      ) : null}
       {loading ? <p>loading</p> : null}
       {error ? <p className="error">{error}</p> : null}
       {article ? (
@@ -2249,7 +2292,18 @@ function PublicSharePage() {
           author={article.author}
           contentHtml={article.content_html}
           extractionStatus="complete"
-          header={<span className="reader-page-label">url-keep</span>}
+          header={(
+            <>
+              <span className="reader-page-label">url-keep</span>
+              <StandaloneControls
+                onNotice={(message) => setNotice({ id: Date.now(), message })}
+                share={{
+                  title: article.title,
+                  url: new URL(`/s/${encodeURIComponent(token ?? "")}`, window.location.origin).toString(),
+                }}
+              />
+            </>
+          )}
           publishedDate={article.published_date}
           siteName={article.site_name}
           sourceUrl={article.url}

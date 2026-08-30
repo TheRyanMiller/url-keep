@@ -3,6 +3,8 @@ import { classifyBookmarkUrl } from "@url-keep/shared";
 import type { Store } from "./store";
 import type {
   AccessTokenRecord,
+  ArticleContentDeleteResult,
+  ArticleContentWriteResult,
   ArticleContentRecord,
   BookmarkRecord,
   BookmarkShareRecord,
@@ -217,13 +219,22 @@ export class D1Store implements Store {
   async getOfflineStatus(userId: string): Promise<OfflineStatusResult> {
     const row = await this.db
       .prepare(
-        "SELECT COUNT(*) AS cnt, MAX(updated_at) AS latest FROM bookmarks WHERE user_id = ?",
+        `
+          SELECT
+            COUNT(*) AS cnt,
+            COALESCE(
+              (SELECT revision FROM offline_sync_state WHERE user_id = ?),
+              0
+            ) AS revision
+          FROM bookmarks
+          WHERE user_id = ?
+        `,
       )
-      .bind(userId)
-      .first<{ cnt: number; latest: string | null }>();
+      .bind(userId, userId)
+      .first<{ cnt: number; revision: number }>();
     return {
       bookmarkCount: row?.cnt ?? 0,
-      latestUpdatedAt: row?.latest ?? null,
+      syncRevision: row?.revision ?? 0,
     };
   }
 
@@ -655,8 +666,51 @@ export class D1Store implements Store {
     return mapArticleContent(row ?? null);
   }
 
-  async upsertArticleContent(content: ArticleContentRecord): Promise<void> {
-    await this.db
+  private articleUpsertStatement(
+    content: ArticleContentRecord,
+    protectCompleteClientContent: boolean,
+    expectedArticleId?: string | null,
+  ): D1PreparedStatement {
+    if (protectCompleteClientContent && typeof expectedArticleId === "string") {
+      return this.db
+        .prepare(
+          `
+            UPDATE article_content
+            SET
+              id = ?,
+              user_id = ?,
+              content_html = ?,
+              word_count = ?,
+              author = ?,
+              published_date = ?,
+              extraction_status = ?,
+              extraction_error = ?,
+              extracted_at = ?,
+              content_source = ?,
+              updated_at = ?
+            WHERE bookmark_id = ? AND user_id = ? AND id = ?
+              AND NOT (content_source = 'client' AND extraction_status = 'complete')
+          `,
+        )
+        .bind(
+          content.id,
+          content.userId,
+          content.contentHtml,
+          content.wordCount,
+          content.author,
+          content.publishedDate,
+          content.extractionStatus,
+          content.extractionError,
+          content.extractedAt,
+          content.contentSource,
+          content.updatedAt,
+          content.bookmarkId,
+          content.userId,
+          expectedArticleId,
+        );
+    }
+
+    return this.db
       .prepare(
         `
           INSERT INTO article_content (
@@ -674,7 +728,9 @@ export class D1Store implements Store {
             created_at,
             updated_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(bookmark_id) DO UPDATE SET
+          ${protectCompleteClientContent && expectedArticleId === null
+            ? "ON CONFLICT(bookmark_id) DO NOTHING"
+            : `ON CONFLICT(bookmark_id) DO UPDATE SET
             id = excluded.id,
             user_id = excluded.user_id,
             content_html = excluded.content_html,
@@ -685,7 +741,14 @@ export class D1Store implements Store {
             extraction_error = excluded.extraction_error,
             extracted_at = excluded.extracted_at,
             content_source = excluded.content_source,
+            created_at = article_content.created_at,
             updated_at = excluded.updated_at
+          ${protectCompleteClientContent
+            ? `WHERE NOT (
+                article_content.content_source = 'client'
+                AND article_content.extraction_status = 'complete'
+              )`
+            : ""}`}
         `,
       )
       .bind(
@@ -702,15 +765,137 @@ export class D1Store implements Store {
         content.contentSource,
         content.createdAt,
         content.updatedAt,
-      )
-      .run();
+      );
   }
 
-  async deleteBookmarkContent(userId: string, bookmarkId: string): Promise<void> {
-    await this.db
-      .prepare("DELETE FROM article_content WHERE user_id = ? AND bookmark_id = ?")
-      .bind(userId, bookmarkId)
-      .run();
+  private bookmarkUpdateStatement(
+    bookmark: BookmarkRecord,
+    expectedArticleId?: string,
+  ): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `
+          UPDATE bookmarks
+          SET
+            url = ?,
+            normalized_url = ?,
+            bucket = ?,
+            title = ?,
+            title_source = ?,
+            image_url = ?,
+            site_name = ?,
+            saved_via = ?,
+            updated_at = ?
+          WHERE id = ? AND user_id = ?
+          ${expectedArticleId
+            ? `AND EXISTS (
+                SELECT 1
+                FROM article_content
+                WHERE bookmark_id = ? AND user_id = ? AND id = ?
+              )`
+            : ""}
+        `,
+      )
+      .bind(
+        bookmark.url,
+        bookmark.normalizedUrl,
+        bookmark.bucket,
+        bookmark.title,
+        bookmark.titleSource,
+        bookmark.imageUrl,
+        bookmark.siteName,
+        bookmark.savedVia,
+        bookmark.updatedAt,
+        bookmark.id,
+        bookmark.userId,
+        ...(expectedArticleId
+          ? [bookmark.id, bookmark.userId, expectedArticleId]
+          : []),
+      );
+  }
+
+  private async putArticleContent(
+    content: ArticleContentRecord,
+    bookmark: BookmarkRecord | undefined,
+    protectCompleteClientContent: boolean,
+    expectedArticleId?: string | null,
+  ): Promise<ArticleContentWriteResult> {
+    const statements = [
+      this.db
+        .prepare(
+          "SELECT content_source FROM article_content WHERE user_id = ? AND bookmark_id = ? LIMIT 1",
+        )
+        .bind(content.userId, content.bookmarkId),
+      this.articleUpsertStatement(
+        content,
+        protectCompleteClientContent,
+        expectedArticleId,
+      ),
+    ];
+    if (bookmark) {
+      statements.push(
+        this.bookmarkUpdateStatement(
+          bookmark,
+          protectCompleteClientContent ? content.id : undefined,
+        ),
+      );
+    }
+
+    const results = await this.db.batch(statements);
+    const written = (results[1]?.meta.changes ?? 0) > 0;
+    const priorSource = (
+      results[0]?.results?.[0] as { content_source?: string | null } | undefined
+    )?.content_source;
+    return {
+      written,
+      replacedServerContent: written && priorSource === "server",
+    };
+  }
+
+  async putClientArticleContent(
+    content: ArticleContentRecord,
+    bookmark?: BookmarkRecord,
+  ): Promise<ArticleContentWriteResult> {
+    return this.putArticleContent(content, bookmark, false);
+  }
+
+  async putServerArticleContent(
+    content: ArticleContentRecord,
+    bookmark?: BookmarkRecord,
+    expectedArticleId?: string | null,
+  ): Promise<ArticleContentWriteResult> {
+    return this.putArticleContent(content, bookmark, true, expectedArticleId);
+  }
+
+  async recordServerArticleFailure(
+    content: ArticleContentRecord,
+    expectedArticleId: string | null,
+  ): Promise<ArticleContentWriteResult> {
+    return this.putArticleContent(content, undefined, true, expectedArticleId);
+  }
+
+  async deleteArticleContent(
+    userId: string,
+    bookmarkId: string,
+  ): Promise<ArticleContentDeleteResult> {
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          "SELECT content_source FROM article_content WHERE user_id = ? AND bookmark_id = ? LIMIT 1",
+        )
+        .bind(userId, bookmarkId),
+      this.db
+        .prepare("DELETE FROM article_content WHERE user_id = ? AND bookmark_id = ?")
+        .bind(userId, bookmarkId),
+    ]);
+    const deleted = (results[1]?.meta.changes ?? 0) > 0;
+    const priorSource = (
+      results[0]?.results?.[0] as { content_source?: string | null } | undefined
+    )?.content_source;
+    return {
+      deleted,
+      removedServerContent: deleted && priorSource === "server",
+    };
   }
 
   async deleteBookmarkByNormalizedUrl(

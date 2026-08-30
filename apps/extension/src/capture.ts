@@ -1,6 +1,6 @@
 import { Readability } from "@mozilla/readability";
 
-type CaptureResult = {
+export type CaptureResult = {
   content_html: string;
   title: string | null;
   author: string | null;
@@ -13,12 +13,16 @@ function resolveUrls(html: string, baseUrl: string): string {
   for (const img of doc.querySelectorAll("img[src]")) {
     try {
       img.setAttribute("src", new URL(img.getAttribute("src")!, baseUrl).href);
-    } catch { /* leave malformed src alone */ }
+    } catch {
+      img.removeAttribute("src");
+    }
   }
-  for (const a of doc.querySelectorAll("a[href]")) {
+  for (const link of doc.querySelectorAll("a[href]")) {
     try {
-      a.setAttribute("href", new URL(a.getAttribute("href")!, baseUrl).href);
-    } catch { /* leave malformed hrefs alone */ }
+      link.setAttribute("href", new URL(link.getAttribute("href")!, baseUrl).href);
+    } catch {
+      link.removeAttribute("href");
+    }
   }
   return doc.body.innerHTML;
 }
@@ -27,20 +31,13 @@ export function capture(): CaptureResult | null {
   const clone = document.cloneNode(true) as Document;
   const readable = new Readability(clone).parse();
 
-  if (!readable?.content) {
-    return null;
-  }
-
-  const contentHtml = resolveUrls(readable.content, document.baseURI);
+  if (!readable?.content) return null;
 
   return {
-    content_html: contentHtml,
-    title: readable.title || null,
-    author: readable.byline || null,
-    published_date: readable.publishedTime || null,
-    site_name: readable.siteName || null,
+    content_html: resolveUrls(readable.content, document.baseURI),
+    title: readable.title?.trim().slice(0, 300) || null,
+    author: readable.byline?.trim().slice(0, 300) || null,
+    published_date: readable.publishedTime?.trim().slice(0, 100) || null,
+    site_name: readable.siteName?.trim().slice(0, 120) || null,
   };
 }
-
-// Exported so esbuild includes it in the IIFE's returned exports object.
-// The build step's footer appends the actual call outside the IIFE wrapper.

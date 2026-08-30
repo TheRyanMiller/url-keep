@@ -113,16 +113,6 @@ input {
   line-height: 0;
   max-width: min(100%, 220px);
   text-decoration: none;
-  transition: opacity 0.15s;
-}
-
-.brand-mark.refreshing {
-  animation: pulse 0.6s ease-in-out;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
 }
 
 .brand-logo {
@@ -155,6 +145,13 @@ input {
   justify-content: space-between;
   gap: 12px;
   align-items: start;
+}
+
+.standalone-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
 }
 
 .stack {
@@ -401,6 +398,19 @@ input {
   flex-wrap: wrap;
 }
 
+.standalone-controls {
+  align-items: center;
+  display: inline-flex;
+  gap: 2px;
+}
+
+.standalone-action {
+  color: var(--muted);
+  height: 36px;
+  min-height: 36px;
+  width: 36px;
+}
+
 .nav-sep {
   color: var(--muted);
   font-size: 11px;
@@ -511,6 +521,20 @@ input {
 
 .reader-page-header .offline-badge {
   margin-left: auto;
+}
+
+.reader-page-header .standalone-controls {
+  margin-left: auto;
+}
+
+.reader-page-header .offline-badge + .standalone-controls {
+  margin-left: 0;
+}
+
+.is-disabled,
+.bookmark-title--unavailable {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .reader-back-link {

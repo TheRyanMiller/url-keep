@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { cpSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname);
@@ -8,6 +8,7 @@ const assetsDir = resolve(root, "assets");
 const apiOrigin = process.env.URL_KEEP_API_ORIGIN ?? "http://localhost:8787";
 const appOrigin = process.env.URL_KEEP_APP_ORIGIN ?? "http://localhost:5173";
 
+rmSync(outdir, { recursive: true, force: true });
 mkdirSync(outdir, { recursive: true });
 
 await Promise.all([
@@ -22,7 +23,6 @@ await Promise.all([
       __APP_ORIGIN__: JSON.stringify(appOrigin),
     },
   }),
-  // Service worker (background script)
   build({
     entryPoints: [resolve(root, "src/background.ts")],
     bundle: true,
@@ -32,9 +32,6 @@ await Promise.all([
       __API_ORIGIN__: JSON.stringify(apiOrigin),
     },
   }),
-  // Capture script (injected into tabs) — IIFE with globalName so the
-  // exported `capture` function is accessible.  The footer calls it so
-  // executeScript({ files }) receives the return value as its result.
   build({
     entryPoints: [resolve(root, "src/capture.ts")],
     bundle: true,
@@ -63,11 +60,7 @@ writeFileSync(
       version: "0.0.1",
       description: "Save or un-save the current URL in url-keep.",
       permissions: ["activeTab", "scripting", "storage"],
-      host_permissions: [
-        "https://*/*",
-        "http://localhost/*",
-        "http://127.0.0.1/*",
-      ],
+      host_permissions: [`${new URL(apiOrigin).origin}/*`],
       background: {
         service_worker: "background.js",
         type: "module",

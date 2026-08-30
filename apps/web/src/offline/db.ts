@@ -2,7 +2,9 @@ import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { ArticleContent, Bookmark } from "@url-keep/shared";
 
 const DB_NAME = "url-keep-offline";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+const LEGACY_CREDENTIALS_KEY = "credentials" as OfflineSyncState["key"];
+const LEGACY_API_CACHE = "api-cache";
 
 export type OfflineArticle = ArticleContent & {
   synced_at: string;
@@ -12,7 +14,7 @@ export type OfflineSyncState = {
   key: "state";
   last_sync_at: string | null;
   bookmark_count: number;
-  latest_updated_at: string | null;
+  sync_revision: number;
 };
 
 interface OfflineDBSchema extends DBSchema {
@@ -38,7 +40,7 @@ let dbPromise: Promise<IDBPDatabase<OfflineDBSchema>> | null = null;
 
 export function getOfflineDb() {
   dbPromise ??= openDB<OfflineDBSchema>(DB_NAME, DB_VERSION, {
-    upgrade(db) {
+    upgrade(db, oldVersion, _newVersion, transaction) {
       if (!db.objectStoreNames.contains("bookmarks")) {
         const store = db.createObjectStore("bookmarks", {
           keyPath: "id",
@@ -57,6 +59,10 @@ export function getOfflineDb() {
         db.createObjectStore("sync_meta", {
           keyPath: "key",
         });
+      }
+
+      if (oldVersion < 2 && db.objectStoreNames.contains("sync_meta")) {
+        void transaction.objectStore("sync_meta").delete(LEGACY_CREDENTIALS_KEY);
       }
     },
   });
@@ -98,20 +104,28 @@ export async function getOfflineSyncState(): Promise<OfflineSyncState | null> {
   return state ?? null;
 }
 
-export type OfflineCredentials = {
-  key: "credentials";
-  token: string;
-  apiOrigin: string;
-};
-
-export async function putOfflineCredentials(token: string, apiOrigin: string) {
-  await (await getOfflineDb()).put("sync_meta", {
-    key: "credentials",
-    token,
-    apiOrigin,
-  } as unknown as OfflineSyncState);
+export async function getOfflineReadableBookmarkIds(): Promise<Set<string>> {
+  const articles = await (await getOfflineDb()).getAll("articles");
+  return new Set(
+    articles
+      .filter((article) => article.extraction_status === "complete" && article.content_html)
+      .map((article) => article.bookmark_id),
+  );
 }
 
-export async function clearOfflineCredentials() {
-  await (await getOfflineDb()).delete("sync_meta", "credentials");
+export async function clearOfflineData() {
+  const db = await getOfflineDb();
+  const tx = db.transaction(["bookmarks", "articles", "sync_meta"], "readwrite");
+  await Promise.all([
+    tx.objectStore("bookmarks").clear(),
+    tx.objectStore("articles").clear(),
+    tx.objectStore("sync_meta").clear(),
+  ]);
+  await tx.done;
+  if (typeof caches !== "undefined") {
+    await Promise.all([
+      caches.delete("article-images"),
+      caches.delete(LEGACY_API_CACHE),
+    ]);
+  }
 }

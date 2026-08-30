@@ -1,5 +1,109 @@
 import { z } from "zod";
 
+export const CAPTURE_REQUEST_MAX_BYTES = 5 * 1024 * 1024;
+export const CAPTURE_PREFLIGHT_MAX_BYTES = 4.5 * 1024 * 1024;
+export const ARTICLE_CONTENT_MAX_BYTES = 1_500_000;
+export const ARTICLE_TITLE_MAX_CHARS = 300;
+export const ARTICLE_SITE_NAME_MAX_CHARS = 120;
+export const ARTICLE_AUTHOR_MAX_CHARS = 300;
+export const ARTICLE_PUBLISHED_DATE_MAX_CHARS = 100;
+export const OFFLINE_BUNDLE_MAX_LIMIT = 10;
+
+export const ARTICLE_SANITIZER_POLICY = {
+  allowedTags: [
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "ul",
+    "ol",
+    "li",
+    "a",
+    "img",
+    "blockquote",
+    "pre",
+    "code",
+    "em",
+    "strong",
+    "b",
+    "i",
+    "br",
+    "hr",
+    "figure",
+    "figcaption",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
+    "sup",
+    "sub",
+    "del",
+    "div",
+    "span",
+  ],
+  allowedAttributes: {
+    a: ["href", "title", "target", "rel"],
+    img: ["src", "alt", "title"],
+  },
+  allowedSchemes: ["http", "https"],
+} as const;
+
+export const ARTICLE_ALLOWED_ATTRIBUTES = [
+  ...new Set(Object.values(ARTICLE_SANITIZER_POLICY.allowedAttributes).flat()),
+];
+
+export const ARTICLE_SANITIZER_HOSTILE_FIXTURES = [
+  {
+    name: "active and unsupported markup",
+    html: `
+      <h2 style="color:red">Safe heading</h2>
+      <p class="tracking" onclick="steal()">Readable text</p>
+      <p title="not allowed here">Attribute scope</p>
+      <script>alert(1)</script>
+      <form><input value="secret"><button>submit</button></form>
+      <iframe src="https://evil.example"></iframe>
+      <svg><script>alert(2)</script><circle /></svg>
+      <a href="javascript:alert(3)" data-id="bad">unsafe link</a>
+      <a href="mailto:reader@example.com">unsupported mail link</a>
+      <a href="ftp://example.com/file">unsupported ftp link</a>
+      <a href="https://example.com/read">safe link</a>
+      <img src="https://example.com/image.jpg" alt="safe" onerror="steal()">
+    `,
+    retained: [
+      "Safe heading",
+      "Readable text",
+      'href="https://example.com/read"',
+      'target="_blank"',
+      'rel="noopener noreferrer"',
+      'src="https://example.com/image.jpg"',
+      'alt="safe"',
+    ],
+    removed: [
+      "<script",
+      "<form",
+      "<input",
+      "<button",
+      "<iframe",
+      "<svg",
+      "<circle",
+      "onclick",
+      "onerror",
+      "javascript:",
+      "mailto:",
+      "ftp://",
+      "data-id",
+      "style=",
+      "class=",
+      'title="not allowed here"',
+    ],
+  },
+] as const;
+
 function tryParseAbsoluteUrl(input: string): URL | null {
   try {
     return new URL(input.trim());
@@ -285,7 +389,7 @@ export const extractBookmarkResponseSchema = z.object({
 
 export const offlineStatusResponseSchema = z.object({
   bookmark_count: z.number().int().nonnegative(),
-  latest_updated_at: z.string().nullable(),
+  sync_revision: z.number().int().nonnegative(),
 });
 
 export const offlineBundleItemSchema = z.object({
@@ -357,10 +461,14 @@ export const bookmarkResponseSchema = z.object({
 
 export const createBookmarkRequestSchema = z.object({
   url: z.string().min(1),
-  title: z.string().trim().min(1).max(300).optional(),
+  title: z.string().trim().min(1).max(ARTICLE_TITLE_MAX_CHARS).optional(),
   image_url: z.string().url().optional(),
-  site_name: z.string().trim().min(1).max(120).optional(),
+  site_name: z.string().trim().min(1).max(ARTICLE_SITE_NAME_MAX_CHARS).optional(),
   saved_via: savedViaSchema,
+  captured_page: z.object({
+    html: z.string().min(1),
+    base_url: z.string().url(),
+  }).optional(),
 });
 
 export const updateBookmarkTitleRequestSchema = z.object({
@@ -374,10 +482,10 @@ export const changePasswordRequestSchema = z.object({
 
 export const uploadBookmarkContentRequestSchema = z.object({
   content_html: z.string().min(1),
-  title: z.string().nullable().optional(),
-  author: z.string().nullable().optional(),
-  published_date: z.string().nullable().optional(),
-  site_name: z.string().nullable().optional(),
+  title: z.string().trim().max(ARTICLE_TITLE_MAX_CHARS).nullable().optional(),
+  author: z.string().trim().max(ARTICLE_AUTHOR_MAX_CHARS).nullable().optional(),
+  published_date: z.string().trim().max(ARTICLE_PUBLISHED_DATE_MAX_CHARS).nullable().optional(),
+  site_name: z.string().trim().max(ARTICLE_SITE_NAME_MAX_CHARS).nullable().optional(),
 });
 
 export type SavedVia = z.infer<typeof savedViaSchema>;

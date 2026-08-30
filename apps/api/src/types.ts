@@ -110,7 +110,17 @@ export type OfflineBundleResult = {
 
 export type OfflineStatusResult = {
   bookmarkCount: number;
-  latestUpdatedAt: string | null;
+  syncRevision: number;
+};
+
+export type ArticleContentWriteResult = {
+  written: boolean;
+  replacedServerContent: boolean;
+};
+
+export type ArticleContentDeleteResult = {
+  deleted: boolean;
+  removedServerContent: boolean;
 };
 
 export type AuthContext = {

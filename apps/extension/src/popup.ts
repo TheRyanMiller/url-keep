@@ -13,6 +13,12 @@ declare const __APP_ORIGIN__: string;
 
 const DEFAULT_APP_ORIGIN = __APP_ORIGIN__;
 
+type ExtractedMetadata = {
+  title?: string;
+  image_url?: string;
+  site_name?: string;
+};
+
 const loginForm = document.getElementById("login-form") as HTMLFormElement;
 const bookmarkView = document.getElementById("bookmark-view") as HTMLElement;
 const settingsForm = document.getElementById("settings-form") as HTMLFormElement;
@@ -41,12 +47,6 @@ const successDomain = document.getElementById("success-domain") as HTMLElement;
 const successOpenApp = document.getElementById("success-open-app") as HTMLAnchorElement;
 const successRemove = document.getElementById("success-remove") as HTMLButtonElement;
 const errorElement = document.getElementById("error") as HTMLElement;
-
-type ExtractedMetadata = {
-  title?: string;
-  image_url?: string;
-  site_name?: string;
-};
 
 type PopupState = {
   saved: boolean;
@@ -238,7 +238,7 @@ async function extractMetadata(tabId: number): Promise<ExtractedMetadata> {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      const title = document.title || undefined;
+      const title = document.title.trim().slice(0, 300) || undefined;
       const image =
         document
           .querySelector<HTMLMetaElement>('meta[property="og:image"]')
@@ -246,9 +246,14 @@ async function extractMetadata(tabId: number): Promise<ExtractedMetadata> {
       const site =
         document
           .querySelector<HTMLMetaElement>('meta[property="og:site_name"]')
-          ?.content?.trim() || undefined;
+          ?.content?.trim().slice(0, 120) || undefined;
 
-      const imageUrl = image ? new URL(image, location.href).toString() : undefined;
+      let imageUrl: string | undefined;
+      try {
+        imageUrl = image ? new URL(image, location.href).toString() : undefined;
+      } catch {
+        imageUrl = undefined;
+      }
       return {
         title,
         image_url:
@@ -312,7 +317,7 @@ async function quickSave() {
   clearInlineState();
   showError(null);
 
-  const title = tab.title ?? tab.url;
+  const title = (tab.title ?? tab.url).trim().slice(0, 300);
   let metadata: ExtractedMetadata = {};
   try {
     metadata = await extractMetadata(tab.id);
@@ -367,7 +372,7 @@ async function loadBookmarkState() {
     return;
   }
 
-  const baseTitle = tab.title ?? tab.url;
+  const baseTitle = (tab.title ?? tab.url).trim().slice(0, 300);
   popupState = {
     saved: false,
     checking: true,

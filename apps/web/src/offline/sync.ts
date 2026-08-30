@@ -1,14 +1,13 @@
 import type { UrlKeepClient } from "@url-keep/api-client";
+import { OFFLINE_BUNDLE_MAX_LIMIT, type OfflineBundleItem } from "@url-keep/shared";
 import {
   getOfflineArticle,
   getOfflineBookmark,
   getOfflineBookmarks,
   getOfflineDb,
   getOfflineSyncState,
-  putOfflineSyncState,
 } from "./db";
 
-const DEFAULT_SYNC_LIMIT = 50;
 const DEFAULT_SYNC_STALE_MS = 60_000;
 
 async function precacheArticleImages(
@@ -80,7 +79,7 @@ export class SyncManager {
       return true;
     }
 
-    if (local.latest_updated_at !== remote.latest_updated_at) {
+    if (local.sync_revision !== remote.sync_revision) {
       return true;
     }
 
@@ -99,65 +98,78 @@ export class SyncManager {
   }
 
   async sync(): Promise<void> {
-    const db = await getOfflineDb();
-    const serverIds = new Set<string>();
-    let cursor: string | undefined;
-    let latestUpdatedAt: string | null = null;
-
-    do {
-      const response = await this.client.getOfflineBundle(cursor, DEFAULT_SYNC_LIMIT);
-      const tx = db.transaction(["bookmarks", "articles"], "readwrite");
-
-      for (const item of response.items) {
-        serverIds.add(item.bookmark.id);
-        await tx.objectStore("bookmarks").put(item.bookmark);
-
-        if (
-          item.bookmark.updated_at &&
-          (!latestUpdatedAt || item.bookmark.updated_at > latestUpdatedAt)
-        ) {
-          latestUpdatedAt = item.bookmark.updated_at;
-        }
-
-        if (item.content) {
-          await tx.objectStore("articles").put({
-            ...item.content,
-            synced_at: new Date().toISOString(),
-          });
-        } else {
-          await tx.objectStore("articles").delete(item.bookmark.id);
-        }
-      }
-
-      await tx.done;
-
-      await Promise.allSettled(
-        response.items
-          .filter((item) => item.content?.content_html)
-          .map((item) =>
-            precacheArticleImages(item.content!.content_html!, this.apiOrigin),
-          ),
-      );
-
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined;
-    } while (cursor);
-
-    const localBookmarkKeys = await db.getAllKeys("bookmarks");
-    const deleteTx = db.transaction(["bookmarks", "articles"], "readwrite");
-    for (const key of localBookmarkKeys) {
-      const id = String(key);
-      if (!serverIds.has(id)) {
-        await deleteTx.objectStore("bookmarks").delete(id);
-        await deleteTx.objectStore("articles").delete(id);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (await this.tryStableSync()) {
+        return;
       }
     }
-    await deleteTx.done;
 
-    await putOfflineSyncState({
-      last_sync_at: new Date().toISOString(),
-      bookmark_count: serverIds.size,
-      latest_updated_at: latestUpdatedAt,
+    throw new Error("offline snapshot changed while syncing");
+  }
+
+  private async tryStableSync(): Promise<boolean> {
+    const start = await this.client.getOfflineStatus();
+    const items = new Map<string, OfflineBundleItem>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+
+    do {
+      const response = await this.client.getOfflineBundle(
+        cursor,
+        OFFLINE_BUNDLE_MAX_LIMIT,
+      );
+      for (const item of response.items) {
+        items.set(item.bookmark.id, item);
+      }
+
+      if (!response.has_more) {
+        cursor = undefined;
+        continue;
+      }
+      if (!response.next_cursor || seenCursors.has(response.next_cursor)) {
+        throw new Error("offline bundle returned an invalid cursor");
+      }
+      seenCursors.add(response.next_cursor);
+      cursor = response.next_cursor;
+    } while (cursor);
+
+    const end = await this.client.getOfflineStatus();
+    if (
+      start.sync_revision !== end.sync_revision
+      || start.bookmark_count !== end.bookmark_count
+      || items.size !== end.bookmark_count
+    ) {
+      return false;
+    }
+
+    const db = await getOfflineDb();
+    const syncedAt = new Date().toISOString();
+    const tx = db.transaction(["bookmarks", "articles", "sync_meta"], "readwrite");
+    await tx.objectStore("bookmarks").clear();
+    await tx.objectStore("articles").clear();
+    for (const item of items.values()) {
+      await tx.objectStore("bookmarks").put(item.bookmark);
+      if (item.content) {
+        await tx.objectStore("articles").put({ ...item.content, synced_at: syncedAt });
+      }
+    }
+    await tx.objectStore("sync_meta").put({
+      key: "state",
+      last_sync_at: syncedAt,
+      bookmark_count: end.bookmark_count,
+      sync_revision: end.sync_revision,
     });
+    await tx.done;
+
+    if (typeof caches !== "undefined") {
+      await caches.delete("article-images");
+    }
+    await Promise.allSettled(
+      [...items.values()]
+        .filter((item) => item.content?.content_html)
+        .map((item) => precacheArticleImages(item.content!.content_html!, this.apiOrigin)),
+    );
+    return true;
   }
 
   async getBookmarks() {

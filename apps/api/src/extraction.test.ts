@@ -29,8 +29,12 @@ describe("runBookmarkExtraction", () => {
     const bookmark = makeBookmark();
     await store.insertBookmark(bookmark);
 
+    const storedKeys: string[] = [];
     const fakeBucket = {
-      put: async () => undefined,
+      put: async (key: string) => {
+        storedKeys.push(key);
+      },
+      list: async () => ({ objects: [], truncated: false }),
     } as unknown as R2Bucket;
 
     const fetchImpl: typeof fetch = async (input) => {
@@ -95,7 +99,42 @@ describe("runBookmarkExtraction", () => {
     expect(result.extractionStatus).toBe("complete");
     expect(result.contentHtml).toContain("Trump-endorsed Republican advances");
     expect(result.contentHtml).toContain("/v1/images/articles/bookmark-1/");
+    expect(storedKeys[0]?.split("/")).toHaveLength(4);
     expect(result.wordCount).toBeGreaterThan(20);
+  });
+
+  it("preserves complete content when a forced server recapture fails", async () => {
+    const store = new MemoryStore();
+    const bookmark = makeBookmark();
+    await store.insertBookmark(bookmark);
+    const now = nowIso();
+    await store.putClientArticleContent({
+      id: "client-generation",
+      bookmarkId: bookmark.id,
+      userId: bookmark.userId,
+      contentHtml: `<p>${"private captured article ".repeat(8)}</p>`,
+      wordCount: 24,
+      author: null,
+      publishedDate: null,
+      extractionStatus: "complete",
+      extractionError: null,
+      extractedAt: now,
+      contentSource: "client",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await runBookmarkExtraction({
+      env: { DB: {} as D1Database } satisfies Bindings,
+      store,
+      bookmark,
+      force: true,
+      fetchImpl: async () => new Response("blocked", { status: 403 }),
+    });
+
+    expect(result.id).toBe("client-generation");
+    expect(result.extractionStatus).toBe("complete");
+    expect(result.contentSource).toBe("client");
   });
 
   it("renders HackMD markdown as HTML instead of saving raw markdown markup", async () => {
@@ -145,12 +184,15 @@ this second paragraph makes the sample comfortably longer than the readability t
 
     expect(result.extractionStatus).toBe("complete");
     expect(result.contentHtml).toContain("<h1>Uptime Kuma x Yearn User Guide</h1>");
-    expect(result.contentHtml).toContain("<a href=\"https://github.com/louislam/uptime-kuma\">uptime kuma</a>");
+    expect(result.contentHtml).toContain(
+      "<a href=\"https://github.com/louislam/uptime-kuma\" target=\"_blank\" rel=\"noopener noreferrer\">uptime kuma</a>",
+    );
     expect(result.contentHtml).not.toContain("[uptime kuma](");
     expect(result.wordCount).toBeGreaterThan(20);
 
     const updatedBookmark = await store.getBookmarkById(bookmark.userId, bookmark.id);
     expect(updatedBookmark?.title).toBe("Uptime Kuma x Yearn User Guide");
+    expect(updatedBookmark?.titleSource).toBe("fallback");
     expect(updatedBookmark?.siteName).toBe("HackMD");
   });
 
@@ -218,5 +260,6 @@ this second paragraph makes the sample comfortably longer than the readability t
 
     const updatedBookmark = await store.getBookmarkById(bookmark.userId, bookmark.id);
     expect(updatedBookmark?.title).toBe("Secure LLM Setup");
+    expect(updatedBookmark?.titleSource).toBe("fallback");
   });
 });

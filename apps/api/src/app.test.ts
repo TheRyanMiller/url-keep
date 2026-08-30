@@ -32,7 +32,7 @@ describe("api", () => {
         waitUntil(promise: Promise<unknown>) {
           promises.push(promise);
         },
-      } satisfies ExecutionContext,
+      } as unknown as ExecutionContext,
       promises,
     };
   }
@@ -44,6 +44,13 @@ describe("api", () => {
   ) {
     const execution = createExecutionContext();
     const response = await app.request(input, init, env, execution.ctx);
+    await Promise.allSettled(execution.promises);
+    return response;
+  }
+
+  async function requestObject(input: Request) {
+    const execution = createExecutionContext();
+    const response = await app.request(input, undefined, TEST_ENV, execution.ctx);
     await Promise.allSettled(execution.promises);
     return response;
   }
@@ -71,7 +78,15 @@ describe("api", () => {
           createdAt: now,
           updatedAt: now,
         };
-        await targetStore.upsertArticleContent(content);
+        const existing = await targetStore.getArticleContentByBookmarkId(
+          bookmark.userId,
+          bookmark.id,
+        );
+        await targetStore.putServerArticleContent(
+          content,
+          undefined,
+          existing?.id ?? null,
+        );
         return content;
       },
     });
@@ -116,10 +131,8 @@ describe("api", () => {
       }),
     }, TEST_ENV);
 
-    expect(response.status).toBe(savedVia === "ios_shortcut" ? 204 : 201);
-    return response.status === 204
-      ? null
-      : json<{ item: { id: string; url: string; title: string } }>(response);
+    expect(response.status).toBe(201);
+    return json<{ item: { id: string; url: string; title: string } }>(response);
   }
 
   it("logs in successfully and rejects bad credentials", async () => {
@@ -242,7 +255,7 @@ describe("api", () => {
     expect(upgraded.item.saved_via).toBe("web");
   });
 
-  it("returns no content for ios shortcut saves", async () => {
+  it("returns a normal JSON response for ios shortcut saves", async () => {
     const { token } = await login();
 
     const response = await request(
@@ -261,9 +274,156 @@ describe("api", () => {
       TEST_ENV,
     );
 
-    expect(response.status).toBe(204);
-    expect(response.headers.get("content-type")).toBeNull();
-    expect(await response.text()).toBe("");
+    expect(response.status).toBe(201);
+    const body = await json<{ item: { url: string; saved_via: string } }>(response);
+    expect(body.item.url).toBe("https://example.com/shortcut");
+    expect(body.item.saved_via).toBe("ios_shortcut");
+  });
+
+  it("extracts and sanitizes a live captured page before server fallback", async () => {
+    const { token } = await login();
+    const response = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://example.com/live/article",
+        title: "Browser title",
+        saved_via: "extension",
+        captured_page: {
+          base_url: "https://example.com/live/article",
+          html: `
+            <html><head><title>Captured title</title></head><body><article>
+              <h1>Captured title</h1>
+              <p>This signed-in page contains enough readable words to make the browser capture
+              canonical and prove the live document path works for private client-rendered pages.</p>
+              <p>A second substantial paragraph keeps Readability above its threshold and includes
+              a <a href="/relative" onclick="steal()">relative link</a>.</p>
+              <script>steal()</script><iframe src="https://evil.example"></iframe>
+            </article></body></html>
+          `,
+        },
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    const created = await json<{ item: { id: string } }>(response);
+    const stored = await store.getArticleContentByBookmarkId(user.id, created.item.id);
+    expect(stored?.contentSource).toBe("client");
+    expect(stored?.extractionStatus).toBe("complete");
+    expect(stored?.contentHtml).toContain('href="https://example.com/relative"');
+    expect(stored?.contentHtml).not.toContain("script");
+    expect(stored?.contentHtml).not.toContain("iframe");
+    expect(extractCalls).toHaveLength(0);
+  });
+
+  it("falls back to server extraction when a live capture is unreadable", async () => {
+    const { token } = await login();
+    const response = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://example.com/fallback",
+        saved_via: "extension",
+        captured_page: {
+          base_url: "https://example.com/fallback",
+          html: "<html><body><p>too short</p></body></html>",
+        },
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(extractCalls).toHaveLength(1);
+  });
+
+  it("counts streamed request bytes even when content-length claims a smaller body", async () => {
+    const { token } = await login();
+    const response = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Content-Length": "1",
+      },
+      body: JSON.stringify({
+        url: "https://example.com/oversized",
+        saved_via: "extension",
+        captured_page: {
+          base_url: "https://example.com/oversized",
+          html: "x".repeat(5 * 1024 * 1024),
+        },
+      }),
+    });
+
+    expect(response.status).toBe(413);
+    const body = await json<{ error: { code: string } }>(response);
+    expect(body.error.code).toBe("payload_too_large");
+  });
+
+  it("accepts small streamed bodies without length and ignores a false-high declaration", async () => {
+    const { token } = await login();
+    const body = JSON.stringify({
+      url: "https://x.com/example/status/streamed",
+      saved_via: "web",
+    });
+    const bytes = new TextEncoder().encode(body);
+    const streamed = await requestObject(new Request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes.slice(0, 10));
+          controller.enqueue(bytes.slice(10));
+          controller.close();
+        },
+      }),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" }));
+    expect(streamed.status).toBe(201);
+
+    const falseHigh = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Content-Length": String(9 * 1024 * 1024),
+      },
+      body: JSON.stringify({
+        url: "https://x.com/example/status/false-high",
+        saved_via: "web",
+      }),
+    });
+    expect(falseHigh.status).toBe(201);
+  });
+
+  it("rejects sanitized article content above the storage limit", async () => {
+    const { token } = await login();
+    const created = await createBookmark(token, "https://example.com/large-content");
+    const response = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content_html: `<p>${"readable ".repeat(190_000)}</p>`,
+        }),
+      },
+    );
+
+    expect(response.status).toBe(422);
+    const body = await json<{ error: { code: string } }>(response);
+    expect(body.error.code).toBe("stored_content_too_large");
   });
 
   it("classifies video bookmarks into videos and filters them server-side", async () => {
@@ -323,6 +483,26 @@ describe("api", () => {
     const reading = await json<{ items: Array<{ bucket: string }> }>(readingResponse);
     expect(reading.items).toHaveLength(1);
     expect(reading.items[0]?.bucket).toBe("reading");
+  });
+
+  it("leaves extension article capture to the MV3 workflow", async () => {
+    const { token } = await login();
+    const response = await request("http://localhost/v1/bookmarks", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://example.com/extension-capture",
+        saved_via: "extension",
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    const body = await json<{ item: { extraction_status: string } }>(response);
+    expect(body.item.extraction_status).toBe("pending");
+    expect(extractCalls).toHaveLength(0);
   });
 
   it("does not auto-extract non-reader reading urls", async () => {
@@ -493,13 +673,58 @@ another paragraph keeps the content comfortably above the minimum length require
     const uploaded = await json<{ item: { content_html: string | null } }>(upload);
     expect(uploaded.item.content_html).toContain("<h1>My Shared Note</h1>");
     expect(uploaded.item.content_html).toContain(
-      "<a href=\"https://example.com\">external link</a>",
+      "<a href=\"https://example.com\" target=\"_blank\" rel=\"noopener noreferrer\">external link</a>",
     );
     expect(uploaded.item.content_html).not.toContain("[external link](");
 
     const bookmark = await store.getBookmarkById(user.id, created.item.id);
     expect(bookmark?.title).toBe("My Shared Note");
     expect(bookmark?.siteName).toBe("HackMD");
+  });
+
+  it("lets client recaptures refresh client metadata but never a user title", async () => {
+    const { token } = await login();
+    const created = await createBookmark(token, "https://example.com/metadata", "extension");
+    const content = `<article><p>${"readable captured content ".repeat(8)}</p></article>`;
+
+    await request(`http://localhost/v1/bookmarks/${created.item.id}/content`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ content_html: content, title: "First capture" }),
+    });
+    await request(`http://localhost/v1/bookmarks/${created.item.id}/content`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ content_html: content, title: "Fresh capture" }),
+    });
+    expect((await store.getBookmarkById(user.id, created.item.id))?.title)
+      .toBe("Fresh capture");
+
+    await request(`http://localhost/v1/bookmarks/${created.item.id}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ title: "My title" }),
+    });
+    await request(`http://localhost/v1/bookmarks/${created.item.id}/content`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ content_html: content, title: "Ignored capture" }),
+    });
+    const bookmark = await store.getBookmarkById(user.id, created.item.id);
+    expect(bookmark?.title).toBe("My title");
+    expect(bookmark?.titleSource).toBe("user");
   });
 
   it("deletes bookmarks idempotently by url", async () => {
@@ -621,6 +846,43 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(bundle.items[0]?.bookmark.bucket).toBe("reading");
     expect(bundle.items[0]?.content?.extraction_status).toBe("complete");
     expect(bundle.has_more).toBe(false);
+    expect(bundleResponse.headers.get("Cache-Control")).toBe("no-store");
+
+    const invalidLimit = await request("http://localhost/v1/offline/bundle?limit=11", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(invalidLimit.status).toBe(400);
+  });
+
+  it("uses monotonic offline revisions without bumping for share counters", async () => {
+    const { token } = await login();
+    const emptyResponse = await request("http://localhost/v1/offline/status", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const empty = await json<{ bookmark_count: number; sync_revision: number }>(emptyResponse);
+    expect(empty).toEqual({ bookmark_count: 0, sync_revision: 0 });
+    expect(emptyResponse.headers.get("Cache-Control")).toBe("no-store");
+
+    const created = await createBookmark(token, "https://example.com/revision");
+    const afterSaveResponse = await request("http://localhost/v1/offline/status", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const afterSave = await json<{ bookmark_count: number; sync_revision: number }>(afterSaveResponse);
+    expect(afterSave.bookmark_count).toBe(1);
+    expect(afterSave.sync_revision).toBeGreaterThan(0);
+
+    const enable = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/share`,
+      { method: "PUT", headers: { Authorization: `Bearer ${token}` } },
+    );
+    const share = await json<{ item: { share_url: string } }>(enable);
+    const shareToken = share.item.share_url.split("/s/")[1];
+    await request(`http://localhost/v1/public/shares/${shareToken}`);
+
+    const afterShare = await request("http://localhost/v1/offline/status", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(await json(afterShare)).toEqual(afterSave);
   });
 
   it("supports manual extraction retries and content deletion", async () => {
@@ -807,6 +1069,29 @@ another paragraph keeps the content comfortably above the minimum length require
     const body = await json<{ item: { enabled: boolean; share_url: string | null } }>(share);
     expect(body.item.enabled).toBe(true);
     expect(body.item.share_url).toMatch(/\/s\/[a-f0-9]{20}$/);
+
+    const recapture = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content_html: `<article><p>${"replacement article text ".repeat(8)}</p></article>`,
+        }),
+      },
+    );
+    expect(recapture.status).toBe(200);
+
+    const oldPublicToken = body.item.share_url!.split("/s/")[1];
+    expect((await request(`http://localhost/v1/public/shares/${oldPublicToken}`)).status).toBe(404);
+    const state = await request(
+      `http://localhost/v1/bookmarks/${created.item.id}/share`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    expect((await json<{ item: { enabled: boolean } }>(state)).item.enabled).toBe(false);
   });
 
   it("returns 404 for revoked or invalid public share links", async () => {

@@ -1,7 +1,15 @@
 import { Readability } from "@mozilla/readability";
 import { bytesToHex } from "@noble/hashes/utils";
 import { sha256 } from "@noble/hashes/sha2";
-import { toHackmdMarkdownUrl } from "@url-keep/shared";
+import {
+  ARTICLE_AUTHOR_MAX_CHARS,
+  ARTICLE_CONTENT_MAX_BYTES,
+  ARTICLE_PUBLISHED_DATE_MAX_CHARS,
+  ARTICLE_SITE_NAME_MAX_CHARS,
+  ARTICLE_TITLE_MAX_CHARS,
+  CAPTURE_REQUEST_MAX_BYTES,
+  toHackmdMarkdownUrl,
+} from "@url-keep/shared";
 import { parseHTML } from "linkedom";
 import { extractMarkdownTitle, renderMarkdownToHtml } from "./markdown";
 import { sanitizeClientHtml } from "./sanitize";
@@ -15,7 +23,7 @@ import type {
 
 const ARTICLE_FETCH_TIMEOUT_MS = 10_000;
 const IMAGE_FETCH_TIMEOUT_MS = 5_000;
-const ARTICLE_BODY_LIMIT_BYTES = 5 * 1024 * 1024;
+const ARTICLE_BODY_LIMIT_BYTES = CAPTURE_REQUEST_MAX_BYTES;
 const MAX_IMAGES_PER_ARTICLE = 20;
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -47,7 +55,7 @@ type ExtractionMetadata = {
   siteName: string | null;
 };
 
-class ExtractionFailure extends Error {
+export class ExtractionFailure extends Error {
   readonly reason: string;
   readonly extra: Record<string, unknown>;
 
@@ -59,9 +67,12 @@ class ExtractionFailure extends Error {
   }
 }
 
-function cleanOptionalText(value: string | null | undefined): string | null {
+function cleanOptionalText(
+  value: string | null | undefined,
+  maxChars = Number.POSITIVE_INFINITY,
+): string | null {
   const trimmed = value?.trim();
-  return trimmed ? trimmed : null;
+  return trimmed ? trimmed.slice(0, maxChars) : null;
 }
 
 function stripHtml(value: string): string {
@@ -71,6 +82,10 @@ function stripHtml(value: string): string {
 export function countWords(value: string): number {
   const trimmed = value.trim();
   return trimmed ? trimmed.split(/\s+/).length : 0;
+}
+
+export function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function firstMetaContent(document: Document, selectors: string[]): string | null {
@@ -160,11 +175,10 @@ function parseReadableDocument(html: string): {
   try {
     ({ document } = parseHTML(html));
     hoistedNodes = normalizeDocumentForReadability(document);
-  } catch (error) {
+  } catch {
     throw new ExtractionFailure(
       "parse_error",
       "HTML parse failed",
-      error instanceof Error ? { message: error.message } : {},
     );
   }
 
@@ -173,16 +187,126 @@ function parseReadableDocument(html: string): {
   try {
     const readable = new Readability(document).parse();
     return { metadata, readable };
-  } catch (error) {
+  } catch {
     throw new ExtractionFailure(
       "readability_error",
       "Readability parse failed",
       {
-        ...(error instanceof Error ? { message: error.message } : {}),
         hoisted_nodes: hoistedNodes,
       },
     );
   }
+}
+
+export type ExtractedSnapshot = {
+  contentHtml: string;
+  textContent: string;
+  wordCount: number;
+  title: string | null;
+  author: string | null;
+  publishedDate: string | null;
+  siteName: string | null;
+};
+
+function validateBaseUrl(value: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ExtractionFailure("invalid_base_url", "Capture base URL is invalid");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new ExtractionFailure("invalid_base_url", "Capture base URL must use HTTP(S)");
+  }
+  return url;
+}
+
+function resolveArticleUrls(html: string, baseUrl: URL): string {
+  const { document } = parseHTML("<html><body></body></html>");
+  const container = document.createElement("div");
+  container.innerHTML = html;
+
+  for (const link of container.querySelectorAll("a[href]")) {
+    const href = link.getAttribute("href");
+    if (!href) continue;
+    try {
+      link.setAttribute("href", new URL(href, baseUrl).toString());
+    } catch {
+      link.removeAttribute("href");
+    }
+  }
+
+  for (const image of container.querySelectorAll("img[src]")) {
+    const src = image.getAttribute("src");
+    if (!src) continue;
+    try {
+      image.setAttribute("src", new URL(src, baseUrl).toString());
+    } catch {
+      image.removeAttribute("src");
+    }
+  }
+
+  return container.innerHTML;
+}
+
+export function extractReadableSnapshot(input: {
+  documentHtml: string;
+  baseUrl: string;
+}): ExtractedSnapshot {
+  const baseUrl = validateBaseUrl(input.baseUrl);
+  const { metadata, readable } = parseReadableDocument(input.documentHtml);
+  const textContent = cleanOptionalText(readable?.textContent) ?? "";
+
+  if (!readable?.content || textContent.length < 100) {
+    throw new ExtractionFailure(
+      "no_readable_content",
+      "No readable article content was found",
+      { text_length: textContent.length },
+    );
+  }
+
+  const contentHtml = sanitizeClientHtml(
+    resolveArticleUrls(readable.content, baseUrl),
+  );
+  const sanitizedText = stripHtml(contentHtml).trim();
+  if (sanitizedText.length < 100) {
+    throw new ExtractionFailure(
+      "no_readable_content",
+      "Sanitized article content was empty",
+      { text_length: sanitizedText.length },
+    );
+  }
+
+  const storedBytes = utf8ByteLength(contentHtml);
+  if (storedBytes > ARTICLE_CONTENT_MAX_BYTES) {
+    throw new ExtractionFailure(
+      "stored_content_too_large",
+      "Sanitized article exceeds the storage limit",
+      { sanitized_bytes: storedBytes },
+    );
+  }
+
+  return {
+    contentHtml,
+    textContent: sanitizedText,
+    wordCount: countWords(sanitizedText),
+    title: cleanOptionalText(readable.title, ARTICLE_TITLE_MAX_CHARS),
+    author: cleanOptionalText(
+      readable.byline,
+      ARTICLE_AUTHOR_MAX_CHARS,
+    ) ?? cleanOptionalText(metadata.author, ARTICLE_AUTHOR_MAX_CHARS),
+    publishedDate: cleanOptionalText(
+      readable.publishedTime,
+      ARTICLE_PUBLISHED_DATE_MAX_CHARS,
+    ) ?? cleanOptionalText(
+      metadata.publishedDate,
+      ARTICLE_PUBLISHED_DATE_MAX_CHARS,
+    ),
+    siteName: cleanOptionalText(
+      readable.siteName,
+      ARTICLE_SITE_NAME_MAX_CHARS,
+    ) ?? cleanOptionalText(metadata.siteName, ARTICLE_SITE_NAME_MAX_CHARS),
+  };
 }
 
 async function readResponseTextWithLimit(
@@ -192,7 +316,11 @@ async function readResponseTextWithLimit(
   const lengthHeader = response.headers.get("content-length");
   const declaredLength = lengthHeader ? Number(lengthHeader) : NaN;
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    throw new Error("response body exceeded 5MB limit");
+    throw new ExtractionFailure(
+      "transport_overflow",
+      "Source response exceeded the transport limit",
+      { declared_bytes: declaredLength },
+    );
   }
 
   if (!response.body) {
@@ -213,7 +341,11 @@ async function readResponseTextWithLimit(
     totalBytes += value.byteLength;
     if (totalBytes > maxBytes) {
       await reader.cancel();
-      throw new Error("response body exceeded 5MB limit");
+      throw new ExtractionFailure(
+        "transport_overflow",
+        "Source response exceeded the transport limit",
+        { streamed_bytes: totalBytes },
+      );
     }
 
     text += decoder.decode(value, { stream: true });
@@ -225,6 +357,7 @@ async function readResponseTextWithLimit(
 
 async function tryExtractHackmdContent(
   bookmark: BookmarkRecord,
+  generationId: string,
   fetchImpl: typeof fetch,
   images: R2Bucket | undefined,
 ): Promise<{
@@ -262,11 +395,20 @@ async function tryExtractHackmdContent(
     return null;
   }
 
+  if (utf8ByteLength(renderedHtml) > ARTICLE_CONTENT_MAX_BYTES) {
+    throw new ExtractionFailure(
+      "stored_content_too_large",
+      "Sanitized article exceeds the storage limit",
+      { sanitized_bytes: utf8ByteLength(renderedHtml) },
+    );
+  }
+
   let contentHtml = renderedHtml;
   if (images) {
     const rewrittenContentHtml = await extractAndStoreImages(
       contentHtml,
       bookmark.id,
+      generationId,
       bookmark.url,
       images,
       fetchImpl,
@@ -281,7 +423,7 @@ async function tryExtractHackmdContent(
     contentHtml,
     publishedDate: null,
     siteName: "HackMD",
-    title: extractMarkdownTitle(markdown),
+    title: cleanOptionalText(extractMarkdownTitle(markdown), ARTICLE_TITLE_MAX_CHARS),
     wordCount: countWords(textContent),
   };
 }
@@ -296,7 +438,7 @@ export function pendingArticleContent(
 ): ArticleContentRecord {
   const now = nowIso();
   return {
-    id: existing?.id ?? makeId(),
+    id: makeId(),
     bookmarkId: bookmark.id,
     userId: bookmark.userId,
     contentHtml: null,
@@ -315,12 +457,13 @@ export function pendingArticleContent(
 function failureArticleContent(
   bookmark: BookmarkRecord,
   existing: ArticleContentRecord | null,
+  generationId: string,
   status: "failed" | "skipped",
   error: string,
 ): ArticleContentRecord {
   const now = nowIso();
   return {
-    id: existing?.id ?? makeId(),
+    id: generationId,
     bookmarkId: bookmark.id,
     userId: bookmark.userId,
     contentHtml: null,
@@ -343,6 +486,7 @@ async function sha256Hex(value: string): Promise<string> {
 async function maybeStoreImage(
   src: string,
   bookmarkId: string,
+  generationId: string,
   r2: R2Bucket,
   fetchImpl: typeof fetch,
   totalBytes: number,
@@ -383,14 +527,14 @@ async function maybeStoreImage(
   }
 
   const hash = await sha256Hex(src);
-  const key = `articles/${bookmarkId}/${hash}`;
+  const key = `articles/${bookmarkId}/${generationId}/${hash}`;
 
   await r2.put(key, body, {
     httpMetadata: { contentType },
   });
 
   return {
-    proxiedPath: `/v1/images/articles/${bookmarkId}/${hash}`,
+    proxiedPath: `/v1/images/articles/${bookmarkId}/${generationId}/${hash}`,
     bytesStored: body.byteLength,
   };
 }
@@ -398,6 +542,7 @@ async function maybeStoreImage(
 async function extractAndStoreImages(
   contentHtml: string,
   bookmarkId: string,
+  generationId: string,
   baseUrl: string,
   r2: R2Bucket,
   fetchImpl: typeof fetch,
@@ -425,6 +570,7 @@ async function extractAndStoreImages(
       const { proxiedPath, bytesStored } = await maybeStoreImage(
         absoluteUrl,
         bookmarkId,
+        generationId,
         r2,
         fetchImpl,
         totalBytes,
@@ -458,6 +604,47 @@ async function cleanupBookmarkImages(bookmarkId: string, r2: R2Bucket): Promise<
   } while (cursor);
 }
 
+async function cleanupBookmarkImageGeneration(
+  bookmarkId: string,
+  generationId: string,
+  r2: R2Bucket,
+): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    const listing = await r2.list({
+      prefix: `articles/${bookmarkId}/${generationId}/`,
+      cursor,
+    });
+    const keys = listing.objects.map((object) => object.key);
+    if (keys.length > 0) {
+      await r2.delete(keys);
+    }
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor);
+}
+
+async function cleanupObsoleteBookmarkImages(
+  bookmarkId: string,
+  currentGenerationId: string,
+  r2: R2Bucket,
+): Promise<void> {
+  let cursor: string | undefined;
+  const keepPrefix = `articles/${bookmarkId}/${currentGenerationId}/`;
+  do {
+    const listing = await r2.list({
+      prefix: `articles/${bookmarkId}/`,
+      cursor,
+    });
+    const keys = listing.objects
+      .map((object) => object.key)
+      .filter((key) => !key.startsWith(keepPrefix));
+    if (keys.length > 0) {
+      await r2.delete(keys);
+    }
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor);
+}
+
 export async function removeBookmarkImages(
   bookmarkId: string,
   r2?: R2Bucket,
@@ -466,7 +653,170 @@ export async function removeBookmarkImages(
     return;
   }
 
-  await cleanupBookmarkImages(bookmarkId, r2);
+  try {
+    await cleanupBookmarkImages(bookmarkId, r2);
+  } catch {
+    console.warn(JSON.stringify({
+      event: "article_images.cleanup",
+      outcome: "failed",
+      failure_code: "r2_cleanup_failed",
+      cleanup_scope: "bookmark",
+    }));
+  }
+}
+
+async function cleanupServerAttemptImages(
+  bookmarkId: string,
+  generationId: string,
+  r2?: R2Bucket,
+): Promise<void> {
+  if (!r2) return;
+  try {
+    await cleanupBookmarkImageGeneration(bookmarkId, generationId, r2);
+  } catch {
+    console.warn(JSON.stringify({
+      event: "article_images.cleanup",
+      outcome: "failed",
+      failure_code: "r2_cleanup_failed",
+      cleanup_scope: "attempt",
+    }));
+  }
+}
+
+async function cleanupAfterWinningServerWrite(
+  bookmarkId: string,
+  generationId: string,
+  r2?: R2Bucket,
+): Promise<void> {
+  if (!r2) return;
+  try {
+    await cleanupObsoleteBookmarkImages(bookmarkId, generationId, r2);
+  } catch {
+    console.warn(JSON.stringify({
+      event: "article_images.cleanup",
+      outcome: "failed",
+      failure_code: "r2_cleanup_failed",
+      cleanup_scope: "obsolete",
+    }));
+  }
+}
+
+function bookmarkMetadataForSnapshot(
+  bookmark: BookmarkRecord,
+  snapshot: Pick<ExtractedSnapshot, "title" | "siteName">,
+  source: "client" | "server",
+  now: string,
+): BookmarkRecord | undefined {
+  const next = { ...bookmark };
+  let changed = false;
+
+  if (snapshot.title) {
+    if (source === "client" && bookmark.titleSource !== "user") {
+      next.title = snapshot.title;
+      next.titleSource = "client";
+      changed = next.title !== bookmark.title || next.titleSource !== bookmark.titleSource;
+    } else if (source === "server" && bookmark.titleSource === "fallback") {
+      next.title = snapshot.title;
+      changed = next.title !== bookmark.title;
+    }
+  }
+
+  if (!bookmark.siteName && snapshot.siteName) {
+    next.siteName = snapshot.siteName;
+    changed = true;
+  }
+
+  if (!changed) return undefined;
+  next.updatedAt = now;
+  return next;
+}
+
+async function currentContentAfterLostWrite(
+  options: RunBookmarkExtractionOptions,
+  fallback: ArticleContentRecord,
+): Promise<ArticleContentRecord> {
+  return await options.store.getArticleContentByBookmarkId(
+    options.bookmark.userId,
+    options.bookmark.id,
+  ) ?? fallback;
+}
+
+async function persistServerFailure(
+  options: RunBookmarkExtractionOptions,
+  existing: ArticleContentRecord | null,
+  generationId: string,
+  status: "failed" | "skipped",
+  error: string,
+): Promise<ArticleContentRecord> {
+  await cleanupServerAttemptImages(
+    options.bookmark.id,
+    generationId,
+    options.env.IMAGES,
+  );
+  if (existing?.extractionStatus === "complete") {
+    return existing;
+  }
+
+  const failed = failureArticleContent(
+    options.bookmark,
+    existing,
+    generationId,
+    status,
+    error,
+  );
+  const result = await options.store.recordServerArticleFailure(
+    failed,
+    existing?.id ?? null,
+  );
+  return result.written
+    ? failed
+    : currentContentAfterLostWrite(options, existing ?? failed);
+}
+
+export async function runCapturedPageExtraction(options: {
+  store: Store;
+  bookmark: BookmarkRecord;
+  documentHtml: string;
+  baseUrl: string;
+}): Promise<{
+  article: ArticleContentRecord;
+  replacedServerContent: boolean;
+}> {
+  const existing = await options.store.getArticleContentByBookmarkId(
+    options.bookmark.userId,
+    options.bookmark.id,
+  );
+  const snapshot = extractReadableSnapshot({
+    documentHtml: options.documentHtml,
+    baseUrl: options.baseUrl,
+  });
+  const now = nowIso();
+  const complete: ArticleContentRecord = {
+    id: makeId(),
+    bookmarkId: options.bookmark.id,
+    userId: options.bookmark.userId,
+    contentHtml: snapshot.contentHtml,
+    wordCount: snapshot.wordCount,
+    author: snapshot.author,
+    publishedDate: snapshot.publishedDate,
+    extractionStatus: "complete",
+    extractionError: null,
+    extractedAt: now,
+    contentSource: "client",
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  const bookmark = bookmarkMetadataForSnapshot(
+    options.bookmark,
+    snapshot,
+    "client",
+    now,
+  );
+  const result = await options.store.putClientArticleContent(complete, bookmark);
+  return {
+    article: complete,
+    replacedServerContent: result.replacedServerContent,
+  };
 }
 
 export async function runBookmarkExtraction(
@@ -482,160 +832,85 @@ export async function runBookmarkExtraction(
     return existing;
   }
 
-  // The caller (queueBookmarkExtraction) already wrote a pending row before
-  // dispatching via waitUntil(). No need to write pending again here.
+  const generationId = makeId();
 
   try {
-    let hackmdContent: Awaited<ReturnType<typeof tryExtractHackmdContent>> = null;
+    let snapshot: ExtractedSnapshot | null = null;
     try {
-      hackmdContent = await tryExtractHackmdContent(
+      const hackmd = await tryExtractHackmdContent(
         options.bookmark,
+        generationId,
         fetchImpl,
         options.env.IMAGES,
       );
+      if (hackmd) {
+        snapshot = {
+          ...hackmd,
+          textContent: stripHtml(hackmd.contentHtml).trim(),
+        };
+      }
     } catch {
-      hackmdContent = null;
+      snapshot = null;
     }
 
-    if (hackmdContent) {
-      const now = nowIso();
-      let bookmarkChanged = false;
-      const nextBookmark: BookmarkRecord = {
-        ...options.bookmark,
-        extractionStatus: "complete",
-      };
+    if (!snapshot) {
+      const response = await fetchImpl(options.bookmark.url, {
+        headers: { "User-Agent": USER_AGENT },
+        signal: AbortSignal.timeout(ARTICLE_FETCH_TIMEOUT_MS),
+      });
 
-      if (options.bookmark.titleSource === "fallback" && hackmdContent.title) {
-        nextBookmark.title = hackmdContent.title;
-        nextBookmark.titleSource = "client";
-        bookmarkChanged = true;
+      if (!response.ok) {
+        const reason = response.status === 401 || response.status === 403
+          ? "access_denied"
+          : "fetch_error";
+        return persistServerFailure(
+          options,
+          existing,
+          generationId,
+          "failed",
+          makeExtractionError(reason, { http_status: response.status }),
+        );
       }
 
-      if (!options.bookmark.siteName && hackmdContent.siteName) {
-        nextBookmark.siteName = hackmdContent.siteName;
-        bookmarkChanged = true;
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.toLowerCase().includes("text/html")) {
+        return persistServerFailure(
+          options,
+          existing,
+          generationId,
+          "skipped",
+          makeExtractionError("unsupported_content_type", {
+            content_type: contentType,
+          }),
+        );
       }
 
-      if (bookmarkChanged) {
-        nextBookmark.updatedAt = now;
-        await options.store.updateBookmark(nextBookmark);
-      }
-
-      const complete: ArticleContentRecord = {
-        id: existing?.id ?? makeId(),
-        bookmarkId: options.bookmark.id,
-        userId: options.bookmark.userId,
-        contentHtml: hackmdContent.contentHtml,
-        wordCount: hackmdContent.wordCount,
-        author: hackmdContent.author,
-        publishedDate: hackmdContent.publishedDate,
-        extractionStatus: "complete",
-        extractionError: null,
-        extractedAt: now,
-        contentSource: "server",
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-      };
-
-      await options.store.upsertArticleContent(complete);
-      return complete;
-    }
-
-    const response = await fetchImpl(options.bookmark.url, {
-      headers: { "User-Agent": USER_AGENT },
-      signal: AbortSignal.timeout(ARTICLE_FETCH_TIMEOUT_MS),
-    });
-
-    if (!response.ok) {
-      const reason = response.status === 401 || response.status === 403
-        ? "access_denied"
-        : "fetch_error";
-      const failed = failureArticleContent(
-        options.bookmark,
-        existing,
-        "failed",
-        makeExtractionError(reason, { http_status: response.status }),
-      );
-      await options.store.upsertArticleContent(failed);
-      return failed;
-    }
-
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.toLowerCase().includes("text/html")) {
-      const skippedCt = failureArticleContent(
-        options.bookmark,
-        existing,
-        "skipped",
-        makeExtractionError("unsupported_content_type", { content_type: contentType }),
-      );
-      await options.store.upsertArticleContent(skippedCt);
-      return skippedCt;
-    }
-
-    const html = await readResponseTextWithLimit(response, ARTICLE_BODY_LIMIT_BYTES);
-    const { metadata, readable } = parseReadableDocument(html);
-
-    const textLength = cleanOptionalText(readable?.textContent)?.length ?? 0;
-    if (!readable?.content || textLength < 100) {
-      const skipped = failureArticleContent(
-        options.bookmark,
-        existing,
-        "skipped",
-        makeExtractionError("no_readable_content", { text_length: textLength }),
-      );
-      await options.store.upsertArticleContent(skipped);
-      return skipped;
-    }
-
-    let contentHtml = readable.content;
-    if (options.env.IMAGES) {
-      const rewrittenContentHtml = await extractAndStoreImages(
-        contentHtml,
-        options.bookmark.id,
-        response.url || options.bookmark.url,
-        options.env.IMAGES,
-        fetchImpl,
-      );
-      if (rewrittenContentHtml.trim()) {
-        contentHtml = rewrittenContentHtml;
+      const html = await readResponseTextWithLimit(response, ARTICLE_BODY_LIMIT_BYTES);
+      snapshot = extractReadableSnapshot({
+        documentHtml: html,
+        baseUrl: response.url || options.bookmark.url,
+      });
+      if (options.env.IMAGES) {
+        snapshot.contentHtml = await extractAndStoreImages(
+          snapshot.contentHtml,
+          options.bookmark.id,
+          generationId,
+          response.url || options.bookmark.url,
+          options.env.IMAGES,
+          fetchImpl,
+        );
       }
     }
 
-    const title = cleanOptionalText(readable.title);
-    const siteName = cleanOptionalText(readable.siteName) ?? metadata.siteName;
-    const author = cleanOptionalText(readable.byline) ?? metadata.author;
     const now = nowIso();
-
-    let bookmarkChanged = false;
-    const nextBookmark: BookmarkRecord = {
-      ...options.bookmark,
-      extractionStatus: "complete",
-    };
-
-    if (options.bookmark.titleSource === "fallback" && title) {
-      nextBookmark.title = title;
-      nextBookmark.titleSource = "client";
-      bookmarkChanged = true;
-    }
-
-    if (!options.bookmark.siteName && siteName) {
-      nextBookmark.siteName = siteName;
-      bookmarkChanged = true;
-    }
-
-    if (bookmarkChanged) {
-      nextBookmark.updatedAt = now;
-      await options.store.updateBookmark(nextBookmark);
-    }
-
     const complete: ArticleContentRecord = {
-      id: existing?.id ?? makeId(),
+      id: generationId,
       bookmarkId: options.bookmark.id,
       userId: options.bookmark.userId,
-      contentHtml,
-      wordCount: countWords(readable.textContent ?? ""),
-      author,
-      publishedDate: metadata.publishedDate,
+      contentHtml: snapshot.contentHtml,
+      wordCount: snapshot.wordCount,
+      author: snapshot.author,
+      publishedDate: snapshot.publishedDate,
       extractionStatus: "complete",
       extractionError: null,
       extractedAt: now,
@@ -643,8 +918,31 @@ export async function runBookmarkExtraction(
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
+    const bookmark = bookmarkMetadataForSnapshot(
+      options.bookmark,
+      snapshot,
+      "server",
+      now,
+    );
+    const result = await options.store.putServerArticleContent(
+      complete,
+      bookmark,
+      existing?.id ?? null,
+    );
+    if (!result.written) {
+      await cleanupServerAttemptImages(
+        options.bookmark.id,
+        generationId,
+        options.env.IMAGES,
+      );
+      return currentContentAfterLostWrite(options, existing ?? complete);
+    }
 
-    await options.store.upsertArticleContent(complete);
+    await cleanupAfterWinningServerWrite(
+      options.bookmark.id,
+      generationId,
+      options.env.IMAGES,
+    );
     return complete;
   } catch (error) {
     const reason = error instanceof ExtractionFailure
@@ -652,20 +950,15 @@ export async function runBookmarkExtraction(
       : error instanceof Error && error.message.includes("timeout")
         ? "timeout"
         : "fetch_error";
-    const failed = failureArticleContent(
-      options.bookmark,
+    return persistServerFailure(
+      options,
       existing,
+      generationId,
       "failed",
       makeExtractionError(
         reason,
-        error instanceof ExtractionFailure
-          ? error.extra
-          : error instanceof Error
-            ? { message: error.message }
-            : {},
+        error instanceof ExtractionFailure ? error.extra : {},
       ),
     );
-    await options.store.upsertArticleContent(failed);
-    return failed;
   }
 }

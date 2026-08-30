@@ -1,6 +1,9 @@
 import { cors } from "hono/cors";
 import { Hono, type Context } from "hono";
 import {
+  ARTICLE_CONTENT_MAX_BYTES,
+  CAPTURE_REQUEST_MAX_BYTES,
+  OFFLINE_BUNDLE_MAX_LIMIT,
   canonicalizeBookmarkUrl,
   classifyBookmarkUrl,
   changePasswordRequestSchema,
@@ -17,9 +20,12 @@ import { sanitizeClientHtml } from "./sanitize";
 import { D1Store } from "./d1-store";
 import {
   countWords,
+  ExtractionFailure,
   pendingArticleContent,
   removeBookmarkImages,
+  runCapturedPageExtraction,
   runBookmarkExtraction,
+  utf8ByteLength,
 } from "./extraction";
 import type { Store } from "./store";
 import type {
@@ -95,11 +101,45 @@ function debugLog(
   );
 }
 
+function captureLog(
+  env: Bindings,
+  data: {
+    outcome: "complete" | "fallback";
+    failureCode: string | null;
+    rawBytes: number;
+    sanitizedBytes: number;
+    durationMs: number;
+    preservedComplete: boolean;
+  },
+) {
+  if (!debugLogsEnabled(env)) return;
+  console.log(JSON.stringify({
+    ts: nowIso(),
+    event: "article.capture",
+    capture_path: "captured_page",
+    outcome: data.outcome,
+    failure_code: data.failureCode,
+    raw_bytes: data.rawBytes,
+    sanitized_bytes: data.sanitizedBytes,
+    duration_ms: data.durationMs,
+    preserved_complete: data.preservedComplete,
+  }));
+}
+
 function summarizeUrlField(value: unknown) {
   if (typeof value === "string") {
+    let parsed: URL | null = null;
+    try {
+      parsed = new URL(value);
+    } catch {
+      // Invalid input is still summarized without recording its contents.
+    }
     return {
       kind: "string",
-      value,
+      length: value.length,
+      protocol: parsed?.protocol ?? null,
+      hostname: parsed?.hostname ?? null,
+      path_length: parsed?.pathname.length ?? null,
     };
   }
 
@@ -107,7 +147,6 @@ function summarizeUrlField(value: unknown) {
     return {
       kind: "array",
       length: value.length,
-      first: value[0] ?? null,
     };
   }
 
@@ -135,6 +174,14 @@ function summarizeBookmarkBody(value: unknown) {
     title_type: record.title === undefined ? "missing" : typeof record.title,
     image_url_type: record.image_url === undefined ? "missing" : typeof record.image_url,
     site_name_type: record.site_name === undefined ? "missing" : typeof record.site_name,
+    captured_page_present: Boolean(record.captured_page),
+    captured_page_bytes:
+      record.captured_page
+      && typeof record.captured_page === "object"
+      && !Array.isArray(record.captured_page)
+      && typeof (record.captured_page as Record<string, unknown>).html === "string"
+        ? utf8ByteLength((record.captured_page as Record<string, string>).html)
+        : null,
   };
 }
 
@@ -149,31 +196,12 @@ function summarizeLoginBody(value: unknown) {
   return {
     body_type: "object",
     keys: Object.keys(record).sort(),
-    email: typeof record.email === "string" ? record.email : typeof record.email,
+    email_type: typeof record.email,
+    email_length: typeof record.email === "string" ? record.email.length : null,
     password_present: typeof record.password === "string" ? record.password.length > 0 : false,
     client_name:
       typeof record.client_name === "string" ? record.client_name : typeof record.client_name,
   };
-}
-
-function summarizeAuthHeader(value: string | undefined) {
-  if (!value) {
-    return {
-      present: false,
-    };
-  }
-
-  const [scheme, token] = value.split(/\s+/, 2);
-  return {
-    present: true,
-    scheme: scheme ?? null,
-    token_present: Boolean(token),
-    token_length: token?.length ?? 0,
-  };
-}
-
-function summarizeTokenHash(value: string) {
-  return value.slice(0, 12);
 }
 
 function parseBearerToken(value: string | undefined): string | null {
@@ -207,6 +235,44 @@ async function parseJsonBody<T>(
   return parsed.data;
 }
 
+async function readJsonBodyWithLimit(
+  c: Context<AppEnv>,
+  maxBytes: number,
+): Promise<unknown | Response> {
+  const body = c.req.raw.body;
+  if (!body) {
+    return errorResponse("invalid_request", "Invalid JSON body", 400);
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > maxBytes) {
+      await reader.cancel();
+      return errorResponse("payload_too_large", "Request body exceeds 5MB limit", 413);
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return errorResponse("invalid_request", "Invalid JSON body", 400);
+  }
+}
+
 function parseListQuery(c: Context<AppEnv>) {
   const q = c.req.query("q")?.trim() || undefined;
   let bucket = c.req.query("bucket")?.trim() || undefined;
@@ -225,16 +291,25 @@ function parseListQuery(c: Context<AppEnv>) {
   return { q, bucket: bucket as "reading" | "videos" | undefined, cursor, limit: parsedLimit };
 }
 
+function parseOfflineBundleQuery(c: Context<AppEnv>) {
+  const cursor = c.req.query("cursor")?.trim() || undefined;
+  const rawLimit = c.req.query("limit");
+  const limit = rawLimit ? Number(rawLimit) : OFFLINE_BUNDLE_MAX_LIMIT;
+  if (!Number.isInteger(limit) || limit < 1 || limit > OFFLINE_BUNDLE_MAX_LIMIT) {
+    return errorResponse(
+      "invalid_request",
+      `limit must be an integer between 1 and ${OFFLINE_BUNDLE_MAX_LIMIT}`,
+      400,
+    );
+  }
+  return { cursor, limit };
+}
+
 function bookmarkSaveResponse(
   c: Context<AppEnv>,
-  savedVia: string,
   bookmark: ReturnType<typeof bookmarkToApi>,
   status: 200 | 201,
 ) {
-  if (savedVia === "ios_shortcut") {
-    return c.body(null, 204);
-  }
-
   return c.json({ item: bookmark }, status);
 }
 
@@ -370,7 +445,18 @@ async function queueBookmarkExtraction(
     return existing.extractionStatus;
   }
 
-  await store.upsertArticleContent(pendingArticleContent(bookmark, existing));
+  if (existing?.extractionStatus !== "complete") {
+    const pending = await store.putServerArticleContent(
+      pendingArticleContent(bookmark, existing),
+      undefined,
+      existing?.id ?? null,
+    );
+    if (!pending.written) {
+      return (
+        await store.getArticleContentByBookmarkId(bookmark.userId, bookmark.id)
+      )?.extractionStatus ?? "pending";
+    }
+  }
   c.executionCtx.waitUntil(
     extractBookmark({
       env: c.env,
@@ -381,6 +467,61 @@ async function queueBookmarkExtraction(
   );
 
   return "pending";
+}
+
+async function queueCapturedPageExtraction(
+  c: Context<AppEnv>,
+  bookmark: BookmarkRecord,
+  capturedPage: { html: string; base_url: string },
+  extractBookmark: BookmarkExtractor,
+) {
+  const store = c.get("store");
+  const existing = await store.getArticleContentByBookmarkId(bookmark.userId, bookmark.id);
+  if (existing?.extractionStatus !== "complete") {
+    await store.putServerArticleContent(
+      pendingArticleContent(bookmark, existing),
+      undefined,
+      existing?.id ?? null,
+    );
+  }
+
+  c.executionCtx.waitUntil((async () => {
+    const startedAt = Date.now();
+    const rawBytes = utf8ByteLength(capturedPage.html);
+    try {
+      const capture = await runCapturedPageExtraction({
+        store,
+        bookmark,
+        documentHtml: capturedPage.html,
+        baseUrl: capturedPage.base_url,
+      });
+      if (capture.replacedServerContent) {
+        await removeBookmarkImages(bookmark.id, c.env.IMAGES);
+      }
+      captureLog(c.env, {
+        outcome: "complete",
+        failureCode: null,
+        rawBytes,
+        sanitizedBytes: utf8ByteLength(capture.article.contentHtml ?? ""),
+        durationMs: Date.now() - startedAt,
+        preservedComplete: false,
+      });
+    } catch (caught) {
+      captureLog(c.env, {
+        outcome: "fallback",
+        failureCode: caught instanceof ExtractionFailure
+          ? caught.reason
+          : "capture_failed",
+        rawBytes,
+        sanitizedBytes: 0,
+        durationMs: Date.now() - startedAt,
+        preservedComplete: existing?.extractionStatus === "complete",
+      });
+      await extractBookmark({ env: c.env, store, bookmark });
+    }
+  })());
+
+  return existing?.extractionStatus === "complete" ? "complete" : "pending";
 }
 
 function getAllowedOrigins(env: Bindings): string[] {
@@ -459,9 +600,7 @@ export function createApp(options: CreateAppOptions = {}) {
       ? await verifyPassword(parsed.password, user.passwordHash)
       : { valid: false, needsRehash: false };
     if (!user || !passwordCheck.valid) {
-      debugLog(c, "auth.login.rejected", {
-        email: parsed.email,
-      });
+      debugLog(c, "auth.login.rejected");
       return errorResponse("unauthorized", "Invalid email or password", 401);
     }
 
@@ -491,7 +630,6 @@ export function createApp(options: CreateAppOptions = {}) {
     await store.insertAccessToken(accessToken);
 
     debugLog(c, "auth.login.success", {
-      email: user.email,
       token_id: accessToken.id,
       token_name: accessToken.name,
     });
@@ -526,9 +664,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
     const bearer = parseBearerToken(c.req.header("authorization"));
     if (!bearer) {
-      debugLog(c, "auth.missing_bearer", {
-        auth_header: summarizeAuthHeader(c.req.header("authorization")),
-      });
+      debugLog(c, "auth.missing_bearer");
       return errorResponse("unauthorized", "Missing bearer token", 401);
     }
 
@@ -537,8 +673,6 @@ export function createApp(options: CreateAppOptions = {}) {
     const token = await store.getAccessTokenByHash(tokenHash);
     if (!token || token.revokedAt) {
       debugLog(c, "auth.invalid_bearer", {
-        auth_header: summarizeAuthHeader(c.req.header("authorization")),
-        token_hash_prefix: summarizeTokenHash(tokenHash),
         revoked: Boolean(token?.revokedAt),
       });
       return errorResponse("unauthorized", "Invalid bearer token", 401);
@@ -559,8 +693,6 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     debugLog(c, "auth.valid_bearer", {
-      auth_header: summarizeAuthHeader(c.req.header("authorization")),
-      token_hash_prefix: summarizeTokenHash(tokenHash),
       token_id: token.id,
       token_name: token.name,
       auth_user_id: user.id,
@@ -704,14 +836,15 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/v1/offline/status", async (c) => {
     const { user } = c.get("auth");
     const status = await c.get("store").getOfflineStatus(user.id);
+    c.header("Cache-Control", "no-store");
     return c.json({
       bookmark_count: status.bookmarkCount,
-      latest_updated_at: status.latestUpdatedAt,
+      sync_revision: status.syncRevision,
     });
   });
 
   app.get("/v1/offline/bundle", async (c) => {
-    const parsed = parseListQuery(c);
+    const parsed = parseOfflineBundleQuery(c);
     if (parsed instanceof Response) {
       return parsed;
     }
@@ -722,6 +855,7 @@ export function createApp(options: CreateAppOptions = {}) {
       limit: parsed.limit,
     });
 
+    c.header("Cache-Control", "no-store");
     return c.json({
       items: result.items.map((item) => ({
         bookmark: bookmarkToApi(item.bookmark),
@@ -761,12 +895,10 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.post("/v1/bookmarks", async (c) => {
-    let rawBody: unknown;
-    try {
-      rawBody = await c.req.json();
-    } catch {
+    const rawBody = await readJsonBodyWithLimit(c, CAPTURE_REQUEST_MAX_BYTES);
+    if (rawBody instanceof Response) {
       debugLog(c, "bookmark.save.invalid_json");
-      return errorResponse("invalid_request", "Invalid JSON body", 400);
+      return rawBody;
     }
 
     const parsedResult = createBookmarkRequestSchema.safeParse(rawBody);
@@ -839,27 +971,31 @@ export function createApp(options: CreateAppOptions = {}) {
       let extractionStatus: BookmarkRecord["extractionStatus"];
       if (!classification.autoExtract) {
         extractionStatus = null;
+      } else if (parsed.captured_page) {
+        extractionStatus = await queueCapturedPageExtraction(
+          c,
+          bookmark,
+          parsed.captured_page,
+          extractBookmark,
+        );
       } else if (parsed.saved_via === "extension") {
-        // Extension owns the capture lifecycle. Create a pending row so the
-        // bookmark shows "pending" in the UI, but do NOT waitUntil() a server
-        // fetch. The extension service worker will either upload content or
-        // explicitly trigger server extraction as fallback.
-        await store.upsertArticleContent(pendingArticleContent(bookmark, null));
-        extractionStatus = "pending";
+        const pending = pendingArticleContent(bookmark, null);
+        const result = await store.putServerArticleContent(pending, undefined, null);
+        extractionStatus = result.written ? "pending" : (
+          await store.getArticleContentByBookmarkId(user.id, bookmark.id)
+        )?.extractionStatus ?? "pending";
       } else {
         extractionStatus = await queueBookmarkExtraction(c, bookmark, extractBookmark);
       }
-      const responseStatus = bookmark.savedVia === "ios_shortcut" ? 204 : 201;
       debugLog(c, "bookmark.save.created", {
         auth_user_id: user.id,
         bookmark_id: bookmark.id,
-        normalized_url: normalizedUrl,
+        url: summarizeUrlField(normalizedUrl),
         saved_via: bookmark.savedVia,
-        status: responseStatus,
+        status: 201,
       });
       return bookmarkSaveResponse(
         c,
-        bookmark.savedVia,
         bookmarkToApi({ ...bookmark, extractionStatus }),
         201,
       );
@@ -884,28 +1020,44 @@ export function createApp(options: CreateAppOptions = {}) {
     let extractionStatus: BookmarkRecord["extractionStatus"];
     if (!classification.autoExtract) {
       extractionStatus = null;
+    } else if (parsed.captured_page) {
+      extractionStatus = await queueCapturedPageExtraction(
+        c,
+        nextBookmark,
+        parsed.captured_page,
+        extractBookmark,
+      );
     } else if (parsed.saved_via === "extension") {
       const existingContent = await store.getArticleContentByBookmarkId(user.id, nextBookmark.id);
-      if (!existingContent || existingContent.extractionStatus === "failed" || existingContent.extractionStatus === "skipped") {
-        await store.upsertArticleContent(pendingArticleContent(nextBookmark, existingContent));
-        extractionStatus = "pending";
+      if (
+        !existingContent
+        || existingContent.extractionStatus === "failed"
+        || existingContent.extractionStatus === "skipped"
+      ) {
+        const pending = pendingArticleContent(nextBookmark, existingContent);
+        const result = await store.putServerArticleContent(
+          pending,
+          undefined,
+          existingContent?.id ?? null,
+        );
+        extractionStatus = result.written ? "pending" : (
+          await store.getArticleContentByBookmarkId(user.id, nextBookmark.id)
+        )?.extractionStatus ?? "pending";
       } else {
         extractionStatus = existingContent.extractionStatus;
       }
     } else {
       extractionStatus = await queueBookmarkExtraction(c, nextBookmark, extractBookmark);
     }
-    const responseStatus = nextBookmark.savedVia === "ios_shortcut" ? 204 : 200;
     debugLog(c, "bookmark.save.updated_existing", {
       auth_user_id: user.id,
       bookmark_id: nextBookmark.id,
-      normalized_url: normalizedUrl,
+      url: summarizeUrlField(normalizedUrl),
       saved_via: nextBookmark.savedVia,
-      status: responseStatus,
+      status: 200,
     });
     return bookmarkSaveResponse(
       c,
-      nextBookmark.savedVia,
       bookmarkToApi({ ...nextBookmark, extractionStatus }),
       200,
     );
@@ -1039,15 +1191,15 @@ export function createApp(options: CreateAppOptions = {}) {
       return errorResponse("not_found", "Bookmark not found", 404);
     }
 
-    const contentLength = Number(c.req.header("content-length") ?? "");
-    if (Number.isFinite(contentLength) && contentLength > 5 * 1024 * 1024) {
-      return errorResponse("payload_too_large", "Request body exceeds 5MB limit", 413);
+    const rawBody = await readJsonBodyWithLimit(c, CAPTURE_REQUEST_MAX_BYTES);
+    if (rawBody instanceof Response) {
+      return rawBody;
     }
-
-    const parsed = await parseJsonBody(c, uploadBookmarkContentRequestSchema);
-    if (parsed instanceof Response) {
-      return parsed;
+    const parsedResult = uploadBookmarkContentRequestSchema.safeParse(rawBody);
+    if (!parsedResult.success) {
+      return errorResponse("invalid_request", "Invalid request body", 400);
     }
+    const parsed = parsedResult.data;
 
     const renderedHackmdHtml = isHackmdUrl(bookmark.url) && !hasHtmlMarkup(parsed.content_html)
       ? renderMarkdownToHtml(parsed.content_html)
@@ -1061,11 +1213,18 @@ export function createApp(options: CreateAppOptions = {}) {
         422,
       );
     }
+    if (utf8ByteLength(sanitized) > ARTICLE_CONTENT_MAX_BYTES) {
+      return errorResponse(
+        "stored_content_too_large",
+        "Sanitized article exceeds the storage limit",
+        422,
+      );
+    }
 
     const now = nowIso();
     const existing = await store.getArticleContentByBookmarkId(user.id, bookmark.id);
     const content: ArticleContentRecord = {
-      id: existing?.id ?? makeId(),
+      id: makeId(),
       bookmarkId: bookmark.id,
       userId: user.id,
       contentHtml: sanitized,
@@ -1080,36 +1239,34 @@ export function createApp(options: CreateAppOptions = {}) {
       updatedAt: now,
     };
 
-    // If existing content came from server extraction, clean up R2 images
-    // before overwriting with client HTML (which uses original image URLs).
-    if (existing?.contentSource === "server" && existing.contentHtml) {
-      c.executionCtx.waitUntil(removeBookmarkImages(bookmark.id, c.env.IMAGES));
-    }
-
-    await store.upsertArticleContent(content);
-    const activeShare = await store.getBookmarkShare(user.id, bookmark.id);
-    if (activeShare) {
-      await store.disableBookmarkShare(user.id, bookmark.id, now);
-    }
-
     let bookmarkChanged = false;
     const nextBookmark = { ...bookmark };
     const derivedHackmdTitle = renderedHackmdHtml ? extractMarkdownTitle(parsed.content_html) : null;
+    const capturedTitle = parsed.title?.trim() || derivedHackmdTitle;
 
-    if (bookmark.titleSource === "fallback" && (parsed.title || derivedHackmdTitle)) {
-      nextBookmark.title = parsed.title ?? derivedHackmdTitle ?? bookmark.title;
+    if (bookmark.titleSource !== "user" && capturedTitle) {
+      nextBookmark.title = capturedTitle;
       nextBookmark.titleSource = "client";
-      bookmarkChanged = true;
+      bookmarkChanged = nextBookmark.title !== bookmark.title
+        || nextBookmark.titleSource !== bookmark.titleSource;
     }
 
-    if (!bookmark.siteName && (parsed.site_name || (renderedHackmdHtml ? "HackMD" : null))) {
-      nextBookmark.siteName = parsed.site_name ?? "HackMD";
+    const capturedSiteName = parsed.site_name?.trim() || (renderedHackmdHtml ? "HackMD" : null);
+    if (!bookmark.siteName && capturedSiteName) {
+      nextBookmark.siteName = capturedSiteName;
       bookmarkChanged = true;
     }
 
     if (bookmarkChanged) {
       nextBookmark.updatedAt = now;
-      await store.updateBookmark(nextBookmark);
+    }
+
+    const write = await store.putClientArticleContent(
+      content,
+      bookmarkChanged ? nextBookmark : undefined,
+    );
+    if (write.replacedServerContent) {
+      c.executionCtx.waitUntil(removeBookmarkImages(bookmark.id, c.env.IMAGES));
     }
 
     return c.json({ item: articleContentToApi(content) });
@@ -1123,6 +1280,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     const content = await c.get("store").getArticleContentByBookmarkId(user.id, bookmark.id);
+    c.header("Cache-Control", "no-store");
     if (!content) {
       return c.json({
         item: articleContentToApi(pendingArticleContent(bookmark, null)),
@@ -1140,12 +1298,10 @@ export function createApp(options: CreateAppOptions = {}) {
       return errorResponse("not_found", "Bookmark not found", 404);
     }
 
-    const activeShare = await store.getBookmarkShare(user.id, bookmark.id);
-    await store.deleteBookmarkContent(user.id, bookmark.id);
-    if (activeShare) {
-      await store.disableBookmarkShare(user.id, bookmark.id, nowIso());
+    const deleted = await store.deleteArticleContent(user.id, bookmark.id);
+    if (deleted.deleted) {
+      c.executionCtx.waitUntil(removeBookmarkImages(bookmark.id, c.env.IMAGES));
     }
-    c.executionCtx.waitUntil(removeBookmarkImages(bookmark.id, c.env.IMAGES));
     return c.body(null, 204);
   });
 
@@ -1167,6 +1323,25 @@ export function createApp(options: CreateAppOptions = {}) {
     c.header("X-Robots-Tag", "noindex, nofollow");
     return c.json({
       item: publicShareArticleToApi(result.bookmark, result.content),
+    });
+  });
+
+  app.get("/v1/images/articles/:bookmarkId/:generationId/:hash", async (c) => {
+    if (!c.env.IMAGES) {
+      return errorResponse("not_found", "Image not found", 404);
+    }
+
+    const key = `articles/${c.req.param("bookmarkId")}/${c.req.param("generationId")}/${c.req.param("hash")}`;
+    const object = await c.env.IMAGES.get(key);
+    if (!object) {
+      return errorResponse("not_found", "Image not found", 404);
+    }
+
+    return new Response(object.body, {
+      headers: {
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Type": object.httpMetadata?.contentType ?? "image/jpeg",
+      },
     });
   });
 
