@@ -33,7 +33,7 @@ Installed PWA Refresh belongs in the existing header outside the reader. It must
 
 ## Reader
 
-- Reader text gets space and line height, not decorative chrome.
+- Reader text uses a light body weight, comfortable line height, and a restrained medium title—not decorative chrome.
 - Put Back on the left of the sticky header and group Share, Listen, text size, and Read on web as square icon actions on the right.
 - Keep title and metadata below that utility row. Separate source, author, reading time, and date with compact middle dots; use normal casing and a readable date such as `Aug 26, 2026`.
 - Use accessible labels and titles for icon-only actions. Read on web remains visibly disabled offline.

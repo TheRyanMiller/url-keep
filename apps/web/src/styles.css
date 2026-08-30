@@ -564,7 +564,7 @@ input {
 
 .reader-header h1 {
   font-size: 24px;
-  font-weight: 500;
+  font-weight: 450;
   line-height: 1.25;
   margin: 0;
 }
@@ -659,6 +659,7 @@ input {
 .reader-content {
   --reader-font-size: 15px;
   display: grid;
+  font-weight: 350;
   gap: 18px;
   font-size: var(--reader-font-size);
   line-height: 1.8;
