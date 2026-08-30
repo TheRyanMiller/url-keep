@@ -113,6 +113,7 @@ export async function cacheNarrationAudio(
   client: UrlKeepClient,
   bookmarkId: string,
   narration: ReadyNarrationSummary,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const settings = await getAudioSettings();
   if (!settings.enabled) return false;
@@ -121,7 +122,7 @@ export async function cacheNarrationAudio(
   if (existing) return true;
   if (!(await enforceAudioLimit(settings.byte_limit, narration.byte_size))) return false;
 
-  const response = await client.getNarrationAudio(bookmarkId);
+  const response = await client.getNarrationAudio(bookmarkId, signal);
   const declaredSize = Number(response.headers.get("content-length"));
   if (
     response.status !== 200

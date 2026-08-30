@@ -70,4 +70,21 @@ describe("UrlKeepClient request ownership", () => {
     await expect(client.me()).rejects.toMatchObject({ status: 500 });
     expect(onUnauthorized).not.toHaveBeenCalled();
   });
+
+  it("forwards cancellation to narration audio reads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("audio"));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new UrlKeepClient({
+      baseUrl: "https://api.example.com",
+      getToken: () => "token",
+    });
+    const controller = new AbortController();
+
+    await client.getNarrationAudio("bookmark-1", controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/bookmarks/bookmark-1/narration/audio",
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
 });

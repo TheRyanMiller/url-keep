@@ -1,18 +1,45 @@
 import { ApiError, type UrlKeepClient } from "@url-keep/api-client";
 import type { Narration, ReadyNarrationSummary } from "@url-keep/shared";
-import { LoaderCircle, RefreshCw, Volume2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { RefreshCw, Volume2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useOnlineStatus } from "../hooks/useOnlineStatus";
+import { AudioPlayer } from "./AudioPlayer";
 import {
   cacheNarrationAudio,
   getCachedAudio,
   getCachedAudioForArticle,
 } from "./offline-audio";
 
+const POLL_DELAYS_MS = [1_500, 2_500, 4_000, 6_000, 8_000];
+
+type NarrationView =
+  | { kind: "idle" }
+  | { kind: "preparing" }
+  | { kind: "ready"; audioUrl: string; identity: string }
+  | { kind: "failed"; message: string; retryable: boolean };
+
 function safeError(code: string | null): string {
-  if (code === "file_too_large") return "article audio is too large";
-  if (code === "source_mismatch") return "article changed before audio finished";
-  return "audio could not be prepared";
+  if (code === "file_too_large") return "Article audio is too large.";
+  if (code === "source_mismatch") return "The article changed before audio finished.";
+  return "Audio could not be prepared.";
+}
+
+function wait(milliseconds: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const onAbort = () => {
+      window.clearTimeout(timeout);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const timeout = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function verifiedOnlineBlob(
@@ -38,150 +65,217 @@ export function ArticleAudio({
   client,
   bookmarkId,
   articleId,
+  title,
+  artist,
+  reveal = false,
 }: {
   client: UrlKeepClient;
   bookmarkId: string;
   articleId: string;
+  title: string;
+  artist?: string | null;
+  reveal?: boolean;
 }) {
   const online = useOnlineStatus();
-  const [narration, setNarration] = useState<Narration | null>(null);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [cachedOffline, setCachedOffline] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [view, setView] = useState<NarrationView>({ kind: "idle" });
+  const controllerRef = useRef<AbortController | null>(null);
   const audioUrlRef = useRef<string | null>(null);
 
-  const replaceAudioUrl = useCallback((next: string | null) => {
+  function replaceAudioUrl(next: string | null) {
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
     audioUrlRef.current = next;
-    setAudioUrl(next);
-  }, []);
+  }
 
-  useEffect(() => () => {
-    if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
-    audioUrlRef.current = null;
-  }, []);
-
-  const loadAudio = useCallback(async (current: Narration) => {
-    if (!current.audio) return;
+  async function showReady(current: Narration, signal: AbortSignal) {
+    if (!current.audio) throw new Error("ready narration has no audio");
     const summary: ReadyNarrationSummary = {
       id: current.id,
       article_id: articleId,
       ...current.audio,
     };
     let response = await getCachedAudio(summary.id, summary.sha256);
-    let isCached = Boolean(response);
+    let cached = Boolean(response);
     if (!response && online) {
-      const stored = await cacheNarrationAudio(client, bookmarkId, summary).catch(() => false);
-      response = stored ? await getCachedAudio(summary.id, summary.sha256) : null;
-      isCached = Boolean(response);
+      const stored = await cacheNarrationAudio(client, bookmarkId, summary, signal)
+        .catch(() => false);
+      if (stored) {
+        response = await getCachedAudio(summary.id, summary.sha256);
+        cached = Boolean(response);
+      }
     }
     if (!response && online) {
-      response = await client.getNarrationAudio(bookmarkId);
-      isCached = false;
+      response = await client.getNarrationAudio(bookmarkId, signal);
     }
-    setCachedOffline(isCached);
-    if (!response) {
-      replaceAudioUrl(null);
-      setMessage("audio isn't downloaded");
-      return;
-    }
-    const blob = isCached
+    if (!response) throw new Error("audio unavailable");
+    const blob = cached
       ? await response.blob()
       : await verifiedOnlineBlob(response, current.audio);
-    replaceAudioUrl(URL.createObjectURL(blob));
-  }, [articleId, bookmarkId, client, online, replaceAudioUrl]);
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    const audioUrl = URL.createObjectURL(blob);
+    replaceAudioUrl(audioUrl);
+    setView({
+      kind: "ready",
+      audioUrl,
+      identity: `${summary.id}:${summary.sha256}`,
+    });
+  }
 
-  const refresh = useCallback(async () => {
-    if (!online) {
-      const cached = await getCachedAudioForArticle(articleId);
-      if (cached) {
-        setCachedOffline(true);
-        replaceAudioUrl(URL.createObjectURL(await cached.response.blob()));
-      }
+  async function resolveNarration(current: Narration, controller: AbortController) {
+    if (current.status === "ready") {
+      await showReady(current, controller.signal);
       return;
     }
-    try {
-      const response = await client.getNarration(bookmarkId);
-      setNarration(response.item);
-      if (response.item.status === "ready") await loadAudio(response.item);
-    } catch (caught) {
-      if (!(caught instanceof ApiError && caught.status === 404)) {
-        setMessage("audio status is unavailable");
-      }
+    if (current.status === "failed") {
+      setView({
+        kind: "failed",
+        message: safeError(current.error_code),
+        retryable: current.retryable,
+      });
+      return;
     }
-  }, [articleId, bookmarkId, client, loadAudio, online, replaceAudioUrl]);
+    setView({ kind: "preparing" });
+    let attempt = 0;
+    while (!controller.signal.aborted) {
+      await wait(
+        POLL_DELAYS_MS[Math.min(attempt, POLL_DELAYS_MS.length - 1)],
+        controller.signal,
+      );
+      const response = await client.getNarration(bookmarkId, controller.signal);
+      if (response.item.status !== "pending") {
+        await resolveNarration(response.item, controller);
+        return;
+      }
+      attempt += 1;
+    }
+  }
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  function begin() {
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    return controller;
+  }
 
-  useEffect(() => {
-    if (narration?.status !== "pending" || !online) return;
-    const timer = window.setInterval(() => void refresh(), 5_000);
-    return () => window.clearInterval(timer);
-  }, [narration?.status, online, refresh]);
-
-  const request = async (retry = false) => {
-    setBusy(true);
-    setMessage(null);
+  async function request(retry: boolean) {
+    if (!online) return;
+    const controller = begin();
+    replaceAudioUrl(null);
+    setView({ kind: "preparing" });
     try {
       const response = retry
-        ? await client.retryNarration(bookmarkId)
-        : await client.requestNarration(bookmarkId);
-      setNarration(response.item);
-      if (response.item.status === "ready") await loadAudio(response.item);
+        ? await client.retryNarration(bookmarkId, controller.signal)
+        : await client.requestNarration(bookmarkId, controller.signal);
+      await resolveNarration(response.item, controller);
     } catch {
-      setMessage("audio request failed");
+      if (!controller.signal.aborted) {
+        setView({
+          kind: "failed",
+          message: "Audio request failed.",
+          retryable: false,
+        });
+      }
     } finally {
-      setBusy(false);
+      if (controllerRef.current === controller) controllerRef.current = null;
     }
-  };
+  }
 
-  if (audioUrl) {
+  useEffect(() => {
+    const controller = begin();
+    replaceAudioUrl(null);
+    setView({ kind: "idle" });
+    void (async () => {
+      try {
+        if (!online) {
+          const cached = await getCachedAudioForArticle(articleId);
+          if (!cached || controller.signal.aborted) return;
+          const blob = await cached.response.blob();
+          if (controller.signal.aborted) return;
+          const audioUrl = URL.createObjectURL(blob);
+          replaceAudioUrl(audioUrl);
+          setView({
+            kind: "ready",
+            audioUrl,
+            identity: `${cached.record.narration_id}:${cached.record.sha256}`,
+          });
+          return;
+        }
+        const response = await client.getNarration(bookmarkId, controller.signal);
+        await resolveNarration(response.item, controller);
+      } catch (caught) {
+        if (
+          !controller.signal.aborted
+          && !(caught instanceof ApiError && caught.status === 404)
+        ) setView({ kind: "idle" });
+      } finally {
+        if (controllerRef.current === controller) controllerRef.current = null;
+      }
+    })();
+    return () => controller.abort();
+  }, [articleId, bookmarkId, client, online]);
+
+  useEffect(() => () => {
+    controllerRef.current?.abort();
+    replaceAudioUrl(null);
+  }, []);
+
+  if (view.kind === "ready") {
     return (
-      <div className="article-audio">
-        <audio controls preload="metadata" src={audioUrl} />
-        {!cachedOffline && online ? <span>not saved offline</span> : null}
-      </div>
+      <AudioPlayer
+        artist={artist}
+        audioUrl={view.audioUrl}
+        identity={view.identity}
+        key={view.identity}
+        reveal={reveal}
+        title={title}
+      />
     );
   }
-  if (narration?.status === "pending" || busy) {
+  if (view.kind === "preparing") {
     return (
-      <span className="article-audio-status">
-        <LoaderCircle aria-hidden="true" className="spin" size={14} />
-        preparing audio — safe to leave
+      <span className="article-audio-control">
+        <button
+          aria-busy="true"
+          aria-label="Preparing article audio"
+          className="reader-toolbar-action"
+          disabled
+          title="Preparing audio"
+          type="button"
+        >
+          <span aria-hidden="true" className="article-audio-spinner" />
+        </button>
       </span>
     );
   }
-  if (narration?.status === "failed") {
+  if (view.kind === "failed") {
     return (
-      <span className="article-audio-status">
-        {safeError(narration.error_code)}
-        {narration.retryable && online ? (
-          <button className="icon-action" onClick={() => void request(true)} type="button">
-            <RefreshCw aria-hidden="true" size={14} />
-            <span className="sr-only">retry audio</span>
+      <span className="article-audio-control">
+        {view.retryable && online ? (
+          <button
+            aria-label="Retry article audio"
+            className="reader-toolbar-action"
+            onClick={() => void request(true)}
+            title="Retry audio"
+            type="button"
+          >
+            <RefreshCw aria-hidden="true" size={16} strokeWidth={1.8} />
           </button>
         ) : null}
+        <span className="article-audio-feedback" role="status">{view.message}</span>
       </span>
     );
   }
-  if (!online) {
-    return message ? <span className="article-audio-status">{message}</span> : null;
-  }
+  if (!online) return null;
   return (
-    <span className="article-audio-request">
+    <span className="article-audio-control">
       <button
-        aria-label="prepare article audio"
-        className="reader-text-size-trigger"
-        onClick={() => void request()}
-        title="Prepare article audio"
+        aria-label="Prepare article audio"
+        className="reader-toolbar-action"
+        onClick={() => void request(false)}
+        title="Listen"
         type="button"
       >
-        <Volume2 aria-hidden="true" size={15} />
+        <Volume2 aria-hidden="true" size={17} strokeWidth={1.8} />
       </button>
-      {message ? <span>{message}</span> : null}
     </span>
   );
 }

@@ -11,6 +11,7 @@ import {
   type User,
 } from "@url-keep/shared";
 import {
+  ArrowLeft,
   ArrowUpRight,
   BookOpen,
   Check,
@@ -224,7 +225,13 @@ function formatOptionalDate(value: string | null | undefined) {
   }
 
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
 }
 
 function formatSavedViaLabel(value: Bookmark["saved_via"]) {
@@ -240,6 +247,13 @@ function formatSavedViaLabel(value: Bookmark["saved_via"]) {
 
 function normalizeMetadataLabel(value: string | null | undefined) {
   return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
+}
+
+function cleanMetadataLabel(value: string | null | undefined) {
+  const cleaned = value?.trim().replace(/\s+/g, " ") ?? "";
+  const pairs: Array<[string, string]> = [["\"", "\""], ["'", "'"], ["“", "”"]];
+  const wrapping = pairs.find(([start, end]) => cleaned.startsWith(start) && cleaned.endsWith(end));
+  return wrapping && cleaned.length > 2 ? cleaned.slice(1, -1).trim() : cleaned;
 }
 
 async function copyToClipboard(value: string) {
@@ -816,7 +830,7 @@ function ReaderDocument({
 }) {
   const [textSize, setTextSize] = useState<ReaderTextSize>(() => readStoredReaderTextSize());
   const [textSizeMenuOpen, setTextSizeMenuOpen] = useState(false);
-  const textSizeControlRef = useRef<HTMLDivElement | null>(null);
+  const textSizeControlRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
     writeStoredReaderTextSize(textSize);
@@ -858,96 +872,103 @@ function ReaderDocument({
   const resolvedPublishedDate = formatOptionalDate(publishedDate);
   const readMinutes = wordCount ? estimateReadMinutes(wordCount) : null;
   const sourceHref = toReadableBookmarkUrl(sourceUrl);
-  const normalizedAuthor = normalizeMetadataLabel(author);
-  const normalizedSiteName = normalizeMetadataLabel(siteName);
-  const primarySourceLabel = siteName?.trim() || author?.trim() || null;
+  const cleanedAuthor = cleanMetadataLabel(author);
+  const cleanedSiteName = cleanMetadataLabel(siteName);
+  const normalizedAuthor = normalizeMetadataLabel(cleanedAuthor);
+  const normalizedSiteName = normalizeMetadataLabel(cleanedSiteName);
+  const primarySourceLabel = cleanedSiteName || cleanedAuthor || null;
   const secondaryAuthorLabel =
-    siteName?.trim() && author?.trim() && normalizedAuthor !== normalizedSiteName
-      ? author.trim()
+    cleanedSiteName && cleanedAuthor && normalizedAuthor !== normalizedSiteName
+      ? cleanedAuthor
       : null;
 
   return (
     <>
-      <header className="page-header reader-page-header">{header}</header>
+      <header className="page-header reader-page-header">
+        <span className="reader-page-leading">{header}</span>
+        <span aria-label="Reader controls" className="reader-toolbar" role="toolbar">
+          {shareAction ? (
+            <button
+              aria-label={shareAction.busy ? "Sharing article" : "Share article"}
+              className="reader-toolbar-action"
+              disabled={shareAction.busy}
+              onClick={shareAction.onClick}
+              title={shareAction.busy ? "Sharing" : "Share"}
+              type="button"
+            >
+              <Share2 aria-hidden="true" size={16} strokeWidth={1.8} />
+            </button>
+          ) : null}
+          {audioControl}
+          <span className="reader-text-size-control" ref={textSizeControlRef}>
+            <button
+              aria-expanded={textSizeMenuOpen}
+              aria-label="Text size"
+              className="reader-toolbar-action reader-text-size-trigger"
+              onClick={() => setTextSizeMenuOpen((open) => !open)}
+              title="Text size"
+              type="button"
+            >
+              Aa
+            </button>
+            {textSizeMenuOpen ? (
+              <span aria-label="Text size options" className="reader-text-size-menu" role="group">
+                {READER_TEXT_SIZE_OPTIONS.map((option) => (
+                  <button
+                    aria-pressed={textSize === option.value}
+                    className={`reader-text-size-option${textSize === option.value ? " is-active" : ""}`}
+                    key={option.value}
+                    onClick={() => {
+                      setTextSize(option.value);
+                      setTextSizeMenuOpen(false);
+                    }}
+                    type="button"
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </span>
+            ) : null}
+          </span>
+          {sourceAvailable ? (
+            <a
+              aria-label="Read on web"
+              className="reader-toolbar-action"
+              href={sourceHref}
+              rel="noopener noreferrer"
+              target="_blank"
+              title="Read on web"
+            >
+              <ArrowUpRight aria-hidden="true" size={16} strokeWidth={1.8} />
+            </a>
+          ) : (
+            <span
+              aria-disabled="true"
+              aria-label="Read on web unavailable offline"
+              className="reader-toolbar-action is-disabled"
+              title="Unavailable offline"
+            >
+              <ArrowUpRight aria-hidden="true" size={16} strokeWidth={1.8} />
+            </span>
+          )}
+        </span>
+      </header>
       <article className="reader-shell">
         <header className="reader-header">
           <h1>{title}</h1>
           <div className="reader-meta">
-            {shareAction ? (
-              <button
-                aria-label={shareAction.busy ? "copying public reader link" : "copy public reader link"}
-                className="icon-action reader-inline-share"
-                disabled={shareAction.busy}
-                onClick={shareAction.onClick}
-                title={shareAction.busy ? "Copying public reader link" : "Copy public reader link"}
-                type="button"
-              >
-                <Share2 aria-hidden="true" size={14} strokeWidth={1.75} />
-              </button>
-            ) : null}
-            {primarySourceLabel ? <span>{primarySourceLabel}</span> : null}
-            {secondaryAuthorLabel ? <span>{secondaryAuthorLabel}</span> : null}
+            {primarySourceLabel ? <span className="reader-meta-item">{primarySourceLabel}</span> : null}
+            {secondaryAuthorLabel ? <span className="reader-meta-item">{secondaryAuthorLabel}</span> : null}
             {readMinutes && wordCount ? (
               <span
                 aria-label={`${readMinutes} min read, ${wordCount.toLocaleString()} words`}
-                className="reader-meta-tooltip"
+                className="reader-meta-item reader-meta-tooltip"
                 title={`${wordCount.toLocaleString()} words`}
               >
                 {readMinutes} min read
               </span>
             ) : null}
-            {resolvedPublishedDate ? <span>{resolvedPublishedDate}</span> : null}
-            <div className="reader-text-size-control" ref={textSizeControlRef}>
-              <button
-                aria-expanded={textSizeMenuOpen}
-                aria-haspopup="true"
-                aria-label="Text size"
-                className="reader-text-size-trigger"
-                onClick={() => setTextSizeMenuOpen((open) => !open)}
-                type="button"
-              >
-                Aa
-              </button>
-              {textSizeMenuOpen ? (
-                <div className="reader-text-size-menu" role="menu" aria-label="Text size options">
-                  {READER_TEXT_SIZE_OPTIONS.map((option) => (
-                    <button
-                      aria-pressed={textSize === option.value}
-                      className={`reader-text-size-option${textSize === option.value ? " is-active" : ""}`}
-                      key={option.value}
-                      onClick={() => {
-                        setTextSize(option.value);
-                        setTextSizeMenuOpen(false);
-                      }}
-                      type="button"
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-            {audioControl}
-            {sourceAvailable ? (
-              <a
-                className="reader-meta-link"
-                href={sourceHref}
-                rel="noopener noreferrer"
-                target="_blank"
-              >
-                Read on web
-                <ArrowUpRight aria-hidden="true" size={11} strokeWidth={1.8} />
-              </a>
-            ) : (
-              <span
-                aria-disabled="true"
-                className="reader-meta-link is-disabled"
-                title="Unavailable offline"
-              >
-                Read on web
-                <ArrowUpRight aria-hidden="true" size={11} strokeWidth={1.8} />
-              </span>
-            )}
+            {resolvedPublishedDate ? <span className="reader-meta-item">{resolvedPublishedDate}</span> : null}
           </div>
         </header>
 
@@ -2172,22 +2193,29 @@ function ReaderPage() {
     };
   }, [id, offline.online, offline.syncVersion]);
 
-  const copyArticleLink = async () => {
+  const shareArticle = async () => {
     if (!bookmark) {
       return;
     }
 
     setShareBusy(true);
     try {
-      await copyPreferredArticleLink({
-        client: auth.client,
-        bookmarkId: bookmark.id,
-        sourceUrl: bookmark.url,
-        extractionStatus: article?.extraction_status ?? bookmark.extraction_status,
-        preferReaderLink: true,
-        online: offline.online,
-        onNotice: showNotice,
-      });
+      let url = toReadableBookmarkUrl(bookmark.url);
+      if (
+        offline.online
+        && (article?.extraction_status ?? bookmark.extraction_status) === "complete"
+      ) {
+        const response = await auth.client.enableBookmarkShare(bookmark.id).catch(() => null);
+        url = response?.item.share_url ?? url;
+      }
+      const result = await shareLink(
+        { title: article?.title ?? bookmark.title, url },
+        navigator.share?.bind(navigator),
+        copyToClipboard,
+      );
+      if (result === "copied") showNotice("link copied");
+    } catch {
+      showNotice("could not share link");
     } finally {
       setShareBusy(false);
     }
@@ -2209,9 +2237,12 @@ function ReaderPage() {
             article?.id && article.extraction_status === "complete" && article.content_html ? (
               <ArticleAudio
                 articleId={article.id}
+                artist={article.author ?? bookmark.site_name}
                 bookmarkId={bookmark.id}
                 client={auth.client}
                 key={article.id}
+                reveal={location.hash === "#audio"}
+                title={article.title ?? bookmark.title}
               />
             ) : null
           }
@@ -2221,19 +2252,17 @@ function ReaderPage() {
           extractionStatus={article?.extraction_status ?? "pending"}
           header={(
             <>
-              <Link aria-label="back" className="text-action reader-back-link" to="/">&#x2190;</Link>
+              <Link aria-label="Back to reading list" className="reader-back-link" to="/">
+                <ArrowLeft aria-hidden="true" size={20} strokeWidth={1.8} />
+              </Link>
               {!offline.online ? <span className="offline-badge">offline</span> : null}
-              <StandaloneControls
-                onNotice={showNotice}
-                share={{ title: bookmark.title, url: bookmark.url }}
-              />
             </>
           )}
           publishedDate={article?.published_date}
           shareAction={{
             busy: shareBusy,
             onClick: () => {
-              void copyArticleLink();
+              void shareArticle();
             },
           }}
           siteName={bookmark.site_name}
@@ -2254,6 +2283,7 @@ function PublicSharePage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<{ id: number; message: string } | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
 
   useEffect(() => {
     if (!notice) return;
@@ -2302,6 +2332,28 @@ function PublicSharePage() {
     };
   }, [auth.client, token]);
 
+  const shareArticle = async () => {
+    if (!article || !token) return;
+    setShareBusy(true);
+    try {
+      const result = await shareLink(
+        {
+          title: article.title,
+          url: new URL(`/s/${encodeURIComponent(token)}`, window.location.origin).toString(),
+        },
+        navigator.share?.bind(navigator),
+        copyToClipboard,
+      );
+      if (result === "copied") {
+        setNotice({ id: Date.now(), message: "link copied" });
+      }
+    } catch {
+      setNotice({ id: Date.now(), message: "could not share link" });
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
   return (
     <div className="page reader-page">
       {notice ? (
@@ -2317,18 +2369,15 @@ function PublicSharePage() {
           contentHtml={article.content_html}
           extractionStatus="complete"
           header={(
-            <>
-              <span className="reader-page-label">url-keep</span>
-              <StandaloneControls
-                onNotice={(message) => setNotice({ id: Date.now(), message })}
-                share={{
-                  title: article.title,
-                  url: new URL(`/s/${encodeURIComponent(token ?? "")}`, window.location.origin).toString(),
-                }}
-              />
-            </>
+            <span className="reader-page-label">url-keep</span>
           )}
           publishedDate={article.published_date}
+          shareAction={{
+            busy: shareBusy,
+            onClick: () => {
+              void shareArticle();
+            },
+          }}
           siteName={article.site_name}
           sourceUrl={article.url}
           title={article.title}

@@ -282,31 +282,34 @@ export class UrlKeepClient {
     });
   }
 
-  async requestNarration(id: string): Promise<NarrationResponse> {
+  async requestNarration(id: string, signal?: AbortSignal): Promise<NarrationResponse> {
     return this.request(`/bookmarks/${encodeURIComponent(id)}/narration`, {
       method: "PUT",
       schema: narrationResponseSchema,
+      signal,
     });
   }
 
-  async getNarration(id: string): Promise<NarrationResponse> {
+  async getNarration(id: string, signal?: AbortSignal): Promise<NarrationResponse> {
     return this.request(`/bookmarks/${encodeURIComponent(id)}/narration`, {
       cache: "no-store",
       schema: narrationResponseSchema,
+      signal,
     });
   }
 
-  async retryNarration(id: string): Promise<NarrationResponse> {
+  async retryNarration(id: string, signal?: AbortSignal): Promise<NarrationResponse> {
     return this.request(`/bookmarks/${encodeURIComponent(id)}/narration/retry`, {
       method: "POST",
       schema: narrationResponseSchema,
+      signal,
     });
   }
 
-  async getNarrationAudio(id: string): Promise<Response> {
+  async getNarrationAudio(id: string, signal?: AbortSignal): Promise<Response> {
     const response = await this.fetchResponse(
       `/bookmarks/${encodeURIComponent(id)}/narration/audio`,
-      { cache: "no-store" },
+      { cache: "no-store", signal },
     );
     if (!response.ok) await this.throwResponseError(response, true);
     return response;
