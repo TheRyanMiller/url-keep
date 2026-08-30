@@ -659,7 +659,7 @@ input {
 .reader-content {
   --reader-font-size: 15px;
   display: grid;
-  font-weight: 350;
+  font-weight: 300;
   gap: 18px;
   font-size: var(--reader-font-size);
   line-height: 1.8;
