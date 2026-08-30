@@ -56,6 +56,7 @@ import { SyncManager } from "./offline/sync";
 import { ArticleAudio } from "./audio/ArticleAudio";
 import { auditOfflineAudio } from "./audio/offline-audio";
 import { OfflineAudioSettings } from "./settings/OfflineAudioSettings";
+import { saveBookmarkWithReader } from "./save-workflow";
 
 const TOKEN_KEY = "url_keep_token";
 const USER_KEY = "url_keep_user";
@@ -1570,7 +1571,7 @@ function AddPage() {
     }
 
     try {
-      await auth.client.saveBookmark({
+      await saveBookmarkWithReader(auth.client, {
         url: urlInput,
         saved_via: "web",
       });
@@ -1664,7 +1665,7 @@ function AutoSave({
 
     const save = async () => {
       try {
-        const response = await auth.client.saveBookmark({
+        await saveBookmarkWithReader(auth.client, {
           url,
           title,
           saved_via: "mobile_web",
@@ -1762,7 +1763,7 @@ function MobileSavePage() {
     }
 
     try {
-      await auth.client.saveBookmark({
+      await saveBookmarkWithReader(auth.client, {
         url: urlInput,
         saved_via: "mobile_web",
       });
