@@ -58,7 +58,7 @@ export function OfflineAudioSettings() {
         </select>
       </label>
       <button
-        className={clearArmed ? "text-action danger" : "text-action"}
+        className={clearArmed ? "text-action text-action--danger" : "text-action"}
         onClick={async () => {
           if (!clearArmed) {
             setClearArmed(true);

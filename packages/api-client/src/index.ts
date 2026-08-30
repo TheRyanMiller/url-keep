@@ -93,13 +93,13 @@ type ClientOptions = {
   onUnauthorized?: () => void;
 };
 
-type RequestOptions = {
+type RequestOptions<T = unknown> = {
   method?: string;
   body?: unknown;
   token?: string | null;
   signal?: AbortSignal;
   cache?: RequestCache;
-  schema?: { parse: (value: unknown) => any };
+  schema?: { parse: (value: unknown) => T };
 };
 
 export class UrlKeepClient {
@@ -366,7 +366,7 @@ export class UrlKeepClient {
 
   private async request<T>(
     path: string,
-    options: RequestOptions = {},
+    options: RequestOptions<T> = {},
     signal?: AbortSignal,
   ): Promise<T> {
     const response = await this.fetchResponse(path, options, signal);
@@ -402,7 +402,7 @@ export class UrlKeepClient {
 
     if (!options.schema) return data as T;
     try {
-      return options.schema.parse(data) as T;
+      return options.schema.parse(data);
     } catch (caught) {
       throw new ApiError(
         response.status,

@@ -4,7 +4,6 @@ import {
   toReadableBookmarkUrl,
   type ArticleContent,
   type Bookmark,
-  type CreateBookmarkRequest,
   type LoginResponse,
   type PublicShareArticle,
   type TokenItem,
@@ -1503,7 +1502,7 @@ function AddPage() {
       await auth.client.saveBookmark({
         url: urlInput,
         saved_via: "web",
-      } as CreateBookmarkRequest);
+      });
       setSaved(true);
       setUrlInput("");
       void offline.refresh(true);
@@ -1620,13 +1619,7 @@ function AutoSave({
     }
   };
 
-  const domain = (() => {
-    try {
-      return new URL(url).hostname;
-    } catch {
-      return url;
-    }
-  })();
+  const domain = getDomain(url);
 
   return (
     <div className="page narrow">

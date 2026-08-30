@@ -102,10 +102,6 @@ input {
   cursor: pointer;
 }
 
-.button {
-  cursor: pointer;
-}
-
 .button:disabled {
   cursor: default;
   opacity: 1;
@@ -237,6 +233,23 @@ input {
 @keyframes success-fade {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button--success,
+  .success-circle,
+  .success-check,
+  .success-label {
+    animation: none;
+  }
+
+  .success-check {
+    stroke-dashoffset: 0;
+  }
+
+  .success-label {
+    opacity: 1;
+  }
 }
 
 .field-row {
