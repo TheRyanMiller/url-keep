@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 import { cleanupOutdatedCaches, precacheAndRoute } from "workbox-precaching";
+import { clientsClaim } from "workbox-core";
 import { registerRoute } from "workbox-routing";
 import { CacheFirst } from "workbox-strategies";
 import { ExpirationPlugin } from "workbox-expiration";
@@ -7,6 +8,8 @@ import { CacheableResponsePlugin } from "workbox-cacheable-response";
 
 declare const self: ServiceWorkerGlobalScope;
 
+self.skipWaiting();
+clientsClaim();
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);
 
@@ -45,12 +48,6 @@ self.addEventListener("fetch", (event) => {
         return caches.match(FALLBACK_URL).then((r) => r ?? new Response("Offline", { status: 503 }));
       }),
     );
-  }
-});
-
-self.addEventListener("message", (event) => {
-  if (event.data?.type === "SKIP_WAITING") {
-    void self.skipWaiting();
   }
 });
 

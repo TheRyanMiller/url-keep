@@ -5,6 +5,9 @@ import { describe, expect, it } from "vitest";
 describe("service worker cache ownership", () => {
   it("never handles authenticated API data", () => {
     const source = readFileSync(resolve(import.meta.dirname, "sw.ts"), "utf8");
+    expect(source).toContain("self.skipWaiting();");
+    expect(source).toContain("clientsClaim();");
+    expect(source).not.toContain("SKIP_WAITING");
     expect(source).not.toContain("api-cache");
     expect(source).not.toContain("NetworkFirst");
     expect(source).not.toContain("Authorization");
