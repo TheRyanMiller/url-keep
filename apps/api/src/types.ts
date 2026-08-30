@@ -4,18 +4,24 @@ import type {
   ExtractionStatus,
   InternalTitleSource,
   SavedVia,
+  ReadyNarrationSummary,
 } from "@url-keep/shared";
 
 export type Bindings = {
   DB: D1Database;
   IMAGES?: R2Bucket;
+  NARRATIONS?: R2Bucket;
   APP_ORIGIN?: string;
   DEBUG_LOGS?: string;
   API_ORIGIN?: string;
-  ADMIN_EMAIL?: string;
-  ADMIN_PASSWORD_HASH?: string;
   TOKEN_PEPPER?: string;
   ALLOWED_EXTENSION_ORIGINS?: string;
+  NARRATION_SERVICE_ORIGIN?: string;
+  NARRATION_SERVICE_TOKEN?: string;
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  VAPID_SUBJECT?: string;
+  PUSH_PROVIDER_HOSTS?: string;
 };
 
 export type UserRecord = {
@@ -57,6 +63,7 @@ export type ArticleContentRecord = {
   id: string;
   bookmarkId: string;
   userId: string;
+  title: string;
   contentHtml: string | null;
   wordCount: number;
   author: string | null;
@@ -100,6 +107,28 @@ export type ListBookmarksResult = {
 export type OfflineBundleItemRecord = {
   bookmark: BookmarkRecord;
   content: ArticleContentRecord | null;
+  narration: ReadyNarrationSummary | null;
+};
+
+export type NarrationStatus = "pending" | "publishing" | "ready" | "failed";
+
+export type NarrationRecord = {
+  id: string;
+  articleId: string;
+  serviceJobId: string;
+  textSha256: string;
+  status: NarrationStatus;
+  retryCount: 0 | 1;
+  publishStartedAt: string | null;
+  engineFingerprint: string | null;
+  errorCode: string | null;
+  audioKey: string;
+  audioSha256: string | null;
+  byteSize: number | null;
+  durationMs: number | null;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
 };
 
 export type OfflineBundleResult = {

@@ -28,6 +28,7 @@ function article(id: string, source: "client" | "server"): ArticleContentRecord 
     id,
     bookmarkId: "bookmark-1",
     userId: "user-1",
+    title: "Article",
     contentHtml: `<p>${source} article content</p>`,
     wordCount: 3,
     author: null,

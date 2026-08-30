@@ -3,7 +3,6 @@ import {
   bookmarkShareResponseSchema,
   bookmarkListResponseSchema,
   bookmarkResponseSchema,
-  classifyBookmarkUrl,
   changePasswordRequestSchema,
   createBookmarkRequestSchema,
   createTokenRequestSchema,
@@ -16,6 +15,9 @@ import {
   meResponseSchema,
   offlineBundleResponseSchema,
   offlineStatusResponseSchema,
+  narrationResponseSchema,
+  pushConfigResponseSchema,
+  pushSubscriptionRequestSchema,
   publicShareArticleResponseSchema,
   tokenListResponseSchema,
   updateBookmarkTitleRequestSchema,
@@ -34,6 +36,9 @@ import {
   type MeResponse,
   type OfflineBundleResponse,
   type OfflineStatusResponse,
+  type NarrationResponse,
+  type PushConfigResponse,
+  type PushSubscriptionRequest,
   type PublicShareArticleResponse,
   type TokenListResponse,
   type UpdateBookmarkTitleRequest,
@@ -82,70 +87,6 @@ function describeSchemaError(caught: unknown, fallback: string): string {
   return describeUnknownError(caught, fallback);
 }
 
-function normalizeBookmarkPayload(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return value;
-  }
-
-  const record = value as Record<string, unknown>;
-  const normalizedUrl =
-    typeof record.normalized_url === "string"
-      ? record.normalized_url
-      : typeof record.url === "string"
-        ? record.url
-        : null;
-
-  if (!normalizedUrl || record.bucket !== undefined) {
-    return value;
-  }
-
-  return {
-    ...record,
-    bucket: classifyBookmarkUrl(normalizedUrl).bucket,
-  };
-}
-
-function normalizeOfflineBundleItemPayload(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return value;
-  }
-
-  const record = value as Record<string, unknown>;
-  return {
-    ...record,
-    bookmark: normalizeBookmarkPayload(record.bookmark),
-  };
-}
-
-function normalizeLegacyApiPayload(path: string, value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return value;
-  }
-
-  const record = value as Record<string, unknown>;
-
-  if (path.startsWith("/v1/offline/bundle")) {
-    return {
-      ...record,
-      items: Array.isArray(record.items)
-        ? record.items.map((item) => normalizeOfflineBundleItemPayload(item))
-        : record.items,
-    };
-  }
-
-  if (path.startsWith("/v1/bookmarks")) {
-    return {
-      ...record,
-      item: normalizeBookmarkPayload(record.item),
-      items: Array.isArray(record.items)
-        ? record.items.map((item) => normalizeBookmarkPayload(item))
-        : record.items,
-    };
-  }
-
-  return value;
-}
-
 type ClientOptions = {
   baseUrl: string;
   getToken?: () => string | null;
@@ -178,7 +119,7 @@ export class UrlKeepClient {
 
   async login(input: LoginRequest): Promise<LoginResponse> {
     const body = loginRequestSchema.parse(input);
-    return this.request("/v1/auth/login", {
+    return this.request("/auth/login", {
       method: "POST",
       body,
       token: null,
@@ -187,20 +128,20 @@ export class UrlKeepClient {
   }
 
   async logout(): Promise<void> {
-    await this.request("/v1/auth/logout", { method: "POST" });
+    await this.request("/auth/logout", { method: "POST" });
   }
 
   async me(): Promise<MeResponse> {
-    return this.request("/v1/auth/me", { schema: meResponseSchema });
+    return this.request("/auth/me", { schema: meResponseSchema });
   }
 
   async listTokens(): Promise<TokenListResponse> {
-    return this.request("/v1/tokens", { schema: tokenListResponseSchema });
+    return this.request("/tokens", { schema: tokenListResponseSchema });
   }
 
   async createToken(input: CreateTokenRequest): Promise<CreateTokenResponse> {
     const body = createTokenRequestSchema.parse(input);
-    return this.request("/v1/tokens", {
+    return this.request("/tokens", {
       method: "POST",
       body,
       schema: createTokenResponseSchema,
@@ -208,7 +149,7 @@ export class UrlKeepClient {
   }
 
   async revokeToken(id: string): Promise<void> {
-    await this.request(`/v1/tokens/${encodeURIComponent(id)}`, {
+    await this.request(`/tokens/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
   }
@@ -233,21 +174,21 @@ export class UrlKeepClient {
     }
 
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
-    return this.request(`/v1/bookmarks${suffix}`, {
+    return this.request(`/bookmarks${suffix}`, {
       schema: bookmarkListResponseSchema,
     });
   }
 
   async getBookmarkByUrl(url: string): Promise<BookmarkResponse> {
     const search = new URLSearchParams({ url });
-    return this.request(`/v1/bookmarks/by-url?${search.toString()}`, {
+    return this.request(`/bookmarks/by-url?${search.toString()}`, {
       schema: bookmarkResponseSchema,
     });
   }
 
   async saveBookmark(input: CreateBookmarkRequest): Promise<BookmarkResponse> {
     const body = createBookmarkRequestSchema.parse(input);
-    return this.request("/v1/bookmarks", {
+    return this.request("/bookmarks", {
       method: "POST",
       body,
       schema: bookmarkResponseSchema,
@@ -259,7 +200,7 @@ export class UrlKeepClient {
     input: UpdateBookmarkTitleRequest,
   ): Promise<BookmarkResponse> {
     const body = updateBookmarkTitleRequestSchema.parse(input);
-    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}`, {
+    return this.request(`/bookmarks/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body,
       schema: bookmarkResponseSchema,
@@ -276,47 +217,47 @@ export class UrlKeepClient {
     }
 
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
-    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/extract${suffix}`, {
+    return this.request(`/bookmarks/${encodeURIComponent(id)}/extract${suffix}`, {
       method: "POST",
       schema: extractBookmarkResponseSchema,
     });
   }
 
   async getBookmarkContent(id: string): Promise<ArticleContentResponse> {
-    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/content`, {
+    return this.request(`/bookmarks/${encodeURIComponent(id)}/content`, {
       cache: "no-store",
       schema: articleContentResponseSchema,
     });
   }
 
   async getBookmarkShare(id: string): Promise<BookmarkShareResponse> {
-    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/share`, {
+    return this.request(`/bookmarks/${encodeURIComponent(id)}/share`, {
       schema: bookmarkShareResponseSchema,
     });
   }
 
   async enableBookmarkShare(id: string): Promise<BookmarkShareResponse> {
-    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/share`, {
+    return this.request(`/bookmarks/${encodeURIComponent(id)}/share`, {
       method: "PUT",
       schema: bookmarkShareResponseSchema,
     });
   }
 
   async disableBookmarkShare(id: string): Promise<void> {
-    await this.request(`/v1/bookmarks/${encodeURIComponent(id)}/share`, {
+    await this.request(`/bookmarks/${encodeURIComponent(id)}/share`, {
       method: "DELETE",
     });
   }
 
   async getPublicShareArticle(token: string): Promise<PublicShareArticleResponse> {
-    return this.request(`/v1/public/shares/${encodeURIComponent(token)}`, {
+    return this.request(`/public/shares/${encodeURIComponent(token)}`, {
       token: null,
       schema: publicShareArticleResponseSchema,
     });
   }
 
   async getOfflineStatus(): Promise<OfflineStatusResponse> {
-    return this.request("/v1/offline/status", {
+    return this.request("/offline/status", {
       cache: "no-store",
       schema: offlineStatusResponseSchema,
     });
@@ -335,10 +276,56 @@ export class UrlKeepClient {
     }
 
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
-    return this.request(`/v1/offline/bundle${suffix}`, {
+    return this.request(`/offline/bundle${suffix}`, {
       cache: "no-store",
       schema: offlineBundleResponseSchema,
     });
+  }
+
+  async requestNarration(id: string): Promise<NarrationResponse> {
+    return this.request(`/bookmarks/${encodeURIComponent(id)}/narration`, {
+      method: "PUT",
+      schema: narrationResponseSchema,
+    });
+  }
+
+  async getNarration(id: string): Promise<NarrationResponse> {
+    return this.request(`/bookmarks/${encodeURIComponent(id)}/narration`, {
+      cache: "no-store",
+      schema: narrationResponseSchema,
+    });
+  }
+
+  async retryNarration(id: string): Promise<NarrationResponse> {
+    return this.request(`/bookmarks/${encodeURIComponent(id)}/narration/retry`, {
+      method: "POST",
+      schema: narrationResponseSchema,
+    });
+  }
+
+  async getNarrationAudio(id: string): Promise<Response> {
+    const response = await this.fetchResponse(
+      `/bookmarks/${encodeURIComponent(id)}/narration/audio`,
+      { cache: "no-store" },
+    );
+    if (!response.ok) await this.throwResponseError(response, true);
+    return response;
+  }
+
+  async getPushConfig(): Promise<PushConfigResponse> {
+    return this.request("/push/config", {
+      cache: "no-store",
+      schema: pushConfigResponseSchema,
+    });
+  }
+
+  async putPushSubscription(input: PushSubscriptionRequest): Promise<void> {
+    const body = pushSubscriptionRequestSchema.parse(input);
+    await this.request("/push/subscription", { method: "PUT", body });
+  }
+
+  async deletePushSubscription(): Promise<void> {
+    await this.request("/push/subscription", { method: "DELETE" });
   }
 
   async uploadBookmarkContent(
@@ -346,7 +333,7 @@ export class UrlKeepClient {
     input: UploadBookmarkContentRequest,
   ): Promise<ArticleContentResponse> {
     const body = uploadBookmarkContentRequestSchema.parse(input);
-    return this.request(`/v1/bookmarks/${encodeURIComponent(id)}/content`, {
+    return this.request(`/bookmarks/${encodeURIComponent(id)}/content`, {
       method: "PUT",
       body,
       schema: articleContentResponseSchema,
@@ -354,14 +341,14 @@ export class UrlKeepClient {
   }
 
   async deleteBookmarkContent(id: string): Promise<void> {
-    await this.request(`/v1/bookmarks/${encodeURIComponent(id)}/content`, {
+    await this.request(`/bookmarks/${encodeURIComponent(id)}/content`, {
       method: "DELETE",
     });
   }
 
   async changePassword(input: ChangePasswordRequest): Promise<void> {
     const body = changePasswordRequestSchema.parse(input);
-    await this.request("/v1/auth/password", {
+    await this.request("/auth/password", {
       method: "PATCH",
       body,
     });
@@ -369,7 +356,7 @@ export class UrlKeepClient {
 
   async deleteBookmarkByUrl(url: string): Promise<void> {
     const search = new URLSearchParams({ url });
-    await this.request(`/v1/bookmarks/by-url?${search.toString()}`, {
+    await this.request(`/bookmarks/by-url?${search.toString()}`, {
       method: "DELETE",
     });
   }
@@ -379,12 +366,57 @@ export class UrlKeepClient {
     options: RequestOptions = {},
     signal?: AbortSignal,
   ): Promise<T> {
-    const token =
-      options.token !== undefined ? options.token : this.getToken?.() ?? null;
-    let response: Response;
+    const response = await this.fetchResponse(path, options, signal);
+    const token = options.token !== undefined ? options.token : this.getToken?.() ?? null;
 
+    if (response.status === 204) {
+      return undefined as T;
+    }
+
+    const rawBody = await response.text();
+    let data: unknown;
     try {
-      response = await fetch(`${this.baseUrl}${path}`, {
+      data = rawBody ? JSON.parse(rawBody) : null;
+    } catch {
+      const fallback = response.ok
+        ? "Invalid JSON response from API"
+        : rawBody.trim() || "Invalid response from API";
+      throw new ApiError(response.status, "invalid_response", fallback);
+    }
+
+    if (!response.ok) {
+      if (response.status === 401 && token) this.onUnauthorized?.();
+      const parsedError = errorResponseSchema.safeParse(data);
+      if (parsedError.success) {
+        throw new ApiError(
+          response.status,
+          parsedError.data.error.code,
+          parsedError.data.error.message,
+        );
+      }
+      throw new ApiError(response.status, "unknown_error", "Unknown API error");
+    }
+
+    if (!options.schema) return data as T;
+    try {
+      return options.schema.parse(data) as T;
+    } catch (caught) {
+      throw new ApiError(
+        response.status,
+        "invalid_response",
+        describeSchemaError(caught, "Invalid API response"),
+      );
+    }
+  }
+
+  private async fetchResponse(
+    path: string,
+    options: RequestOptions = {},
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const token = options.token !== undefined ? options.token : this.getToken?.() ?? null;
+    try {
+      return await fetch(`${this.baseUrl}${path}`, {
         method: options.method ?? "GET",
         headers: {
           ...(options.body ? { "Content-Type": "application/json" } : {}),
@@ -401,56 +433,18 @@ export class UrlKeepClient {
         caught instanceof Error ? caught.message : "Network request failed",
       );
     }
+  }
 
-    if (response.status === 204) {
-      return undefined as T;
-    }
-
-    const rawBody = await response.text();
-    let data: unknown;
+  private async throwResponseError(response: Response, authenticated: boolean): Promise<never> {
+    if (response.status === 401 && authenticated) this.onUnauthorized?.();
     try {
-      data = rawBody ? JSON.parse(rawBody) : null;
-    } catch {
-      const fallback = response.ok
-        ? "Invalid JSON response from API"
-        : rawBody.trim() || "Invalid response from API";
-      throw new ApiError(
-        response.status,
-        "invalid_response",
-        fallback,
-      );
-    }
-
-    data = normalizeLegacyApiPayload(path, data);
-
-    if (!response.ok) {
-      if (response.status === 401 && token) {
-        this.onUnauthorized?.();
+      const parsed = errorResponseSchema.safeParse(await response.json());
+      if (parsed.success) {
+        throw new ApiError(response.status, parsed.data.error.code, parsed.data.error.message);
       }
-      const parsedError = errorResponseSchema.safeParse(data);
-      if (parsedError.success) {
-        throw new ApiError(
-          response.status,
-          parsedError.data.error.code,
-          parsedError.data.error.message,
-        );
-      }
-
-      throw new ApiError(response.status, "unknown_error", "Unknown API error");
-    }
-
-    if (!options.schema) {
-      return data as T;
-    }
-
-    try {
-      return options.schema.parse(data) as T;
     } catch (caught) {
-      throw new ApiError(
-        response.status,
-        "invalid_response",
-        describeSchemaError(caught, "Invalid API response"),
-      );
+      if (caught instanceof ApiError) throw caught;
     }
+    throw new ApiError(response.status, "unknown_error", "Unknown API error");
   }
 }

@@ -855,6 +855,49 @@ input {
   padding-top: 20px;
 }
 
+.settings-row {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.settings-limit {
+  max-width: 180px;
+}
+
+.article-audio,
+.article-audio-status,
+.article-audio-request {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.article-audio {
+  flex-basis: 100%;
+  margin-top: 8px;
+}
+
+.article-audio audio {
+  height: 32px;
+  max-width: min(100%, 360px);
+}
+
+.article-audio-status,
+.article-audio-request span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .shortcut-setup {
   border-bottom: 1px solid var(--subtle-border);
   margin-bottom: 24px;

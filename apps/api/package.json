@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@block65/webcrypto-web-push": "^1.0.2",
     "@hono/zod-validator": "^0.4.3",
     "@mozilla/readability": "^0.6.0",
     "@noble/hashes": "^1.7.1",
@@ -22,6 +23,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250303.0",
     "@types/sanitize-html": "^2.16.1",
+    "miniflare": "^5.20260828.0-alpha",
     "vitest": "^3.0.9",
     "wrangler": "^4.3.0"
   }

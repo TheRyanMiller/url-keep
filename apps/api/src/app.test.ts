@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "./app";
 import { MemoryStore } from "./memory-store";
-import { hashPassword, hashToken, nowIso } from "./utils";
+import { hashPassword, nowIso } from "./utils";
 import type { UserRecord } from "./types";
 
 const TEST_ENV = {
@@ -67,6 +67,7 @@ describe("api", () => {
           id: `content-${bookmark.id}`,
           bookmarkId: bookmark.id,
           userId: bookmark.userId,
+          title: bookmark.title,
           contentHtml: "<article><p>offline article</p></article>",
           wordCount: 2,
           author: "Jane Doe",
@@ -100,7 +101,7 @@ describe("api", () => {
   });
 
   async function login(clientName = "web app") {
-    const response = await request("http://localhost/v1/auth/login", {
+    const response = await request("http://localhost/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -119,7 +120,7 @@ describe("api", () => {
     url: string,
     savedVia: "web" | "extension" | "mobile_web" | "ios_shortcut" = "web",
   ) {
-    const response = await request("http://localhost/v1/bookmarks", {
+    const response = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -139,7 +140,7 @@ describe("api", () => {
     const success = await login();
     expect(success.token.startsWith("uk_")).toBe(true);
 
-    const failure = await app.request("http://localhost/v1/auth/login", {
+    const failure = await app.request("http://localhost/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -152,38 +153,9 @@ describe("api", () => {
     expect(failure.status).toBe(401);
   });
 
-  it("migrates legacy scrypt password hashes after a successful login", async () => {
-    const legacyUser = {
-      id: "user-legacy",
-      email: "legacy@example.com",
-      passwordHash:
-        "scrypt$16384$8$1$000102030405060708090a0b0c0d0e0f$9544e48979da3c896dfb7f7f5bc015fb320e810f8372f88d66d9921da5a2aa65",
-      createdAt: nowIso(),
-    };
-    await store.insertUser(legacyUser);
-
-    const response = await app.request(
-      "http://localhost/v1/auth/login",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: legacyUser.email,
-          password: "secret",
-          client_name: "mobile web",
-        }),
-      },
-      TEST_ENV,
-    );
-
-    expect(response.status).toBe(200);
-    const migrated = await store.getUserById(legacyUser.id);
-    expect(migrated?.passwordHash.startsWith("pbkdf2_sha256$")).toBe(true);
-  });
-
   it("returns CORS headers for login preflight when origin is allowed", async () => {
     const response = await request(
-      "http://localhost/v1/auth/login",
+      "http://localhost/auth/login",
       {
         method: "OPTIONS",
         headers: {
@@ -206,7 +178,7 @@ describe("api", () => {
 
   it("supports auth/me with bearer auth", async () => {
     const { token } = await login();
-    const response = await request("http://localhost/v1/auth/me", {
+    const response = await request("http://localhost/auth/me", {
       headers: { Authorization: `Bearer ${token}` },
     });
 
@@ -218,7 +190,7 @@ describe("api", () => {
   it("creates bookmarks and upgrades fallback titles on duplicate save", async () => {
     const { token } = await login();
 
-    const create = await request("http://localhost/v1/bookmarks", {
+    const create = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -236,7 +208,7 @@ describe("api", () => {
     expect(created.item.bucket).toBe("reading");
     expect(created.item.extraction_status).toBe("pending");
 
-    const upgrade = await request("http://localhost/v1/bookmarks", {
+    const upgrade = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -259,7 +231,7 @@ describe("api", () => {
     const { token } = await login();
 
     const response = await request(
-      "http://localhost/v1/bookmarks",
+      "http://localhost/bookmarks",
       {
         method: "POST",
         headers: {
@@ -282,7 +254,7 @@ describe("api", () => {
 
   it("extracts and sanitizes a live captured page before server fallback", async () => {
     const { token } = await login();
-    const response = await request("http://localhost/v1/bookmarks", {
+    const response = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -321,7 +293,7 @@ describe("api", () => {
 
   it("falls back to server extraction when a live capture is unreadable", async () => {
     const { token } = await login();
-    const response = await request("http://localhost/v1/bookmarks", {
+    const response = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -343,7 +315,7 @@ describe("api", () => {
 
   it("counts streamed request bytes even when content-length claims a smaller body", async () => {
     const { token } = await login();
-    const response = await request("http://localhost/v1/bookmarks", {
+    const response = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -372,7 +344,7 @@ describe("api", () => {
       saved_via: "web",
     });
     const bytes = new TextEncoder().encode(body);
-    const streamed = await requestObject(new Request("http://localhost/v1/bookmarks", {
+    const streamed = await requestObject(new Request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -389,7 +361,7 @@ describe("api", () => {
     } as RequestInit & { duplex: "half" }));
     expect(streamed.status).toBe(201);
 
-    const falseHigh = await request("http://localhost/v1/bookmarks", {
+    const falseHigh = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -408,7 +380,7 @@ describe("api", () => {
     const { token } = await login();
     const created = await createBookmark(token, "https://example.com/large-content");
     const response = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      `http://localhost/bookmarks/${created.item.id}/content`,
       {
         method: "PUT",
         headers: {
@@ -429,7 +401,7 @@ describe("api", () => {
   it("classifies video bookmarks into videos and filters them server-side", async () => {
     const { token } = await login();
 
-    const videoCreate = await request("http://localhost/v1/bookmarks", {
+    const videoCreate = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -453,7 +425,7 @@ describe("api", () => {
     expect(video.item.extraction_status).toBeNull();
     expect(extractCalls).toHaveLength(0);
 
-    const articleCreate = await request("http://localhost/v1/bookmarks", {
+    const articleCreate = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -467,7 +439,7 @@ describe("api", () => {
     expect(articleCreate.status).toBe(201);
     expect(extractCalls).toHaveLength(1);
 
-    const videosResponse = await request("http://localhost/v1/bookmarks?bucket=videos", {
+    const videosResponse = await request("http://localhost/bookmarks?bucket=videos", {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(videosResponse.status).toBe(200);
@@ -476,7 +448,7 @@ describe("api", () => {
     expect(videos.items[0]?.id).toBe(video.item.id);
     expect(videos.items[0]?.bucket).toBe("videos");
 
-    const readingResponse = await request("http://localhost/v1/bookmarks?bucket=reading", {
+    const readingResponse = await request("http://localhost/bookmarks?bucket=reading", {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(readingResponse.status).toBe(200);
@@ -487,7 +459,7 @@ describe("api", () => {
 
   it("leaves extension article capture to the MV3 workflow", async () => {
     const { token } = await login();
-    const response = await request("http://localhost/v1/bookmarks", {
+    const response = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -508,7 +480,7 @@ describe("api", () => {
   it("does not auto-extract non-reader reading urls", async () => {
     const { token } = await login();
 
-    const create = await request("http://localhost/v1/bookmarks", {
+    const create = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -533,7 +505,7 @@ describe("api", () => {
     expect(extractCalls).toHaveLength(0);
 
     const extract = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/extract`,
+      `http://localhost/bookmarks/${created.item.id}/extract`,
       {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -549,7 +521,7 @@ describe("api", () => {
   it("preserves user edited titles on later duplicate saves", async () => {
     const { token } = await login();
 
-    const create = await request("http://localhost/v1/bookmarks", {
+    const create = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -564,7 +536,7 @@ describe("api", () => {
     const created = await json<{ item: { id: string } }>(create);
 
     const edit = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}`,
+      `http://localhost/bookmarks/${created.item.id}`,
       {
         method: "PATCH",
         headers: {
@@ -577,7 +549,7 @@ describe("api", () => {
     );
     expect(edit.status).toBe(200);
 
-    const duplicate = await request("http://localhost/v1/bookmarks", {
+    const duplicate = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -597,7 +569,7 @@ describe("api", () => {
   it("canonicalizes HackMD raw markdown URLs on save", async () => {
     const { token } = await login();
 
-    const create = await request("http://localhost/v1/bookmarks", {
+    const create = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -615,7 +587,7 @@ describe("api", () => {
     expect(created.item.url).toBe("https://hackmd.io/@murderteeth/S1A4kz-9bg");
     expect(created.item.title).toBe("hackmd.io");
 
-    const duplicate = await request("http://localhost/v1/bookmarks", {
+    const duplicate = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -636,7 +608,7 @@ describe("api", () => {
   it("renders uploaded HackMD markdown to HTML and upgrades fallback titles", async () => {
     const { token } = await login();
 
-    const create = await request("http://localhost/v1/bookmarks", {
+    const create = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -650,7 +622,7 @@ describe("api", () => {
     const created = await json<{ item: { id: string } }>(create);
 
     const upload = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      `http://localhost/bookmarks/${created.item.id}/content`,
       {
         method: "PUT",
         headers: {
@@ -687,7 +659,7 @@ another paragraph keeps the content comfortably above the minimum length require
     const created = await createBookmark(token, "https://example.com/metadata", "extension");
     const content = `<article><p>${"readable captured content ".repeat(8)}</p></article>`;
 
-    await request(`http://localhost/v1/bookmarks/${created.item.id}/content`, {
+    await request(`http://localhost/bookmarks/${created.item.id}/content`, {
       method: "PUT",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -695,7 +667,7 @@ another paragraph keeps the content comfortably above the minimum length require
       },
       body: JSON.stringify({ content_html: content, title: "First capture" }),
     });
-    await request(`http://localhost/v1/bookmarks/${created.item.id}/content`, {
+    await request(`http://localhost/bookmarks/${created.item.id}/content`, {
       method: "PUT",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -706,7 +678,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect((await store.getBookmarkById(user.id, created.item.id))?.title)
       .toBe("Fresh capture");
 
-    await request(`http://localhost/v1/bookmarks/${created.item.id}`, {
+    await request(`http://localhost/bookmarks/${created.item.id}`, {
       method: "PATCH",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -714,7 +686,7 @@ another paragraph keeps the content comfortably above the minimum length require
       },
       body: JSON.stringify({ title: "My title" }),
     });
-    await request(`http://localhost/v1/bookmarks/${created.item.id}/content`, {
+    await request(`http://localhost/bookmarks/${created.item.id}/content`, {
       method: "PUT",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -729,7 +701,7 @@ another paragraph keeps the content comfortably above the minimum length require
 
   it("deletes bookmarks idempotently by url", async () => {
     const { token } = await login();
-    await request("http://localhost/v1/bookmarks", {
+    await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -742,7 +714,7 @@ another paragraph keeps the content comfortably above the minimum length require
     }, TEST_ENV);
 
     const firstDelete = await request(
-      "http://localhost/v1/bookmarks/by-url?url=https://example.com/post",
+      "http://localhost/bookmarks/by-url?url=https://example.com/post",
       {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
@@ -752,7 +724,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(firstDelete.status).toBe(204);
 
     const secondDelete = await request(
-      "http://localhost/v1/bookmarks/by-url?url=https://example.com/post",
+      "http://localhost/bookmarks/by-url?url=https://example.com/post",
       {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
@@ -765,7 +737,7 @@ another paragraph keeps the content comfortably above the minimum length require
   it("creates and revokes tokens", async () => {
     const { token } = await login();
 
-    const create = await request("http://localhost/v1/tokens", {
+    const create = await request("http://localhost/tokens", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -782,7 +754,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(created.token.startsWith("uk_")).toBe(true);
 
     const revoke = await request(
-      `http://localhost/v1/tokens/${created.item.id}`,
+      `http://localhost/tokens/${created.item.id}`,
       {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
@@ -796,7 +768,7 @@ another paragraph keeps the content comfortably above the minimum length require
   it("returns extracted content and offline bundle items", async () => {
     const { token } = await login();
 
-    const create = await request("http://localhost/v1/bookmarks", {
+    const create = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -810,7 +782,7 @@ another paragraph keeps the content comfortably above the minimum length require
     const created = await json<{ item: { id: string } }>(create);
 
     const contentResponse = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      `http://localhost/bookmarks/${created.item.id}/content`,
       {
         headers: { Authorization: `Bearer ${token}` },
       },
@@ -823,14 +795,14 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(content.item.extraction_status).toBe("complete");
     expect(content.item.content_html).toContain("offline article");
 
-    const listResponse = await request("http://localhost/v1/bookmarks", {
+    const listResponse = await request("http://localhost/bookmarks", {
       headers: { Authorization: `Bearer ${token}` },
     });
     const list = await json<{ items: Array<{ bucket: string; extraction_status: string | null }> }>(listResponse);
     expect(list.items[0]?.bucket).toBe("reading");
     expect(list.items[0]?.extraction_status).toBe("complete");
 
-    const bundleResponse = await request("http://localhost/v1/offline/bundle", {
+    const bundleResponse = await request("http://localhost/offline/bundle", {
       headers: { Authorization: `Bearer ${token}` },
     });
 
@@ -848,7 +820,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(bundle.has_more).toBe(false);
     expect(bundleResponse.headers.get("Cache-Control")).toBe("no-store");
 
-    const invalidLimit = await request("http://localhost/v1/offline/bundle?limit=11", {
+    const invalidLimit = await request("http://localhost/offline/bundle?limit=11", {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(invalidLimit.status).toBe(400);
@@ -856,7 +828,7 @@ another paragraph keeps the content comfortably above the minimum length require
 
   it("uses monotonic offline revisions without bumping for share counters", async () => {
     const { token } = await login();
-    const emptyResponse = await request("http://localhost/v1/offline/status", {
+    const emptyResponse = await request("http://localhost/offline/status", {
       headers: { Authorization: `Bearer ${token}` },
     });
     const empty = await json<{ bookmark_count: number; sync_revision: number }>(emptyResponse);
@@ -864,7 +836,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(emptyResponse.headers.get("Cache-Control")).toBe("no-store");
 
     const created = await createBookmark(token, "https://example.com/revision");
-    const afterSaveResponse = await request("http://localhost/v1/offline/status", {
+    const afterSaveResponse = await request("http://localhost/offline/status", {
       headers: { Authorization: `Bearer ${token}` },
     });
     const afterSave = await json<{ bookmark_count: number; sync_revision: number }>(afterSaveResponse);
@@ -872,14 +844,14 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(afterSave.sync_revision).toBeGreaterThan(0);
 
     const enable = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/share`,
+      `http://localhost/bookmarks/${created.item.id}/share`,
       { method: "PUT", headers: { Authorization: `Bearer ${token}` } },
     );
     const share = await json<{ item: { share_url: string } }>(enable);
     const shareToken = share.item.share_url.split("/s/")[1];
-    await request(`http://localhost/v1/public/shares/${shareToken}`);
+    await request(`http://localhost/public/shares/${shareToken}`);
 
-    const afterShare = await request("http://localhost/v1/offline/status", {
+    const afterShare = await request("http://localhost/offline/status", {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(await json(afterShare)).toEqual(afterSave);
@@ -888,7 +860,7 @@ another paragraph keeps the content comfortably above the minimum length require
   it("supports manual extraction retries and content deletion", async () => {
     const { token } = await login();
 
-    const create = await request("http://localhost/v1/bookmarks", {
+    const create = await request("http://localhost/bookmarks", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -904,7 +876,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(extractCalls).toHaveLength(1);
 
     const noForce = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/extract`,
+      `http://localhost/bookmarks/${created.item.id}/extract`,
       {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -914,7 +886,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(extractCalls).toHaveLength(1);
 
     const force = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/extract?force=true`,
+      `http://localhost/bookmarks/${created.item.id}/extract?force=true`,
       {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -924,7 +896,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(extractCalls).toHaveLength(2);
 
     const deleteContent = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      `http://localhost/bookmarks/${created.item.id}/content`,
       {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
@@ -933,7 +905,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(deleteContent.status).toBe(204);
 
     const afterDelete = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      `http://localhost/bookmarks/${created.item.id}/content`,
       {
         headers: { Authorization: `Bearer ${token}` },
       },
@@ -951,7 +923,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(created).not.toBeNull();
 
     const enable = await request(
-      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      `http://localhost/bookmarks/${created!.item.id}/share`,
       {
         method: "PUT",
         headers: { Authorization: `Bearer ${token}` },
@@ -972,12 +944,12 @@ another paragraph keeps the content comfortably above the minimum length require
     }>(enable);
     expect(enabled.item.enabled).toBe(true);
     expect(enabled.item.share_url).toContain("http://localhost:5173/s/");
-    expect(enabled.item.share_url).toMatch(/\/s\/[a-f0-9]{20}$/);
+    expect(enabled.item.share_url).toMatch(/\/s\/[a-f0-9]{32}$/);
     expect(enabled.item.hit_count).toBe(0);
     expect(enabled.item.last_accessed_at).toBeNull();
 
     const secondEnable = await request(
-      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      `http://localhost/bookmarks/${created!.item.id}/share`,
       {
         method: "PUT",
         headers: { Authorization: `Bearer ${token}` },
@@ -992,7 +964,7 @@ another paragraph keeps the content comfortably above the minimum length require
 
     const publicToken = enabled.item.share_url!.split("/s/")[1];
     const publicRead = await request(
-      `http://localhost/v1/public/shares/${publicToken}`,
+      `http://localhost/public/shares/${publicToken}`,
       undefined,
       TEST_ENV,
     );
@@ -1011,7 +983,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(publicRead.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
 
     const publicReadWithInvalidAuth = await request(
-      `http://localhost/v1/public/shares/${publicToken}`,
+      `http://localhost/public/shares/${publicToken}`,
       {
         headers: { Authorization: "Bearer invalid-token" },
       },
@@ -1020,7 +992,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(publicReadWithInvalidAuth.status).toBe(200);
 
     const shareState = await request(
-      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      `http://localhost/bookmarks/${created!.item.id}/share`,
       {
         headers: { Authorization: `Bearer ${token}` },
       },
@@ -1037,7 +1009,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(created).not.toBeNull();
 
     const upload = await request(
-      `http://localhost/v1/bookmarks/${created!.item.id}/content`,
+      `http://localhost/bookmarks/${created!.item.id}/content`,
       {
         method: "PUT",
         headers: {
@@ -1058,7 +1030,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(upload.status).toBe(200);
 
     const share = await request(
-      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      `http://localhost/bookmarks/${created!.item.id}/share`,
       {
         method: "PUT",
         headers: { Authorization: `Bearer ${token}` },
@@ -1068,10 +1040,10 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(share.status).toBe(200);
     const body = await json<{ item: { enabled: boolean; share_url: string | null } }>(share);
     expect(body.item.enabled).toBe(true);
-    expect(body.item.share_url).toMatch(/\/s\/[a-f0-9]{20}$/);
+    expect(body.item.share_url).toMatch(/\/s\/[a-f0-9]{32}$/);
 
     const recapture = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/content`,
+      `http://localhost/bookmarks/${created.item.id}/content`,
       {
         method: "PUT",
         headers: {
@@ -1086,9 +1058,9 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(recapture.status).toBe(200);
 
     const oldPublicToken = body.item.share_url!.split("/s/")[1];
-    expect((await request(`http://localhost/v1/public/shares/${oldPublicToken}`)).status).toBe(404);
+    expect((await request(`http://localhost/public/shares/${oldPublicToken}`)).status).toBe(404);
     const state = await request(
-      `http://localhost/v1/bookmarks/${created.item.id}/share`,
+      `http://localhost/bookmarks/${created.item.id}/share`,
       { headers: { Authorization: `Bearer ${token}` } },
     );
     expect((await json<{ item: { enabled: boolean } }>(state)).item.enabled).toBe(false);
@@ -1100,7 +1072,7 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(created).not.toBeNull();
 
     const enable = await request(
-      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      `http://localhost/bookmarks/${created!.item.id}/share`,
       {
         method: "PUT",
         headers: { Authorization: `Bearer ${token}` },
@@ -1111,7 +1083,7 @@ another paragraph keeps the content comfortably above the minimum length require
     const publicToken = enabled.item.share_url!.split("/s/")[1];
 
     const disable = await request(
-      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
+      `http://localhost/bookmarks/${created!.item.id}/share`,
       {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
@@ -1121,47 +1093,18 @@ another paragraph keeps the content comfortably above the minimum length require
     expect(disable.status).toBe(204);
 
     const revokedRead = await request(
-      `http://localhost/v1/public/shares/${publicToken}`,
+      `http://localhost/public/shares/${publicToken}`,
       undefined,
       TEST_ENV,
     );
     expect(revokedRead.status).toBe(404);
 
     const invalidRead = await request(
-      "http://localhost/v1/public/shares/not-a-real-token",
+      "http://localhost/public/shares/not-a-real-token",
       undefined,
       TEST_ENV,
     );
     expect(invalidRead.status).toBe(404);
   });
 
-  it("rotates legacy share ids to shorter links and still accepts legacy signed URLs", async () => {
-    const { token } = await login();
-    const created = await createBookmark(token, "https://example.com/legacy-share");
-    expect(created).not.toBeNull();
-
-    const legacyShareId = "uk_legacysharetoken0123456789";
-    await store.enableBookmarkShare(user.id, created!.item.id, legacyShareId, nowIso());
-
-    const legacyRead = await request(
-      `http://localhost/v1/public/shares/${legacyShareId}.${hashToken(legacyShareId, TEST_ENV.TOKEN_PEPPER)}`,
-      undefined,
-      TEST_ENV,
-    );
-    expect(legacyRead.status).toBe(200);
-
-    const enable = await request(
-      `http://localhost/v1/bookmarks/${created!.item.id}/share`,
-      {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${token}` },
-      },
-      TEST_ENV,
-    );
-    expect(enable.status).toBe(200);
-
-    const body = await json<{ item: { share_url: string | null } }>(enable);
-    const publicToken = body.item.share_url?.split("/s/")[1] ?? "";
-    expect(publicToken).toMatch(/^[a-f0-9]{20}$/);
-  });
 });

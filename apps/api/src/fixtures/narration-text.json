@@ -1,0 +1,16 @@
+[
+  {
+    "name": "title headings paragraphs and exclusions",
+    "title": "A clean title",
+    "html": "<h1>A clean title</h1><p>First paragraph</p><blockquote>Quoted thought!</blockquote><pre><code>const secret = true;</code></pre><table><tr><td>tabular detail</td></tr></table><ul><li>Final item</li></ul>",
+    "expected": "A clean title.\nFirst paragraph.\nQuoted thought!\nFinal item.",
+    "sha256": "8bb6f8a6c1bab1db18dece03f80eaffb4929c933dca2d607b37954ce430914bd"
+  },
+  {
+    "name": "unicode controls punctuation and nested blocks",
+    "title": "Cafe\u0301",
+    "html": "<ul><li><p>Nested\u0007 text?</p></li></ul><p>Closing punctuation.”</p>",
+    "expected": "Café.\nNested text?\nClosing punctuation.”",
+    "sha256": "a41b89c6a6af50c6529bac8a0fe610c8ad6db85a40350aad2616a512fff55a9a"
+  }
+]

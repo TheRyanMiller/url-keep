@@ -1,26 +1,27 @@
 # url-keep
 
-url-keep is a private, single-user reading list that saves readable article snapshots for offline use. Complete articles open in the internal reader; the publisher page remains an explicit **Read on web** action.
+url-keep is a private, single-user reading list with immutable article snapshots, a quiet reader, optional narration, and verified offline media.
 
 The repository contains:
 
-- `apps/api`: Hono Worker, D1 persistence, Readability extraction, and R2 images.
-- `apps/web`: React PWA, reader, and IndexedDB reconciliation.
-- `apps/extension`: Chrome/Brave MV3 capture extension.
-- `packages/api-client`: typed client shared by the web app and extension.
-- `packages/shared`: API schemas, limits, URL classification, and sanitizer policy.
-- `shortcuts`: source and setup for the iPhone Safari Shortcut.
+- `apps/api`: Hono Worker, D1 state, extraction, private R2 media, narration reconciliation, and Web Push;
+- `apps/web`: React PWA, reader, full-snapshot IndexedDB sync, and offline audio;
+- `apps/extension`: Chrome/Brave MV3 page capture;
+- `packages/api-client`: the current typed API client;
+- `packages/shared`: exact schemas, limits, URL classification, and sanitization policy;
+- `shortcuts`: the iPhone Shortcut source and setup.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for system behavior and [STYLEGUIDE.md](./STYLEGUIDE.md) for the intentionally minimal visual language.
+Speech synthesis is not part of this repository. The Worker sends final plaintext to the independently deployed private narration service described in `~/yearn/narration-service`. URL Keep owns its product state, durable MP3s, notifications, authorization, and offline playback.
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for system behavior and [STYLEGUIDE.md](./STYLEGUIDE.md) for the visual constraints.
 
 ## Requirements
 
 - Node.js 22+
 - npm 10+
-- A Cloudflare account with Workers, D1, and R2
-- A Vercel project for the web app
-
-Install dependencies:
+- Cloudflare Workers, D1, and two private R2 buckets
+- a Vercel project for the PWA
+- an HTTPS narration-service origin and URL Keep tenant token
 
 ```sh
 npm install
@@ -28,7 +29,7 @@ npm install
 
 ## Local development
 
-Create local configuration:
+Create local configuration and apply the single baseline schema:
 
 ```sh
 cp apps/api/.dev.vars.example apps/api/.dev.vars
@@ -36,33 +37,34 @@ cp apps/web/.env.example apps/web/.env.local
 npm run d1:migrate:local
 ```
 
-Set a long random `TOKEN_PEPPER` in `apps/api/.dev.vars`. Bootstrap or replace the local account password:
+Set these private values in `apps/api/.dev.vars`:
+
+- `TOKEN_PEPPER`: a long random access-token pepper;
+- `NARRATION_SERVICE_TOKEN`: the raw URL Keep product credential;
+- `VAPID_PRIVATE_KEY`: the Web Push P-256 private key.
+
+The public/configured values live in `apps/api/wrangler.toml`: application origins, narration-service origin, VAPID public key and subject, and the explicit push-provider host allowlist.
+
+Bootstrap the account and run both processes:
 
 ```sh
 npm run bootstrap:admin -- you@example.com --local
-```
-
-Run the API and web app in separate terminals:
-
-```sh
 npm run dev:api
 npm run dev:web
 ```
 
-The defaults are `http://localhost:8787` for the API and `http://localhost:5173` for the web app.
+The default API and PWA origins are `http://localhost:8787` and `http://localhost:5173`.
 
 ## Verification
 
-The root commands cover every workspace that has a test or build script:
-
 ```sh
-npm test
 npm run typecheck
+npm test
 npm run build
-npm audit --omit=dev
+npm audit --audit-level=low
 ```
 
-Before applying new migrations remotely, verify the complete migration chain against an empty local D1 persistence directory:
+Validate the baseline from an empty D1 state, not a previously migrated local database:
 
 ```sh
 npx wrangler d1 migrations apply DB \
@@ -71,19 +73,11 @@ npx wrangler d1 migrations apply DB \
   --config apps/api/wrangler.toml
 ```
 
-## Browser extension
+The API integration tests exercise the current D1 schema, immutable article replacement, service publication, R2 integrity contract, cascade invalidation, and cleanup outbox.
 
-Build for local development:
+## Capture clients
 
-```sh
-URL_KEEP_API_ORIGIN=http://localhost:8787 \
-URL_KEEP_APP_ORIGIN=http://localhost:5173 \
-npm run build:extension
-```
-
-Then load `apps/extension/dist` as an unpacked extension in Chrome or Brave. Add the resulting `chrome-extension://...` origin to `ALLOWED_EXTENSION_ORIGINS` and restart the API.
-
-For production:
+Build the extension for production:
 
 ```sh
 URL_KEEP_API_ORIGIN=https://api.url-keep.com \
@@ -91,55 +85,57 @@ URL_KEEP_APP_ORIGIN=https://www.url-keep.com \
 npm run build:extension
 ```
 
-The generated manifest grants cross-origin access only to the configured API origin. Runtime API-origin changes require a build whose manifest grants that origin; production does not request blanket HTTPS access.
+Load `apps/extension/dist` as an unpacked extension or distribute that build. Its manifest grants only the configured API origin. The extension uploads a Readability capture from the active tab and requests one server extraction if capture fails. Publisher cookies never leave the tab.
 
-The popup saves the bookmark, then its MV3 worker injects Readability into the active tab and uploads sanitized article input. If capture fails, the worker requests one server extraction fallback. Publisher cookies never leave the tab.
+Create Shortcut credentials from `/settings`, then follow [shortcuts/README.md](./shortcuts/README.md). Safari sends the live DOM only as bounded transport input; URL-only shares remain URL-only.
 
-## iPhone Shortcut
+## Narration and offline audio
 
-Create an API token from the profile page, then follow [shortcuts/README.md](./shortcuts/README.md). The Safari branch runs the source-controlled `capture-page.js`, submits the live DOM, and downgrades to URL/title metadata when the serialized request exceeds 4.5 MiB. Shares from other apps remain URL-only.
+A complete private article can request one narration. The Worker derives bounded plaintext, creates an idempotent service job, and a once-per-minute scheduled handler publishes verified output into the private `url-keep-narrations` bucket. The browser never sees the service credential.
 
-Set `VITE_IOS_SHORTCUT_URL` only after publishing and testing the matching iCloud Shortcut. The profile page shows the install link when that variable is present.
+Ready audio is fetched through the authenticated API. If offline audio is enabled, the PWA verifies its length and SHA-256 before committing a synthetic immutable response to the `url-keep-audio` cache and its matching IndexedDB ledger row. The native audio element plays a Blob URL; no bearer token is placed in a media URL or service worker.
 
-## PWA and offline use
+Settings expose only:
 
-Install the web app through the browser’s **Add to Home Screen** flow. IndexedDB stores private bookmarks and article HTML; Cache Storage owns only the app shell and article images.
-
-Installed standalone mode adds two quiet pieces of missing browser chrome to the existing header:
-
-- Refresh reloads the page.
-- Share appears only in readers. Private readers share the publisher URL; public readers share their public URL.
-
-Ordinary browser tabs do not render these controls. Offline mode is read-only.
+- offline-audio enablement, usage, limit, and clear;
+- notification enablement for the current browser;
+- account and API-token controls.
 
 ## Configuration
 
-API secrets in `apps/api/.dev.vars` or Cloudflare:
+Worker secrets:
 
-- `TOKEN_PEPPER`: required token-hashing secret.
-- `APP_ORIGIN`: comma-separated allowed web origins.
-- `ALLOWED_EXTENSION_ORIGINS`: comma-separated extension origins.
-- `DEBUG_LOGS`: optional structured diagnostics; captured HTML and tokens are never logged.
+- `TOKEN_PEPPER`;
+- `NARRATION_SERVICE_TOKEN`;
+- `VAPID_PRIVATE_KEY`.
+
+Worker configuration:
+
+- `APP_ORIGIN` and `ALLOWED_EXTENSION_ORIGINS`;
+- `NARRATION_SERVICE_ORIGIN`;
+- `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT`, and `PUSH_PROVIDER_HOSTS`;
+- `DEBUG_LOGS` for content-free structured diagnostics.
 
 Web build variables:
 
-- `VITE_API_ORIGIN`: deployed API origin.
-- `VITE_IOS_SHORTCUT_URL`: optional published Shortcut URL.
+- `VITE_API_ORIGIN`;
+- optional `VITE_IOS_SHORTCUT_URL`.
 
-Extension build variables:
+The API has one unversioned contract. There are no old-route redirects, payload normalizers, password-hash fallbacks, schema adapters, or dual browser-storage paths.
 
-- `URL_KEEP_API_ORIGIN`: exact API origin emitted into `host_permissions`.
-- `URL_KEEP_APP_ORIGIN`: web-app origin used by extension links.
+## Clean deployment
 
-## Deployment
+This is a destructive greenfield cutover. Back up any data worth retaining, then recreate D1 from `0001_init.sql`; do not apply the old migration chain or preserve its migration history.
 
-Deploy in compatibility order:
-
-1. Apply additive D1 migrations.
-2. Deploy the API.
-3. Deploy the web app and service worker.
-4. Build/distribute the extension.
-5. Publish the Shortcut and then update its install URL.
+1. Verify the independent narration service and its URL Keep tenant credential.
+2. Create the private `url-keep-narrations` R2 bucket.
+3. Create a fresh D1 database from the single baseline and update its binding ID.
+4. Set the three Worker secrets.
+5. Deploy the Worker, including its once-per-minute scheduled trigger.
+6. Bootstrap the single account.
+7. Build and deploy the PWA to Vercel.
+8. Clear prior URL Keep site data on installed browsers, then log in again.
+9. Rebuild the extension and Shortcut against the unversioned endpoints.
 
 ```sh
 npm run d1:migrate:remote
@@ -148,6 +144,4 @@ npm run build:web
 vercel --prod
 ```
 
-The Vercel project must expose `VITE_API_ORIGIN` and, if used, `VITE_IOS_SHORTCUT_URL` at build time. Cloudflare configuration lives in `apps/api/wrangler.toml`; secrets stay outside Git.
-
-After deployment, verify `/health`, authenticated bookmark capture, `/v1/offline/status`, reader routing, and the installed PWA controls. Old extension and URL-only Shortcut clients remain valid during rollout.
+Acceptance covers health and authentication, capture and immutable replacement, offline text/images, narration request through durable playback, notification enrollment, verified offline audio, deletion cleanup, and operation with the narration service unavailable.

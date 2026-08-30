@@ -6,8 +6,8 @@ import {
 
 export function sanitizeArticleHtml(contentHtml: string, apiOrigin: string) {
   const withResolvedImages = contentHtml.replaceAll(
-    'src="/v1/images/',
-    `src="${apiOrigin}/v1/images/`,
+    'src="/images/',
+    `src="${apiOrigin}/images/`,
   );
   const sanitized = DOMPurify.sanitize(withResolvedImages, {
     ALLOWED_TAGS: [...ARTICLE_SANITIZER_POLICY.allowedTags],

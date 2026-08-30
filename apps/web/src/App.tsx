@@ -51,6 +51,10 @@ import {
   getOfflineReadableBookmarkIds,
 } from "./offline/db";
 import { SyncManager } from "./offline/sync";
+import { ArticleAudio } from "./audio/ArticleAudio";
+import { auditOfflineAudio } from "./audio/offline-audio";
+import { NotificationSettings } from "./settings/NotificationSettings";
+import { OfflineAudioSettings } from "./settings/OfflineAudioSettings";
 
 const TOKEN_KEY = "url_keep_token";
 const USER_KEY = "url_keep_user";
@@ -482,7 +486,7 @@ function formatExtractionError(error: string | null | undefined): string {
         return error;
     }
   } catch {
-    // Legacy free-text error — show as-is
+    // Extraction errors created by the current API may still be plain text.
     return error;
   }
 }
@@ -509,7 +513,7 @@ function Nav() {
       {!offline.online ? <span className="offline-badge">offline</span> : null}
       <Link className="text-action" to="/add">add url</Link>
       <span aria-hidden="true" className="nav-sep">|</span>
-      <Link className="text-action" to="/profile">profile</Link>
+      <Link className="text-action" to="/settings">settings</Link>
       <span aria-hidden="true" className="nav-sep">|</span>
       <button className="text-action" onClick={() => void auth.logout()} type="button">
         log out
@@ -607,6 +611,10 @@ function OfflineProvider({ children }: { children: ReactNode }) {
 
   const managerRef = useRef(manager);
   managerRef.current = manager;
+
+  useEffect(() => {
+    void auditOfflineAudio();
+  }, []);
 
   const refresh = useCallback(async (force = false) => {
     if (!auth.token || !online) {
@@ -787,6 +795,7 @@ function ReaderDocument({
   extractionError,
   sourceAvailable = true,
   shareAction,
+  audioControl,
 }: {
   header: ReactNode;
   title: string;
@@ -803,6 +812,7 @@ function ReaderDocument({
     busy: boolean;
     onClick: () => void;
   };
+  audioControl?: ReactNode;
 }) {
   const [textSize, setTextSize] = useState<ReaderTextSize>(() => readStoredReaderTextSize());
   const [textSizeMenuOpen, setTextSizeMenuOpen] = useState(false);
@@ -917,6 +927,7 @@ function ReaderDocument({
                 </div>
               ) : null}
             </div>
+            {audioControl}
             {sourceAvailable ? (
               <a
                 className="reader-meta-link"
@@ -1752,7 +1763,7 @@ function TokenRow({
   );
 }
 
-function ProfilePage() {
+function SettingsPage() {
   const auth = useAuth();
   const offline = useOffline();
 
@@ -1891,8 +1902,11 @@ function ProfilePage() {
       </header>
 
       {!offline.online ? (
-        <p className="muted block-muted">profile changes require a connection</p>
+        <p className="muted block-muted">online settings require a connection</p>
       ) : null}
+
+      <OfflineAudioSettings />
+      <NotificationSettings client={auth.client} online={offline.online} />
 
       <section className="profile-section">
         <h2 className="section-title">account</h2>
@@ -2191,6 +2205,16 @@ function ReaderPage() {
 
       {bookmark ? (
         <ReaderDocument
+          audioControl={
+            article?.id && article.extraction_status === "complete" && article.content_html ? (
+              <ArticleAudio
+                articleId={article.id}
+                bookmarkId={bookmark.id}
+                client={auth.client}
+                key={article.id}
+              />
+            ) : null
+          }
           author={article?.author}
           contentHtml={article?.content_html}
           extractionError={article?.extraction_error}
@@ -2215,7 +2239,7 @@ function ReaderPage() {
           siteName={bookmark.site_name}
           sourceAvailable={offline.online}
           sourceUrl={bookmark.url}
-          title={bookmark.title}
+          title={article?.title ?? bookmark.title}
           wordCount={article?.word_count}
         />
       ) : null}
@@ -2353,14 +2377,13 @@ function AppRoutes() {
       />
       <Route path="/s/:token" element={<PublicSharePage />} />
       <Route
-        path="/profile"
+        path="/settings"
         element={
           <RequireAuth>
-            <ProfilePage />
+            <SettingsPage />
           </RequireAuth>
         }
       />
-      <Route path="/settings/tokens" element={<Navigate replace to="/profile" />} />
       <Route path="*" element={<Navigate replace to="/" />} />
     </Routes>
   );

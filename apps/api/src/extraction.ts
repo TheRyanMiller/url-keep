@@ -441,6 +441,7 @@ export function pendingArticleContent(
     id: makeId(),
     bookmarkId: bookmark.id,
     userId: bookmark.userId,
+    title: existing?.title ?? bookmark.title,
     contentHtml: null,
     wordCount: 0,
     author: null,
@@ -466,6 +467,7 @@ function failureArticleContent(
     id: generationId,
     bookmarkId: bookmark.id,
     userId: bookmark.userId,
+    title: existing?.title ?? bookmark.title,
     contentHtml: null,
     wordCount: 0,
     author: null,
@@ -534,7 +536,7 @@ async function maybeStoreImage(
   });
 
   return {
-    proxiedPath: `/v1/images/articles/${bookmarkId}/${generationId}/${hash}`,
+    proxiedPath: `/images/articles/${bookmarkId}/${generationId}/${hash}`,
     bytesStored: body.byteLength,
   };
 }
@@ -795,6 +797,7 @@ export async function runCapturedPageExtraction(options: {
     id: makeId(),
     bookmarkId: options.bookmark.id,
     userId: options.bookmark.userId,
+    title: snapshot.title ?? options.bookmark.title,
     contentHtml: snapshot.contentHtml,
     wordCount: snapshot.wordCount,
     author: snapshot.author,
@@ -803,7 +806,7 @@ export async function runCapturedPageExtraction(options: {
     extractionError: null,
     extractedAt: now,
     contentSource: "client",
-    createdAt: existing?.createdAt ?? now,
+    createdAt: now,
     updatedAt: now,
   };
   const bookmark = bookmarkMetadataForSnapshot(
@@ -907,6 +910,7 @@ export async function runBookmarkExtraction(
       id: generationId,
       bookmarkId: options.bookmark.id,
       userId: options.bookmark.userId,
+      title: snapshot.title ?? options.bookmark.title,
       contentHtml: snapshot.contentHtml,
       wordCount: snapshot.wordCount,
       author: snapshot.author,
@@ -915,7 +919,7 @@ export async function runBookmarkExtraction(
       extractionError: null,
       extractedAt: now,
       contentSource: "server",
-      createdAt: existing?.createdAt ?? now,
+      createdAt: now,
       updatedAt: now,
     };
     const bookmark = bookmarkMetadataForSnapshot(

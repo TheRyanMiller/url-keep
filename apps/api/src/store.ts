@@ -63,8 +63,8 @@ export interface Store {
   ): Promise<ArticleContentWriteResult>;
   putServerArticleContent(
     content: ArticleContentRecord,
-    bookmark?: BookmarkRecord,
-    expectedArticleId?: string | null,
+    bookmark: BookmarkRecord | undefined,
+    expectedArticleId: string | null,
   ): Promise<ArticleContentWriteResult>;
   recordServerArticleFailure(
     content: ArticleContentRecord,

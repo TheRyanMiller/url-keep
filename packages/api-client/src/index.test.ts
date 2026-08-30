@@ -11,7 +11,9 @@ describe("UrlKeepClient request ownership", () => {
       .mockResolvedValueOnce(Response.json({ bookmark_count: 0, sync_revision: 0 }))
       .mockResolvedValueOnce(Response.json({
         item: {
+          id: "00000000-0000-4000-8000-000000000001",
           bookmark_id: "bookmark-1",
+          title: "Example",
           content_html: null,
           word_count: 0,
           author: null,

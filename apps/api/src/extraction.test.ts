@@ -98,7 +98,7 @@ describe("runBookmarkExtraction", () => {
 
     expect(result.extractionStatus).toBe("complete");
     expect(result.contentHtml).toContain("Trump-endorsed Republican advances");
-    expect(result.contentHtml).toContain("/v1/images/articles/bookmark-1/");
+    expect(result.contentHtml).toContain("/images/articles/bookmark-1/");
     expect(storedKeys[0]?.split("/")).toHaveLength(4);
     expect(result.wordCount).toBeGreaterThan(20);
   });
@@ -112,6 +112,7 @@ describe("runBookmarkExtraction", () => {
       id: "client-generation",
       bookmarkId: bookmark.id,
       userId: bookmark.userId,
+      title: bookmark.title,
       contentHtml: `<p>${"private captured article ".repeat(8)}</p>`,
       wordCount: 24,
       author: null,

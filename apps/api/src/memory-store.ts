@@ -57,6 +57,7 @@ export class MemoryStore implements Store {
       && left!.id === right.id
       && left!.bookmarkId === right.bookmarkId
       && left!.userId === right.userId
+      && left!.title === right.title
       && left!.contentHtml === right.contentHtml
       && left!.wordCount === right.wordCount
       && left!.author === right.author
@@ -240,6 +241,7 @@ export class MemoryStore implements Store {
     const items = bookmarks.items.map((bookmark) => ({
       bookmark,
       content: structuredClone(this.articleContent.get(bookmark.id) ?? null),
+      narration: null,
     }));
 
     return {
@@ -346,7 +348,7 @@ export class MemoryStore implements Store {
     content: ArticleContentRecord,
     bookmark: BookmarkRecord | undefined,
     source: "client" | "server",
-    expectedArticleId?: string | null,
+    expectedArticleId: string | null,
   ): ArticleContentWriteResult {
     const existing = this.articleContent.get(content.bookmarkId);
     if (
@@ -358,7 +360,6 @@ export class MemoryStore implements Store {
     }
     if (
       source === "server"
-      && expectedArticleId !== undefined
       && (expectedArticleId === null ? Boolean(existing) : existing?.id !== expectedArticleId)
     ) {
       return { written: false, replacedServerContent: false };
@@ -367,7 +368,7 @@ export class MemoryStore implements Store {
     const next = {
       ...structuredClone(content),
       contentSource: content.contentSource ?? null,
-      createdAt: existing?.createdAt ?? content.createdAt ?? nowIso(),
+      createdAt: content.createdAt ?? nowIso(),
       updatedAt: content.updatedAt ?? nowIso(),
     };
     const contentChanged = !this.sameArticle(existing, next);
@@ -395,13 +396,13 @@ export class MemoryStore implements Store {
     content: ArticleContentRecord,
     bookmark?: BookmarkRecord,
   ): Promise<ArticleContentWriteResult> {
-    return this.putArticleContent(content, bookmark, "client");
+    return this.putArticleContent(content, bookmark, "client", null);
   }
 
   async putServerArticleContent(
     content: ArticleContentRecord,
-    bookmark?: BookmarkRecord,
-    expectedArticleId?: string | null,
+    bookmark: BookmarkRecord | undefined,
+    expectedArticleId: string | null,
   ): Promise<ArticleContentWriteResult> {
     return this.putArticleContent(content, bookmark, "server", expectedArticleId);
   }

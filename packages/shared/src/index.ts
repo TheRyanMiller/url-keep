@@ -342,7 +342,9 @@ export const extractionStatusSchema = z.enum([
 export const contentSourceSchema = z.enum(["client", "server"]);
 
 export const articleContentSchema = z.object({
+  id: z.string(),
   bookmark_id: z.string(),
+  title: z.string(),
   content_html: z.string().nullable(),
   word_count: z.number().int().nonnegative(),
   author: z.string().nullable(),
@@ -356,6 +358,44 @@ export const articleContentSchema = z.object({
 export const articleContentResponseSchema = z.object({
   item: articleContentSchema,
 });
+
+export const narrationAudioSchema = z.object({
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  byte_size: z.number().int().positive(),
+  duration_ms: z.number().int().positive(),
+});
+
+export const narrationSchema = z.object({
+  id: z.string().uuid(),
+  status: z.enum(["pending", "ready", "failed"]),
+  retryable: z.boolean(),
+  error_code: z.string().nullable(),
+  audio: narrationAudioSchema.nullable(),
+});
+
+export const narrationResponseSchema = z.object({
+  item: narrationSchema,
+});
+
+export const readyNarrationSummarySchema = narrationAudioSchema.extend({
+  id: z.string().uuid(),
+  article_id: z.string().uuid(),
+});
+
+export const pushConfigResponseSchema = z.object({
+  available: z.boolean(),
+  public_key: z.string().nullable(),
+  subscribed: z.boolean(),
+});
+
+export const pushSubscriptionRequestSchema = z.object({
+  endpoint: z.string().url().max(2048),
+  expirationTime: z.number().nullable().optional(),
+  keys: z.object({
+    p256dh: z.string().min(1).max(512),
+    auth: z.string().min(1).max(512),
+  }).strict(),
+}).strict();
 
 export const bookmarkShareSchema = z.object({
   enabled: z.boolean(),
@@ -395,6 +435,7 @@ export const offlineStatusResponseSchema = z.object({
 export const offlineBundleItemSchema = z.object({
   bookmark: bookmarkSchema,
   content: articleContentSchema.nullable(),
+  narration: readyNarrationSummarySchema.nullable(),
 });
 
 export const offlineBundleResponseSchema = z.object({
@@ -495,6 +536,11 @@ export type TokenItem = z.infer<typeof tokenItemSchema>;
 export type Bookmark = z.infer<typeof bookmarkSchema>;
 export type ExtractionStatus = z.infer<typeof extractionStatusSchema>;
 export type ArticleContent = z.infer<typeof articleContentSchema>;
+export type Narration = z.infer<typeof narrationSchema>;
+export type NarrationResponse = z.infer<typeof narrationResponseSchema>;
+export type ReadyNarrationSummary = z.infer<typeof readyNarrationSummarySchema>;
+export type PushConfigResponse = z.infer<typeof pushConfigResponseSchema>;
+export type PushSubscriptionRequest = z.infer<typeof pushSubscriptionRequestSchema>;
 export type BookmarkShare = z.infer<typeof bookmarkShareSchema>;
 export type PublicShareArticle = z.infer<typeof publicShareArticleSchema>;
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;

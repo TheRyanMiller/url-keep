@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearOfflineData,
   getOfflineDb,
-  type OfflineSyncState,
 } from "./db";
 
 beforeEach(async () => {
@@ -15,7 +14,7 @@ afterEach(() => {
 });
 
 describe("offline account storage", () => {
-  it("clears private IndexedDB rows and article images without touching the shell", async () => {
+  it("clears private IndexedDB rows and media caches without touching the shell", async () => {
     const db = await getOfflineDb();
     await db.put("bookmarks", {
       id: "bookmark-1",
@@ -36,11 +35,6 @@ describe("offline account storage", () => {
       bookmark_count: 1,
       sync_revision: 1,
     });
-    await db.put("sync_meta", {
-      key: "credentials",
-      token: "legacy-secret",
-      apiOrigin: "https://api.example.com",
-    } as unknown as OfflineSyncState);
     const deleteCache = vi.fn().mockResolvedValue(true);
     vi.stubGlobal("caches", { delete: deleteCache });
 
@@ -49,8 +43,9 @@ describe("offline account storage", () => {
     expect(await db.count("bookmarks")).toBe(0);
     expect(await db.count("articles")).toBe(0);
     expect(await db.count("sync_meta")).toBe(0);
+    expect(await db.count("offline_audio")).toBe(0);
     expect(deleteCache).toHaveBeenCalledTimes(2);
     expect(deleteCache).toHaveBeenCalledWith("article-images");
-    expect(deleteCache).toHaveBeenCalledWith("api-cache");
+    expect(deleteCache).toHaveBeenCalledWith("url-keep-audio");
   });
 });

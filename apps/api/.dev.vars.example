@@ -1,3 +1,5 @@
 APP_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
 TOKEN_PEPPER=replace-with-a-long-random-secret
+NARRATION_SERVICE_TOKEN=replace-with-the-url-keep-tenant-token
+VAPID_PRIVATE_KEY=replace-with-a-p256-private-key
 ALLOWED_EXTENSION_ORIGINS=chrome-extension://pgldbhelglnjpgdmjhciahkcehmoopif

@@ -39,7 +39,7 @@ type BookmarkRow = {
   user_id: string;
   url: string;
   normalized_url: string;
-  bucket: BookmarkRecord["bucket"] | null;
+  bucket: BookmarkRecord["bucket"];
   title: string;
   title_source: BookmarkRecord["titleSource"];
   image_url: string | null;
@@ -54,6 +54,7 @@ type ArticleContentRow = {
   content_id: string | null;
   bookmark_id: string | null;
   content_user_id: string | null;
+  content_title: string | null;
   content_html: string | null;
   word_count: number | null;
   author: string | null;
@@ -76,6 +77,14 @@ type BookmarkShareRow = {
 
 type BookmarkWithContentRow = BookmarkRow & ArticleContentRow;
 type PublicShareRow = BookmarkRow & ArticleContentRow & BookmarkShareRow;
+type ReadyNarrationRow = {
+  narration_id: string | null;
+  narration_article_id: string | null;
+  narration_audio_sha256: string | null;
+  narration_byte_size: number | null;
+  narration_duration_ms: number | null;
+};
+type OfflineBundleRow = BookmarkWithContentRow & ReadyNarrationRow;
 
 function mapUser(row: UserRow | null): UserRecord | null {
   return row
@@ -111,7 +120,7 @@ function mapBookmark(row: BookmarkRow | null): BookmarkRecord | null {
         userId: row.user_id,
         url: row.url,
         normalizedUrl: row.normalized_url,
-        bucket: row.bucket ?? classification?.bucket ?? "reading",
+        bucket: row.bucket,
         title: row.title,
         titleSource: row.title_source,
         imageUrl: row.image_url,
@@ -127,11 +136,12 @@ function mapBookmark(row: BookmarkRow | null): BookmarkRecord | null {
 }
 
 function mapArticleContent(row: ArticleContentRow | null): ArticleContentRecord | null {
-  return row?.content_id && row.bookmark_id && row.content_user_id
+  return row?.content_id && row.bookmark_id && row.content_user_id && row.content_title !== null
     ? {
         id: row.content_id,
         bookmarkId: row.bookmark_id,
         userId: row.content_user_id,
+        title: row.content_title,
         contentHtml: row.content_html,
         wordCount: row.word_count ?? 0,
         author: row.author,
@@ -200,6 +210,7 @@ function articleContentSelectSql() {
     ac.id AS content_id,
     ac.bookmark_id,
     ac.user_id AS content_user_id,
+    ac.title AS content_title,
     ac.content_html,
     ac.word_count,
     ac.author,
@@ -439,21 +450,41 @@ export class D1Store implements Store {
         b.created_at,
         b.updated_at,
         ac.extraction_status AS extraction_status,
-        ${articleContentSelectSql()}
+        ${articleContentSelectSql()},
+        n.id AS narration_id,
+        n.article_id AS narration_article_id,
+        n.audio_sha256 AS narration_audio_sha256,
+        n.byte_size AS narration_byte_size,
+        n.duration_ms AS narration_duration_ms
       FROM bookmarks b
       LEFT JOIN article_content ac ON ac.bookmark_id = b.id
+      LEFT JOIN narrations n ON n.article_id = ac.id AND n.status = 'ready'
       WHERE ${clauses.join(" AND ")}
       ORDER BY b.created_at DESC, b.id DESC
       LIMIT ?
     `;
 
-    const result = await this.db.prepare(sql).bind(...bindings).all<BookmarkWithContentRow>();
+    const result = await this.db.prepare(sql).bind(...bindings).all<OfflineBundleRow>();
     const rows = (result.results ?? []).filter(Boolean);
     const hasMore = rows.length > options.limit;
     const pageRows = hasMore ? rows.slice(0, options.limit) : rows;
     const items = pageRows.map<OfflineBundleItemRecord>((row) => ({
       bookmark: mapBookmark(row)!,
       content: mapArticleContent(row),
+      narration:
+        row.narration_id
+        && row.narration_article_id
+        && row.narration_audio_sha256
+        && row.narration_byte_size
+        && row.narration_duration_ms
+          ? {
+              id: row.narration_id,
+              article_id: row.narration_article_id,
+              sha256: row.narration_audio_sha256,
+              byte_size: row.narration_byte_size,
+              duration_ms: row.narration_duration_ms,
+            }
+          : null,
     }));
     const nextCursor = hasMore
       ? encodeCursor(items[items.length - 1].bookmark)
@@ -666,49 +697,15 @@ export class D1Store implements Store {
     return mapArticleContent(row ?? null);
   }
 
-  private articleUpsertStatement(
+  private articleInsertStatement(
     content: ArticleContentRecord,
-    protectCompleteClientContent: boolean,
-    expectedArticleId?: string | null,
+    condition: "always" | "after_delete" | "if_absent",
   ): D1PreparedStatement {
-    if (protectCompleteClientContent && typeof expectedArticleId === "string") {
-      return this.db
-        .prepare(
-          `
-            UPDATE article_content
-            SET
-              id = ?,
-              user_id = ?,
-              content_html = ?,
-              word_count = ?,
-              author = ?,
-              published_date = ?,
-              extraction_status = ?,
-              extraction_error = ?,
-              extracted_at = ?,
-              content_source = ?,
-              updated_at = ?
-            WHERE bookmark_id = ? AND user_id = ? AND id = ?
-              AND NOT (content_source = 'client' AND extraction_status = 'complete')
-          `,
-        )
-        .bind(
-          content.id,
-          content.userId,
-          content.contentHtml,
-          content.wordCount,
-          content.author,
-          content.publishedDate,
-          content.extractionStatus,
-          content.extractionError,
-          content.extractedAt,
-          content.contentSource,
-          content.updatedAt,
-          content.bookmarkId,
-          content.userId,
-          expectedArticleId,
-        );
-    }
+    const where = condition === "after_delete"
+      ? "WHERE changes() = 1"
+      : condition === "if_absent"
+        ? "WHERE NOT EXISTS (SELECT 1 FROM article_content WHERE bookmark_id = ? AND user_id = ?)"
+        : "";
 
     return this.db
       .prepare(
@@ -717,6 +714,7 @@ export class D1Store implements Store {
             id,
             bookmark_id,
             user_id,
+            title,
             content_html,
             word_count,
             author,
@@ -727,34 +725,16 @@ export class D1Store implements Store {
             content_source,
             created_at,
             updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ${protectCompleteClientContent && expectedArticleId === null
-            ? "ON CONFLICT(bookmark_id) DO NOTHING"
-            : `ON CONFLICT(bookmark_id) DO UPDATE SET
-            id = excluded.id,
-            user_id = excluded.user_id,
-            content_html = excluded.content_html,
-            word_count = excluded.word_count,
-            author = excluded.author,
-            published_date = excluded.published_date,
-            extraction_status = excluded.extraction_status,
-            extraction_error = excluded.extraction_error,
-            extracted_at = excluded.extracted_at,
-            content_source = excluded.content_source,
-            created_at = article_content.created_at,
-            updated_at = excluded.updated_at
-          ${protectCompleteClientContent
-            ? `WHERE NOT (
-                article_content.content_source = 'client'
-                AND article_content.extraction_status = 'complete'
-              )`
-            : ""}`}
+          )
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          ${where}
         `,
       )
       .bind(
         content.id,
         content.bookmarkId,
         content.userId,
+        content.title,
         content.contentHtml,
         content.wordCount,
         content.author,
@@ -765,12 +745,13 @@ export class D1Store implements Store {
         content.contentSource,
         content.createdAt,
         content.updatedAt,
+        ...(condition === "if_absent" ? [content.bookmarkId, content.userId] : []),
       );
   }
 
   private bookmarkUpdateStatement(
     bookmark: BookmarkRecord,
-    expectedArticleId?: string,
+    expectedArticleId: string,
   ): D1PreparedStatement {
     return this.db
       .prepare(
@@ -787,13 +768,11 @@ export class D1Store implements Store {
             saved_via = ?,
             updated_at = ?
           WHERE id = ? AND user_id = ?
-          ${expectedArticleId
-            ? `AND EXISTS (
-                SELECT 1
-                FROM article_content
-                WHERE bookmark_id = ? AND user_id = ? AND id = ?
-              )`
-            : ""}
+          AND EXISTS (
+            SELECT 1
+            FROM article_content
+            WHERE bookmark_id = ? AND user_id = ? AND id = ?
+          )
         `,
       )
       .bind(
@@ -808,9 +787,9 @@ export class D1Store implements Store {
         bookmark.updatedAt,
         bookmark.id,
         bookmark.userId,
-        ...(expectedArticleId
-          ? [bookmark.id, bookmark.userId, expectedArticleId]
-          : []),
+        bookmark.id,
+        bookmark.userId,
+        expectedArticleId,
       );
   }
 
@@ -818,31 +797,53 @@ export class D1Store implements Store {
     content: ArticleContentRecord,
     bookmark: BookmarkRecord | undefined,
     protectCompleteClientContent: boolean,
-    expectedArticleId?: string | null,
+    expectedArticleId: string | null,
   ): Promise<ArticleContentWriteResult> {
-    const statements = [
+    const statements: D1PreparedStatement[] = [
       this.db
         .prepare(
           "SELECT content_source FROM article_content WHERE user_id = ? AND bookmark_id = ? LIMIT 1",
         )
         .bind(content.userId, content.bookmarkId),
-      this.articleUpsertStatement(
-        content,
-        protectCompleteClientContent,
-        expectedArticleId,
-      ),
     ];
+
+    if (!protectCompleteClientContent) {
+      statements.push(
+        this.db
+          .prepare("DELETE FROM article_content WHERE user_id = ? AND bookmark_id = ?")
+          .bind(content.userId, content.bookmarkId),
+        this.articleInsertStatement(content, "always"),
+      );
+    } else if (expectedArticleId === null) {
+      statements.push(this.articleInsertStatement(content, "if_absent"));
+    } else {
+      statements.push(
+        this.db
+          .prepare(
+            `
+              DELETE FROM article_content
+              WHERE user_id = ? AND bookmark_id = ? AND id = ?
+                AND NOT (content_source = 'client' AND extraction_status = 'complete')
+            `,
+          )
+          .bind(
+            content.userId,
+            content.bookmarkId,
+            expectedArticleId,
+          ),
+        this.articleInsertStatement(content, "after_delete"),
+      );
+    }
+
+    const insertIndex = statements.length - 1;
     if (bookmark) {
       statements.push(
-        this.bookmarkUpdateStatement(
-          bookmark,
-          protectCompleteClientContent ? content.id : undefined,
-        ),
+        this.bookmarkUpdateStatement(bookmark, content.id),
       );
     }
 
     const results = await this.db.batch(statements);
-    const written = (results[1]?.meta.changes ?? 0) > 0;
+    const written = (results[insertIndex]?.meta.changes ?? 0) > 0;
     const priorSource = (
       results[0]?.results?.[0] as { content_source?: string | null } | undefined
     )?.content_source;
@@ -856,13 +857,13 @@ export class D1Store implements Store {
     content: ArticleContentRecord,
     bookmark?: BookmarkRecord,
   ): Promise<ArticleContentWriteResult> {
-    return this.putArticleContent(content, bookmark, false);
+    return this.putArticleContent(content, bookmark, false, null);
   }
 
   async putServerArticleContent(
     content: ArticleContentRecord,
-    bookmark?: BookmarkRecord,
-    expectedArticleId?: string | null,
+    bookmark: BookmarkRecord | undefined,
+    expectedArticleId: string | null,
   ): Promise<ArticleContentWriteResult> {
     return this.putArticleContent(content, bookmark, true, expectedArticleId);
   }

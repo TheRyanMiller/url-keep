@@ -2,9 +2,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { ArticleContent, Bookmark } from "@url-keep/shared";
 
 const DB_NAME = "url-keep-offline";
-const DB_VERSION = 2;
-const LEGACY_CREDENTIALS_KEY = "credentials" as OfflineSyncState["key"];
-const LEGACY_API_CACHE = "api-cache";
+const DB_VERSION = 1;
 
 export type OfflineArticle = ArticleContent & {
   synced_at: string;
@@ -15,6 +13,25 @@ export type OfflineSyncState = {
   last_sync_at: string | null;
   bookmark_count: number;
   sync_revision: number;
+};
+
+export const OFFLINE_AUDIO_LIMITS = [250, 500, 1024].map(
+  (megabytes) => megabytes * 1024 * 1024,
+) as [number, number, number];
+
+export type AudioSettings = {
+  key: "audio";
+  enabled: boolean;
+  byte_limit: number;
+};
+
+export type OfflineAudioRecord = {
+  narration_id: string;
+  article_id: string;
+  cache_key: string;
+  sha256: string;
+  byte_size: number;
+  last_accessed_at: string;
 };
 
 interface OfflineDBSchema extends DBSchema {
@@ -34,13 +51,25 @@ interface OfflineDBSchema extends DBSchema {
     key: string;
     value: OfflineSyncState;
   };
+  audio_settings: {
+    key: "audio";
+    value: AudioSettings;
+  };
+  offline_audio: {
+    key: string;
+    value: OfflineAudioRecord;
+    indexes: {
+      "by-article": string;
+      "by-accessed": string;
+    };
+  };
 }
 
 let dbPromise: Promise<IDBPDatabase<OfflineDBSchema>> | null = null;
 
 export function getOfflineDb() {
   dbPromise ??= openDB<OfflineDBSchema>(DB_NAME, DB_VERSION, {
-    upgrade(db, oldVersion, _newVersion, transaction) {
+    upgrade(db) {
       if (!db.objectStoreNames.contains("bookmarks")) {
         const store = db.createObjectStore("bookmarks", {
           keyPath: "id",
@@ -61,8 +90,16 @@ export function getOfflineDb() {
         });
       }
 
-      if (oldVersion < 2 && db.objectStoreNames.contains("sync_meta")) {
-        void transaction.objectStore("sync_meta").delete(LEGACY_CREDENTIALS_KEY);
+      if (!db.objectStoreNames.contains("audio_settings")) {
+        db.createObjectStore("audio_settings", { keyPath: "key" });
+      }
+
+      if (!db.objectStoreNames.contains("offline_audio")) {
+        const store = db.createObjectStore("offline_audio", {
+          keyPath: "narration_id",
+        });
+        store.createIndex("by-article", "article_id");
+        store.createIndex("by-accessed", "last_accessed_at");
       }
     },
   });
@@ -115,17 +152,19 @@ export async function getOfflineReadableBookmarkIds(): Promise<Set<string>> {
 
 export async function clearOfflineData() {
   const db = await getOfflineDb();
-  const tx = db.transaction(["bookmarks", "articles", "sync_meta"], "readwrite");
+  const tx = db.transaction(
+    ["bookmarks", "articles", "sync_meta", "offline_audio"],
+    "readwrite",
+  );
   await Promise.all([
     tx.objectStore("bookmarks").clear(),
     tx.objectStore("articles").clear(),
     tx.objectStore("sync_meta").clear(),
+    tx.objectStore("offline_audio").clear(),
   ]);
   await tx.done;
   if (typeof caches !== "undefined") {
-    await Promise.all([
-      caches.delete("article-images"),
-      caches.delete(LEGACY_API_CACHE),
-    ]);
+    await caches.delete("article-images");
+    await caches.delete("url-keep-audio");
   }
 }

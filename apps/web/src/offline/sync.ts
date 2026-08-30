@@ -7,6 +7,7 @@ import {
   getOfflineDb,
   getOfflineSyncState,
 } from "./db";
+import { cacheNarrationAudio, retainCurrentNarrations } from "../audio/offline-audio";
 
 const DEFAULT_SYNC_STALE_MS = 60_000;
 
@@ -19,7 +20,7 @@ async function precacheArticleImages(
   }
 
   const cache = await caches.open("article-images");
-  const urls = [...contentHtml.matchAll(/src="(\/v1\/images\/[^"]+)"/gi)]
+  const urls = [...contentHtml.matchAll(/src="(\/images\/[^"]+)"/gi)]
     .map((match) => match[1])
     .filter(Boolean);
 
@@ -160,6 +161,16 @@ export class SyncManager {
       sync_revision: end.sync_revision,
     });
     await tx.done;
+
+    const narrations = [...items.values()]
+      .map((item) => item.narration)
+      .filter((item) => item !== null);
+    await retainCurrentNarrations(narrations);
+    for (const item of items.values()) {
+      if (item.narration) {
+        await cacheNarrationAudio(this.client, item.bookmark.id, item.narration).catch(() => false);
+      }
+    }
 
     if (typeof caches !== "undefined") {
       await caches.delete("article-images");

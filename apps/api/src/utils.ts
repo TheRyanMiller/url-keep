@@ -1,5 +1,4 @@
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils";
-import { scryptAsync } from "@noble/hashes/scrypt";
 import { sha256 } from "@noble/hashes/sha2";
 import { canonicalizeBookmarkUrl, classifyBookmarkUrl } from "@url-keep/shared";
 import type { BookmarkRecord } from "./types";
@@ -13,7 +12,6 @@ const PASSWORD_DKLEN = 32;
 
 type VerifiedPassword = {
   valid: boolean;
-  needsRehash: boolean;
 };
 
 async function derivePbkdf2(
@@ -71,7 +69,7 @@ export function makeOpaqueToken(): string {
 }
 
 export function makeShareToken(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(10));
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
   return bytesToHex(bytes);
 }
 
@@ -122,62 +120,14 @@ async function verifyPbkdf2Password(
   return timingSafeEqual(derived, expected);
 }
 
-async function verifyLegacyScryptPassword(
-  password: string,
-  storedHash: string,
-): Promise<boolean> {
-  const parts = storedHash.split("$");
-  if (parts.length !== 6 || parts[0] !== "scrypt") {
-    return false;
-  }
-
-  const [, nString, rString, pString, saltHex, hashHex] = parts;
-  const expected = hexToBytes(hashHex);
-  const n = Number(nString);
-  const r = Number(rString);
-  const p = Number(pString);
-  if (
-    !Number.isInteger(n) ||
-    !Number.isInteger(r) ||
-    !Number.isInteger(p) ||
-    n < 2 ||
-    r < 1 ||
-    p < 1
-  ) {
-    return false;
-  }
-
-  const derived = await scryptAsync(
-    textEncoder.encode(password),
-    hexToBytes(saltHex),
-    {
-      N: n,
-      r,
-      p,
-      dkLen: expected.length,
-      asyncTick: 1,
-    },
-  );
-  return timingSafeEqual(derived, expected);
-}
-
 export async function verifyPassword(
   password: string,
   storedHash: string,
 ): Promise<VerifiedPassword> {
-  if (storedHash.startsWith(`${PASSWORD_HASH_ALGO}$`)) {
-    return {
-      valid: await verifyPbkdf2Password(password, storedHash),
-      needsRehash: false,
-    };
-  }
-
-  if (storedHash.startsWith("scrypt$")) {
-    const valid = await verifyLegacyScryptPassword(password, storedHash);
-    return { valid, needsRehash: valid };
-  }
-
-  return { valid: false, needsRehash: false };
+  return {
+    valid: storedHash.startsWith(`${PASSWORD_HASH_ALGO}$`)
+      && await verifyPbkdf2Password(password, storedHash),
+  };
 }
 
 export function normalizeUrl(input: string): string {

@@ -12,12 +12,28 @@ import {
   isHackmdUrl,
   createTokenRequestSchema,
   loginRequestSchema,
+  pushSubscriptionRequestSchema,
   updateBookmarkTitleRequestSchema,
   uploadBookmarkContentRequestSchema,
 } from "@url-keep/shared";
 import { extractMarkdownTitle, hasHtmlMarkup, renderMarkdownToHtml } from "./markdown";
 import { sanitizeClientHtml } from "./sanitize";
 import { D1Store } from "./d1-store";
+import {
+  authorizedNarrationAudio,
+  getBookmarkNarration,
+  NarrationDomainError,
+  narrationToApi,
+  reconcileNarration,
+  requestNarration,
+  retryNarration,
+} from "./narration";
+import {
+  deletePushSubscription,
+  getPushConfig,
+  putPushSubscription,
+  validatePushSubscription,
+} from "./push";
 import {
   countWords,
   ExtractionFailure,
@@ -71,6 +87,13 @@ function errorResponse(
   status: number,
 ): Response {
   return Response.json({ error: { code, message } }, { status });
+}
+
+function narrationErrorResponse(caught: unknown): Response {
+  if (caught instanceof NarrationDomainError) {
+    return errorResponse(caught.code, caught.message, caught.status);
+  }
+  return errorResponse("server_error", "Narration request failed", 500);
 }
 
 function debugLogsEnabled(env: Bindings): boolean {
@@ -315,7 +338,9 @@ function bookmarkSaveResponse(
 
 function articleContentToApi(content: ArticleContentRecord) {
   return {
+    id: content.id,
     bookmark_id: content.bookmarkId,
+    title: content.title,
     content_html: content.contentHtml,
     word_count: content.wordCount,
     author: content.author,
@@ -327,20 +352,7 @@ function articleContentToApi(content: ArticleContentRecord) {
   };
 }
 
-function timingSafeEqualStrings(left: string, right: string): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  let mismatch = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
-  }
-
-  return mismatch === 0;
-}
-
-const RAW_SHARE_ID_PATTERN = /^[a-f0-9]{20}$/;
+const RAW_SHARE_ID_PATTERN = /^[a-f0-9]{32}$/;
 
 function getAppOrigin(c: Context<AppEnv>): string {
   const configured = c.env.APP_ORIGIN
@@ -353,29 +365,9 @@ function getAppOrigin(c: Context<AppEnv>): string {
   return new URL(c.req.url).origin.replace(/\/+$/, "");
 }
 
-function buildPublicShareToken(shareId: string): string {
-  return shareId;
-}
-
-function parsePublicShareToken(value: string, pepper?: string): string | null {
+function parsePublicShareToken(value: string): string | null {
   const trimmed = value.trim();
-  if (RAW_SHARE_ID_PATTERN.test(trimmed)) {
-    return trimmed;
-  }
-
-  const separator = trimmed.indexOf(".");
-  if (separator <= 0 || separator >= trimmed.length - 1 || !pepper) {
-    return null;
-  }
-
-  const shareId = trimmed.slice(0, separator);
-  const signature = trimmed.slice(separator + 1);
-  const expectedSignature = hashToken(shareId, pepper);
-  return timingSafeEqualStrings(signature, expectedSignature) ? shareId : null;
-}
-
-function isLegacyShareId(shareId: string): boolean {
-  return !RAW_SHARE_ID_PATTERN.test(shareId);
+  return RAW_SHARE_ID_PATTERN.test(trimmed) ? trimmed : null;
 }
 
 function bookmarkShareToApi(
@@ -394,7 +386,7 @@ function bookmarkShareToApi(
 
   return {
     enabled: true,
-    share_url: `${getAppOrigin(c)}/s/${buildPublicShareToken(share.shareId)}`,
+    share_url: `${getAppOrigin(c)}/s/${share.shareId}`,
     hit_count: share.viewCount,
     created_at: share.enabledAt,
     last_accessed_at: share.lastAccessedAt,
@@ -403,7 +395,7 @@ function bookmarkShareToApi(
 
 function publicShareArticleToApi(bookmark: BookmarkRecord, content: ArticleContentRecord) {
   return {
-    title: bookmark.title,
+    title: content.title,
     url: bookmark.url,
     site_name: bookmark.siteName,
     author: content.author,
@@ -561,13 +553,14 @@ export function createApp(options: CreateAppOptions = {}) {
       },
       allowHeaders: ["Authorization", "Content-Type"],
       allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      exposeHeaders: ["Content-Length", "ETag", "X-Content-SHA256"],
       maxAge: 86400,
     }),
   );
 
   app.get("/health", (c) => c.json({ ok: true }));
 
-  app.post("/v1/auth/login", async (c) => {
+  app.post("/auth/login", async (c) => {
     let rawBody: unknown;
     try {
       rawBody = await c.req.json();
@@ -598,16 +591,10 @@ export function createApp(options: CreateAppOptions = {}) {
     const user = await store.getUserByEmail(parsed.email);
     const passwordCheck = user
       ? await verifyPassword(parsed.password, user.passwordHash)
-      : { valid: false, needsRehash: false };
+      : { valid: false };
     if (!user || !passwordCheck.valid) {
       debugLog(c, "auth.login.rejected");
       return errorResponse("unauthorized", "Invalid email or password", 401);
-    }
-
-    if (passwordCheck.needsRehash) {
-      const passwordHash = await hashPassword(parsed.password);
-      await store.updateUserPasswordHash(user.id, passwordHash);
-      user.passwordHash = passwordHash;
     }
 
     const pepper = c.env.TOKEN_PEPPER;
@@ -648,11 +635,11 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
-  app.use("/v1/*", async (c, next) => {
+  app.use("/*", async (c, next) => {
     if (
-      c.req.path === "/v1/auth/login" ||
-      c.req.path.startsWith("/v1/images/") ||
-      c.req.path.startsWith("/v1/public/shares/")
+      c.req.path === "/auth/login" ||
+      c.req.path.startsWith("/images/") ||
+      c.req.path.startsWith("/public/shares/")
     ) {
       return next();
     }
@@ -702,13 +689,13 @@ export function createApp(options: CreateAppOptions = {}) {
     await next();
   });
 
-  app.post("/v1/auth/logout", async (c) => {
+  app.post("/auth/logout", async (c) => {
     const { token } = c.get("auth");
     await c.get("store").revokeAccessToken(token.id, nowIso());
     return c.body(null, 204);
   });
 
-  app.get("/v1/auth/me", (c) => {
+  app.get("/auth/me", (c) => {
     const { user, token } = c.get("auth");
     return c.json({
       user: { id: user.id, email: user.email },
@@ -716,7 +703,7 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
-  app.patch("/v1/auth/password", async (c) => {
+  app.patch("/auth/password", async (c) => {
     const { user } = c.get("auth");
     const rawBody = await c.req.json().catch(() => null);
     const parsed = changePasswordRequestSchema.safeParse(rawBody);
@@ -741,7 +728,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.body(null, 204);
   });
 
-  app.get("/v1/tokens", async (c) => {
+  app.get("/tokens", async (c) => {
     const { user, token: currentToken } = c.get("auth");
     const tokens = await c.get("store").listAccessTokens(user.id);
     const ordered = tokens.sort((a, b) => {
@@ -765,7 +752,7 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
-  app.post("/v1/tokens", async (c) => {
+  app.post("/tokens", async (c) => {
     const parsed = await parseJsonBody(c, createTokenRequestSchema);
     if (parsed instanceof Response) {
       return parsed;
@@ -803,7 +790,7 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
-  app.delete("/v1/tokens/:id", async (c) => {
+  app.delete("/tokens/:id", async (c) => {
     const requestedId = c.req.param("id");
     const { user, token } = c.get("auth");
     if (requestedId === token.id) {
@@ -819,7 +806,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.body(null, 204);
   });
 
-  app.get("/v1/bookmarks", async (c) => {
+  app.get("/bookmarks", async (c) => {
     const parsed = parseListQuery(c);
     if (parsed instanceof Response) {
       return parsed;
@@ -833,7 +820,7 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
-  app.get("/v1/offline/status", async (c) => {
+  app.get("/offline/status", async (c) => {
     const { user } = c.get("auth");
     const status = await c.get("store").getOfflineStatus(user.id);
     c.header("Cache-Control", "no-store");
@@ -843,7 +830,7 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
-  app.get("/v1/offline/bundle", async (c) => {
+  app.get("/offline/bundle", async (c) => {
     const parsed = parseOfflineBundleQuery(c);
     if (parsed instanceof Response) {
       return parsed;
@@ -860,13 +847,114 @@ export function createApp(options: CreateAppOptions = {}) {
       items: result.items.map((item) => ({
         bookmark: bookmarkToApi(item.bookmark),
         content: item.content ? articleContentToApi(item.content) : null,
+        narration: item.narration,
       })),
       next_cursor: result.nextCursor,
       has_more: result.hasMore,
     });
   });
 
-  app.get("/v1/bookmarks/by-url", async (c) => {
+  app.put("/bookmarks/:id/narration", async (c) => {
+    const { user, token } = c.get("auth");
+    try {
+      const result = await requestNarration(
+        c.env,
+        user.id,
+        token.id,
+        c.req.param("id"),
+      );
+      if (result.narration.status === "pending" || result.narration.status === "publishing") {
+        c.executionCtx.waitUntil(reconcileNarration(c.env, result.narration.id));
+      }
+      c.header("Cache-Control", "no-store");
+      return c.json(
+        { item: narrationToApi(result.narration) },
+        result.narration.status === "pending" || result.narration.status === "publishing"
+          ? 202
+          : 200,
+      );
+    } catch (caught) {
+      return narrationErrorResponse(caught);
+    }
+  });
+
+  app.get("/bookmarks/:id/narration", async (c) => {
+    const { user } = c.get("auth");
+    try {
+      const narration = await getBookmarkNarration(c.env, user.id, c.req.param("id"));
+      if (!narration) return errorResponse("not_found", "Narration not found", 404);
+      if (narration.status === "pending" || narration.status === "publishing") {
+        c.executionCtx.waitUntil(reconcileNarration(c.env, narration.id));
+      }
+      c.header("Cache-Control", "no-store");
+      return c.json({ item: narrationToApi(narration) });
+    } catch (caught) {
+      return narrationErrorResponse(caught);
+    }
+  });
+
+  app.post("/bookmarks/:id/narration/retry", async (c) => {
+    const { user, token } = c.get("auth");
+    try {
+      const narration = await retryNarration(
+        c.env,
+        user.id,
+        token.id,
+        c.req.param("id"),
+      );
+      c.executionCtx.waitUntil(reconcileNarration(c.env, narration.id));
+      c.header("Cache-Control", "no-store");
+      return c.json({ item: narrationToApi(narration) }, 202);
+    } catch (caught) {
+      return narrationErrorResponse(caught);
+    }
+  });
+
+  app.get("/bookmarks/:id/narration/audio", async (c) => {
+    const { user } = c.get("auth");
+    try {
+      const { narration, object } = await authorizedNarrationAudio(
+        c.env,
+        user.id,
+        c.req.param("id"),
+      );
+      c.header("Content-Type", "audio/mpeg");
+      c.header("Content-Length", String(object.size));
+      c.header("ETag", `"${narration.audioSha256}"`);
+      c.header("X-Content-SHA256", narration.audioSha256!);
+      c.header("Cache-Control", "private, no-store");
+      c.header("X-Content-Type-Options", "nosniff");
+      return c.body(object.body);
+    } catch (caught) {
+      return narrationErrorResponse(caught);
+    }
+  });
+
+  app.get("/push/config", async (c) => {
+    const { token } = c.get("auth");
+    c.header("Cache-Control", "no-store");
+    return c.json(await getPushConfig(c.env, token.id));
+  });
+
+  app.put("/push/subscription", async (c) => {
+    const parsed = await parseJsonBody(c, pushSubscriptionRequestSchema);
+    if (parsed instanceof Response) return parsed;
+    const { user, token } = c.get("auth");
+    try {
+      const subscription = validatePushSubscription(c.env, parsed);
+      await putPushSubscription(c.env, user.id, token.id, subscription);
+      return c.body(null, 204);
+    } catch {
+      return errorResponse("invalid_subscription", "Push subscription is invalid", 400);
+    }
+  });
+
+  app.delete("/push/subscription", async (c) => {
+    await deletePushSubscription(c.env, c.get("auth").token.id);
+    return c.body(null, 204);
+  });
+
+  app.get("/bookmarks/by-url", async (c) => {
     const rawUrl = c.req.query("url");
     if (!rawUrl) {
       return errorResponse("invalid_request", "url is required", 400);
@@ -894,7 +982,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ item: bookmarkToApi(bookmark) });
   });
 
-  app.post("/v1/bookmarks", async (c) => {
+  app.post("/bookmarks", async (c) => {
     const rawBody = await readJsonBodyWithLimit(c, CAPTURE_REQUEST_MAX_BYTES);
     if (rawBody instanceof Response) {
       debugLog(c, "bookmark.save.invalid_json");
@@ -1063,7 +1151,7 @@ export function createApp(options: CreateAppOptions = {}) {
     );
   });
 
-  app.patch("/v1/bookmarks/:id", async (c) => {
+  app.patch("/bookmarks/:id", async (c) => {
     const parsed = await parseJsonBody(c, updateBookmarkTitleRequestSchema);
     if (parsed instanceof Response) {
       return parsed;
@@ -1085,7 +1173,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ item: bookmarkToApi(bookmark) });
   });
 
-  app.get("/v1/bookmarks/:id/share", async (c) => {
+  app.get("/bookmarks/:id/share", async (c) => {
     const { user } = c.get("auth");
     const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
     if (!bookmark) {
@@ -1096,7 +1184,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ item: bookmarkShareToApi(c, share) });
   });
 
-  app.put("/v1/bookmarks/:id/share", async (c) => {
+  app.put("/bookmarks/:id/share", async (c) => {
     const { user } = c.get("auth");
     const store = c.get("store");
     const bookmark = await store.getBookmarkById(user.id, c.req.param("id"));
@@ -1105,7 +1193,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
 
     const existingShare = await store.getBookmarkShare(user.id, bookmark.id);
-    if (existingShare && !isLegacyShareId(existingShare.shareId)) {
+    if (existingShare) {
       return c.json({ item: bookmarkShareToApi(c, existingShare) });
     }
 
@@ -1129,7 +1217,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ item: bookmarkShareToApi(c, share) });
   });
 
-  app.delete("/v1/bookmarks/:id/share", async (c) => {
+  app.delete("/bookmarks/:id/share", async (c) => {
     const { user } = c.get("auth");
     const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
     if (!bookmark) {
@@ -1140,7 +1228,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.body(null, 204);
   });
 
-  app.post("/v1/bookmarks/:id/extract", async (c) => {
+  app.post("/bookmarks/:id/extract", async (c) => {
     const { user } = c.get("auth");
     const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
     if (!bookmark) {
@@ -1183,7 +1271,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ extraction_status: extractionStatus }, 202);
   });
 
-  app.put("/v1/bookmarks/:id/content", async (c) => {
+  app.put("/bookmarks/:id/content", async (c) => {
     const { user } = c.get("auth");
     const store = c.get("store");
     const bookmark = await store.getBookmarkById(user.id, c.req.param("id"));
@@ -1223,10 +1311,13 @@ export function createApp(options: CreateAppOptions = {}) {
 
     const now = nowIso();
     const existing = await store.getArticleContentByBookmarkId(user.id, bookmark.id);
+    const derivedHackmdTitle = renderedHackmdHtml ? extractMarkdownTitle(parsed.content_html) : null;
+    const capturedTitle = parsed.title?.trim() || derivedHackmdTitle;
     const content: ArticleContentRecord = {
       id: makeId(),
       bookmarkId: bookmark.id,
       userId: user.id,
+      title: capturedTitle ?? existing?.title ?? bookmark.title,
       contentHtml: sanitized,
       wordCount: countWords(textOnly),
       author: parsed.author ?? existing?.author ?? null,
@@ -1235,15 +1326,12 @@ export function createApp(options: CreateAppOptions = {}) {
       extractionError: null,
       extractedAt: now,
       contentSource: "client",
-      createdAt: existing?.createdAt ?? now,
+      createdAt: now,
       updatedAt: now,
     };
 
     let bookmarkChanged = false;
     const nextBookmark = { ...bookmark };
-    const derivedHackmdTitle = renderedHackmdHtml ? extractMarkdownTitle(parsed.content_html) : null;
-    const capturedTitle = parsed.title?.trim() || derivedHackmdTitle;
-
     if (bookmark.titleSource !== "user" && capturedTitle) {
       nextBookmark.title = capturedTitle;
       nextBookmark.titleSource = "client";
@@ -1272,7 +1360,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ item: articleContentToApi(content) });
   });
 
-  app.get("/v1/bookmarks/:id/content", async (c) => {
+  app.get("/bookmarks/:id/content", async (c) => {
     const { user } = c.get("auth");
     const bookmark = await c.get("store").getBookmarkById(user.id, c.req.param("id"));
     if (!bookmark) {
@@ -1290,7 +1378,7 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ item: articleContentToApi(content) });
   });
 
-  app.delete("/v1/bookmarks/:id/content", async (c) => {
+  app.delete("/bookmarks/:id/content", async (c) => {
     const { user } = c.get("auth");
     const store = c.get("store");
     const bookmark = await store.getBookmarkById(user.id, c.req.param("id"));
@@ -1305,8 +1393,8 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.body(null, 204);
   });
 
-  app.get("/v1/public/shares/:token", async (c) => {
-    const shareId = parsePublicShareToken(c.req.param("token"), c.env.TOKEN_PEPPER);
+  app.get("/public/shares/:token", async (c) => {
+    const shareId = parsePublicShareToken(c.req.param("token"));
     if (!shareId) {
       return errorResponse("not_found", "Share not found", 404);
     }
@@ -1326,7 +1414,7 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
-  app.get("/v1/images/articles/:bookmarkId/:generationId/:hash", async (c) => {
+  app.get("/images/articles/:bookmarkId/:generationId/:hash", async (c) => {
     if (!c.env.IMAGES) {
       return errorResponse("not_found", "Image not found", 404);
     }
@@ -1345,26 +1433,7 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
-  app.get("/v1/images/articles/:bookmarkId/:hash", async (c) => {
-    if (!c.env.IMAGES) {
-      return errorResponse("not_found", "Image not found", 404);
-    }
-
-    const key = `articles/${c.req.param("bookmarkId")}/${c.req.param("hash")}`;
-    const object = await c.env.IMAGES.get(key);
-    if (!object) {
-      return errorResponse("not_found", "Image not found", 404);
-    }
-
-    return new Response(object.body, {
-      headers: {
-        "Cache-Control": "public, max-age=31536000, immutable",
-        "Content-Type": object.httpMetadata?.contentType ?? "image/jpeg",
-      },
-    });
-  });
-
-  app.delete("/v1/bookmarks/by-url", async (c) => {
+  app.delete("/bookmarks/by-url", async (c) => {
     const rawUrl = c.req.query("url");
     if (!rawUrl) {
       return errorResponse("invalid_request", "url is required", 400);

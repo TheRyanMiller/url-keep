@@ -41,11 +41,18 @@ async function main() {
     usage();
   }
 
-  const rl = createInterface({ input: stdin, output: stdout });
+  const suppliedPassword = process.env.URL_KEEP_ADMIN_PASSWORD;
+  const rl = suppliedPassword
+    ? undefined
+    : createInterface({ input: stdin, output: stdout });
 
   try {
-    const password = (await rl.question("Password: ")).trim();
-    const confirm = (await rl.question("Confirm password: ")).trim();
+    const password = (
+      suppliedPassword ?? (await rl?.question("Password: ")) ?? ""
+    ).trim();
+    const confirm = suppliedPassword
+      ? password
+      : ((await rl?.question("Confirm password: ")) ?? "").trim();
 
     if (!password) {
       console.error("Password cannot be empty.");
@@ -74,6 +81,8 @@ ON CONFLICT(email) DO UPDATE SET password_hash = excluded.password_hash;
         "d1",
         "execute",
         databaseName,
+        "--config",
+        "apps/api/wrangler.toml",
         "--file",
         sqlFile,
         ...(isLocal ? ["--local"] : ["--remote"]),
@@ -81,14 +90,14 @@ ON CONFLICT(email) DO UPDATE SET password_hash = excluded.password_hash;
 
       execFileSync("npx", command, {
         stdio: "inherit",
-        cwd: new URL("..", import.meta.url),
+        cwd: new URL("../../..", import.meta.url),
       });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
   } finally {
-    rl.close();
+    rl?.close();
   }
 }
 
-void main();
+await main();

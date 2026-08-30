@@ -16,7 +16,6 @@
     "d1:migrate:remote": "npx wrangler d1 migrations apply DB --remote --config apps/api/wrangler.toml",
     "deploy:api": "npx wrangler deploy --config apps/api/wrangler.toml",
     "bootstrap:admin": "tsx ./apps/api/scripts/bootstrap-admin.ts",
-    "backfill:bookmark-buckets": "tsx ./apps/api/scripts/backfill-bookmark-buckets.ts",
     "build:web": "npm run build --workspace @url-keep/web",
     "build:extension": "npm run build --workspace @url-keep/extension",
     "typecheck:api": "npm run typecheck --workspace @url-keep/api"
@@ -25,7 +24,7 @@
     "@types/node": "^22.13.10",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
-    "tsx": "^4.19.3",
+    "tsx": "^4.23.13",
     "typescript": "^5.8.2"
   }
 }

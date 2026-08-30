@@ -37,7 +37,15 @@ Installed PWA Share and Refresh controls belong in the existing header. They mus
 - Title, source metadata, reading time, date, text size, and **Read on web** stay compact.
 - Keep **Read on web** explicit and visibly disabled offline.
 - Article links remain recognizable and open safely in a new tab.
-- Text size is the only reader preference; do not add routing or capture settings.
+- Narration uses one quiet volume action, restrained status copy, and the native audio element.
+- Do not add a custom transport, sticky player, waveform, artwork, speed or position persistence, or playback animation.
+
+## Settings
+
+- Use one direct `/settings` page without redirects or alternate routes.
+- Offline audio gets one enable control, one native size select, factual usage, and one confirmed clear action.
+- Notifications get one enable/disable action for the current browser, with short unsupported or blocked copy.
+- Keep these sections above account and token controls; do not turn settings into a dashboard.
 
 ## Responsive behavior
 

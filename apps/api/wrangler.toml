@@ -1,21 +1,33 @@
 name = "url-keep-api"
 main = "src/index.ts"
 compatibility_date = "2026-03-09"
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
 APP_ORIGIN = "https://www.url-keep.com,https://url-keep.com"
 DEBUG_LOGS = "1"
+NARRATION_SERVICE_ORIGIN = "https://api.wavey.info/api/narration"
+VAPID_PUBLIC_KEY = "BOvMBlDtcZQf0WmX9jWEu8foAhUia5-iqj8xcg8wvzNi7eKz6COBTrze9-tnV83PNzAsyhUj5lv0NMy5P7eI3WA"
+VAPID_SUBJECT = "https://url-keep.com"
+PUSH_PROVIDER_HOSTS = "fcm.googleapis.com,updates.push.services.mozilla.com,web.push.apple.com"
 
 ALLOWED_EXTENSION_ORIGINS = "chrome-extension://pgldbhelglnjpgdmjhciahkcehmoopif"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "url_keep"
-database_id = "9e9fadd4-8cc7-418b-80bc-80b5a6fb755c"
+database_id = "a1b37e64-4972-4dae-bfd9-a0fe8beb91f3"
 
 [[r2_buckets]]
 binding = "IMAGES"
 bucket_name = "url-keep-images"
+
+[[r2_buckets]]
+binding = "NARRATIONS"
+bucket_name = "url-keep-narrations"
+
+[triggers]
+crons = ["* * * * *"]
 
 [[routes]]
 pattern = "api.url-keep.com"

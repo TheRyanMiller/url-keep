@@ -25,7 +25,9 @@ function bundleItem(title: string, id = "bookmark-1"): OfflineBundleItem {
   return {
     bookmark: bookmark(title, id),
     content: {
+      id: `article-${id}`,
       bookmark_id: id,
+      title,
       content_html: `<p>${title} article content</p>`,
       word_count: 3,
       author: null,
@@ -35,6 +37,7 @@ function bundleItem(title: string, id = "bookmark-1"): OfflineBundleItem {
       extracted_at: "2026-01-01T00:00:00.000Z",
       content_source: "server",
     },
+    narration: null,
   };
 }
 
