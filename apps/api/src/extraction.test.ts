@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { scopeDocumentToSingleArticle } from "@url-keep/shared";
 import { parseHTML } from "linkedom";
 import { MemoryStore } from "./memory-store";
-import { extractReadableSnapshot, runBookmarkExtraction } from "./extraction";
+import {
+  extractReadableSnapshot,
+  runBookmarkExtraction,
+  scopeDocumentToSingleArticle,
+} from "./extraction";
 import { nowIso } from "./utils";
 import type { Bindings, BookmarkRecord } from "./types";
 
@@ -31,7 +34,10 @@ describe("runBookmarkExtraction", () => {
       baseUrl: "https://www.espn.example/story",
       documentHtml: `
         <html>
-          <head><title>Roster cuts</title></head>
+          <head>
+            <title>Roster cuts</title>
+            <meta property="og:image" content="/cardinals-video-poster.jpg">
+          </head>
           <body>
             <nav>
               <h2>Welcome Ryan!</h2>
@@ -51,7 +57,8 @@ describe("runBookmarkExtraction", () => {
             <aside><p>${"Related news headline and timestamp. ".repeat(30)}</p></aside>
             <article class="article">
               <h1>2026 NFL roster cuts</h1>
-              <img src="/lead.jpg" alt="Players on the field">
+              <figure data-video="player"><span>Play video</span></figure>
+              <div><img src="/author.jpg" alt="NFL Nation"></div>
               <p>${"The complete roster report begins with the actual article. ".repeat(24)}</p>
               <p>${"Every team update remains part of the readable story. ".repeat(24)}</p>
             </article>
@@ -62,10 +69,59 @@ describe("runBookmarkExtraction", () => {
 
     expect(snapshot.contentHtml).toContain("2026 NFL roster cuts");
     expect(snapshot.contentHtml).toContain("Every team update");
-    expect(snapshot.contentHtml).toContain('src="https://www.espn.example/lead.jpg"');
+    expect(snapshot.imageUrl).toBe("https://www.espn.example/cardinals-video-poster.jpg");
     expect(snapshot.contentHtml).not.toContain("Welcome Ryan");
     expect(snapshot.contentHtml).not.toContain("Arizona Cardinals");
     expect(snapshot.contentHtml).not.toContain("Related news headline");
+  });
+
+  it("uses article JSON-LD as the standard lead-image fallback", () => {
+    const snapshot = extractReadableSnapshot({
+      baseUrl: "https://publisher.example/news/story",
+      documentHtml: `
+        <html>
+          <head>
+            <title>Structured article</title>
+            <script type="application/ld+json">
+              {
+                "@context": "https://schema.org",
+                "@graph": [{
+                  "@type": "NewsArticle",
+                  "image": { "url": "/images/structured-lead.jpg" }
+                }]
+              }
+            </script>
+          </head>
+          <body><article>
+            <h1>Structured article</h1>
+            <p>${"A standards-based image fallback works without publisher selectors. ".repeat(20)}</p>
+          </article></body>
+        </html>
+      `,
+    });
+
+    expect(snapshot.imageUrl).toBe("https://publisher.example/images/structured-lead.jpg");
+  });
+
+  it("falls through invalid Open Graph images to Twitter metadata", () => {
+    const snapshot = extractReadableSnapshot({
+      baseUrl: "https://publisher.example/story",
+      documentHtml: `
+        <html>
+          <head>
+            <title>Metadata fallback</title>
+            <meta property="og:image" content="http://insecure.example/lead.jpg">
+            <meta name="twitter:image" content="/images/twitter-lead.jpg">
+          </head>
+          <body><article>
+            <h1>Metadata fallback</h1>
+            <p>${"The extractor selects the first valid secure standard image. ".repeat(20)}</p>
+          </article></body>
+        </html>
+      `,
+    });
+
+    expect(snapshot.imageUrl).toBe("https://publisher.example/images/twitter-lead.jpg");
   });
 
   it("keeps the full document when substantial headline articles are ambiguous", () => {
@@ -83,7 +139,10 @@ describe("runBookmarkExtraction", () => {
 
   it("preserves sanitized HTTPS images without fetching or mirroring them", async () => {
     const store = new MemoryStore();
-    const bookmark = makeBookmark();
+    const bookmark = {
+      ...makeBookmark(),
+      imageUrl: "https://cdn.example.com/stale-client-image.jpg",
+    };
     await store.insertBookmark(bookmark);
 
     const fetchedUrls: string[] = [];
@@ -99,6 +158,7 @@ describe("runBookmarkExtraction", () => {
               <head>
                 <title>Politico Example</title>
                 <meta name="author" content="Alec Hernandez" />
+                <meta property="og:image" content="/lead.jpg" />
               </head>
               <body>
                 <main>
@@ -143,6 +203,8 @@ describe("runBookmarkExtraction", () => {
     expect(result.contentHtml).toContain('src="https://cdn.example.com/image.jpg"');
     expect(fetchedUrls).toEqual([bookmark.url]);
     expect(result.wordCount).toBeGreaterThan(20);
+    expect((await store.getBookmarkById(bookmark.userId, bookmark.id))?.imageUrl)
+      .toBe("https://example.com/lead.jpg");
   });
 
   it("returns an existing complete generation without fetching unless forced", async () => {

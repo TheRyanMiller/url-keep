@@ -26,9 +26,12 @@ function buildManifest(apiOrigin: string) {
 describe("generated extension manifest", () => {
   it("grants production access only to the configured API origin", () => {
     const manifest = buildManifest("https://api.url-keep.com");
+    const captureBundle = readFileSync(resolve(extensionRoot, "dist/capture.js"), "utf8");
     expect(manifest.host_permissions).toEqual(["https://api.url-keep.com/*"]);
     expect(manifest.host_permissions).not.toContain("https://*/*");
     expect(manifest.background?.service_worker).toBe("background.js");
+    expect(captureBundle).toContain("outerHTML");
+    expect(captureBundle).not.toContain("Readability");
   });
 
   it("keeps local API access confined to development builds", () => {

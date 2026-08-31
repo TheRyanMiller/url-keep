@@ -16,7 +16,6 @@ import {
   publicShareArticleResponseSchema,
   tokenListResponseSchema,
   updateBookmarkTitleRequestSchema,
-  uploadBookmarkContentRequestSchema,
   type BookmarkMutationResponse,
   type BookmarkShareResponse,
   type BookmarkResponse,
@@ -33,7 +32,6 @@ import {
   type PublicShareArticleResponse,
   type TokenListResponse,
   type UpdateBookmarkTitleRequest,
-  type UploadBookmarkContentRequest,
 } from "@url-keep/shared";
 
 export class ApiError extends Error {
@@ -295,18 +293,6 @@ export class UrlKeepClient {
     );
     if (!response.ok) await this.throwResponseError(response, true);
     return response;
-  }
-
-  async uploadBookmarkContent(
-    id: string,
-    input: UploadBookmarkContentRequest,
-  ): Promise<BookmarkMutationResponse> {
-    const body = uploadBookmarkContentRequestSchema.parse(input);
-    return this.request(`/bookmarks/${encodeURIComponent(id)}/content`, {
-      method: "PUT",
-      body,
-      schema: bookmarkMutationResponseSchema,
-    });
   }
 
   async changePassword(input: ChangePasswordRequest): Promise<void> {

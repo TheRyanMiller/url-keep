@@ -420,6 +420,7 @@ function publicShareArticleToApi(bookmark: BookmarkRecord, content: ArticleConte
     article_id: content.id,
     title: content.title,
     url: bookmark.url,
+    image_url: bookmark.imageUrl,
     site_name: bookmark.siteName,
     author: content.author,
     published_date: content.publishedDate,
@@ -1191,6 +1192,8 @@ export function createApp(options: CreateAppOptions = {}) {
     return c.json({ item: bookmarkMutationItem(currentBookmark, content) });
   });
 
+  // Compatibility for older extension builds that submit pre-extracted content.
+  // Current capture clients send live DOM to /capture for canonical API extraction.
   app.put("/bookmarks/:id/content", async (c) => {
     const { user } = c.get("auth");
     const store = c.get("store");

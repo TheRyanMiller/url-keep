@@ -6,7 +6,6 @@ import {
   ARTICLE_SITE_NAME_MAX_CHARS,
   ARTICLE_TITLE_MAX_CHARS,
   CAPTURE_REQUEST_MAX_BYTES,
-  scopeDocumentToSingleArticle,
   toHackmdMarkdownUrl,
 } from "@url-keep/shared";
 import { parseHTML } from "linkedom";
@@ -24,6 +23,7 @@ const ARTICLE_FETCH_TIMEOUT_MS = 10_000;
 const ARTICLE_BODY_LIMIT_BYTES = CAPTURE_REQUEST_MAX_BYTES;
 const MAX_EXTERNAL_FETCHES = 4;
 const MAX_REDIRECTS = 2;
+const SCOPED_ARTICLE_MIN_TEXT_CHARS = 500;
 const USER_AGENT = "url-keep/1.0";
 const NON_BODY_ROOT_TAGS = new Set([
   "BASE",
@@ -47,6 +47,7 @@ type RunBookmarkExtractionOptions = {
 
 type ExtractionMetadata = {
   author: string | null;
+  imageUrls: string[];
   publishedDate: string | null;
   siteName: string | null;
 };
@@ -111,6 +112,94 @@ function readPublishedDate(document: Document): string | null {
   );
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readJsonLdImageValue(value: unknown): string | null {
+  if (typeof value === "string") {
+    return cleanOptionalText(value);
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const image = readJsonLdImageValue(item);
+      if (image) return image;
+    }
+    return null;
+  }
+
+  if (!isJsonObject(value)) {
+    return null;
+  }
+
+  return cleanOptionalText(
+    typeof value.url === "string"
+      ? value.url
+      : typeof value.contentUrl === "string"
+        ? value.contentUrl
+        : null,
+  );
+}
+
+function readJsonLdArticleImage(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const image = readJsonLdArticleImage(item);
+      if (image) return image;
+    }
+    return null;
+  }
+
+  if (!isJsonObject(value)) {
+    return null;
+  }
+
+  const rawTypes = Array.isArray(value["@type"])
+    ? value["@type"]
+    : [value["@type"]];
+  const isArticle = rawTypes.some((type) => (
+    typeof type === "string"
+    && (type === "BlogPosting" || type.endsWith("Article"))
+  ));
+
+  if (isArticle) {
+    const image = readJsonLdImageValue(value.image ?? value.thumbnailUrl);
+    if (image) return image;
+  }
+
+  return readJsonLdArticleImage(value["@graph"]);
+}
+
+function readJsonLdImage(document: Document): string | null {
+  for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+    try {
+      const image = readJsonLdArticleImage(JSON.parse(script.textContent ?? ""));
+      if (image) return image;
+    } catch {
+      // Ignore malformed publisher metadata and continue to the next block.
+    }
+  }
+  return null;
+}
+
+function readExtractionImageUrls(document: Document): string[] {
+  const selectors = [
+    'meta[property="og:image:secure_url"]',
+    'meta[property="og:image"]',
+    'meta[name="og:image"]',
+    'meta[name="twitter:image"]',
+    'meta[property="twitter:image"]',
+  ];
+  const candidates = selectors.flatMap((selector) => {
+    const value = firstMetaContent(document, [selector]);
+    return value ? [value] : [];
+  });
+  const jsonLdImage = readJsonLdImage(document);
+  if (jsonLdImage) candidates.push(jsonLdImage);
+  return candidates;
+}
+
 function readExtractionMetadata(document: Document): ExtractionMetadata {
   return {
     author: firstMetaContent(document, [
@@ -118,12 +207,29 @@ function readExtractionMetadata(document: Document): ExtractionMetadata {
       'meta[property="author"]',
       'meta[name="parsely-author"]',
     ]),
+    imageUrls: readExtractionImageUrls(document),
     publishedDate: readPublishedDate(document),
     siteName: firstMetaContent(document, [
       'meta[property="og:site_name"]',
       'meta[name="application-name"]',
     ]),
   };
+}
+
+// Prefer an unambiguous semantic article boundary over scoring the entire page shell.
+// Ambiguous and short documents keep the existing whole-document Readability path.
+export function scopeDocumentToSingleArticle(document: Document): boolean {
+  const candidates = [...document.querySelectorAll("article")].filter((article) => (
+    article.querySelector("h1")
+    && (article.textContent?.trim().length ?? 0) >= SCOPED_ARTICLE_MIN_TEXT_CHARS
+  ));
+
+  if (candidates.length !== 1 || !document.body) {
+    return false;
+  }
+
+  document.body.replaceChildren(candidates[0].cloneNode(true));
+  return true;
 }
 
 function shouldMoveTopLevelNodeToBody(node: ChildNode): boolean {
@@ -201,6 +307,7 @@ export type ExtractedSnapshot = {
   wordCount: number;
   title: string | null;
   author: string | null;
+  imageUrl: string | null;
   publishedDate: string | null;
   siteName: string | null;
 };
@@ -246,6 +353,18 @@ function resolveArticleUrls(html: string, baseUrl: URL): string {
   }
 
   return container.innerHTML;
+}
+
+function resolveHttpsImageUrl(values: string[], baseUrl: URL): string | null {
+  for (const value of values) {
+    try {
+      const resolved = new URL(value, baseUrl);
+      if (resolved.protocol === "https:") return resolved.toString();
+    } catch {
+      // Continue through the publisher's lower-priority metadata candidates.
+    }
+  }
+  return null;
 }
 
 export function extractReadableSnapshot(input: {
@@ -294,6 +413,7 @@ export function extractReadableSnapshot(input: {
       readable.byline,
       ARTICLE_AUTHOR_MAX_CHARS,
     ) ?? cleanOptionalText(metadata.author, ARTICLE_AUTHOR_MAX_CHARS),
+    imageUrl: resolveHttpsImageUrl(metadata.imageUrls, baseUrl),
     publishedDate: cleanOptionalText(
       readable.publishedTime,
       ARTICLE_PUBLISHED_DATE_MAX_CHARS,
@@ -402,6 +522,7 @@ async function tryExtractHackmdContent(
 ): Promise<{
   author: string | null;
   contentHtml: string;
+  imageUrl: string | null;
   publishedDate: string | null;
   siteName: string | null;
   title: string | null;
@@ -442,6 +563,7 @@ async function tryExtractHackmdContent(
   return {
     author: null,
     contentHtml: renderedHtml,
+    imageUrl: null,
     publishedDate: null,
     siteName: "HackMD",
     title: cleanOptionalText(extractMarkdownTitle(markdown), ARTICLE_TITLE_MAX_CHARS),
@@ -481,7 +603,7 @@ function failureArticleContent(
 
 function bookmarkMetadataForSnapshot(
   bookmark: BookmarkRecord,
-  snapshot: Pick<ExtractedSnapshot, "title" | "siteName">,
+  snapshot: Pick<ExtractedSnapshot, "title" | "imageUrl" | "siteName">,
   source: "client" | "server",
   now: string,
 ): BookmarkRecord | undefined {
@@ -501,6 +623,11 @@ function bookmarkMetadataForSnapshot(
 
   if (!bookmark.siteName && snapshot.siteName) {
     next.siteName = snapshot.siteName;
+    changed = true;
+  }
+
+  if (snapshot.imageUrl && bookmark.imageUrl !== snapshot.imageUrl) {
+    next.imageUrl = snapshot.imageUrl;
     changed = true;
   }
 

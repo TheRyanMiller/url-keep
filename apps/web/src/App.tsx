@@ -826,10 +826,47 @@ function BookmarkImage({ src, alt }: { src?: string | null; alt: string }) {
   );
 }
 
+function articleContainsImage(html: string, imageUrl: string, sourceUrl: string): boolean {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+
+  let target: string;
+  try {
+    target = new URL(imageUrl, sourceUrl).toString();
+  } catch {
+    return false;
+  }
+
+  return [...template.content.querySelectorAll("img[src]")].some((image) => {
+    try {
+      return new URL(image.getAttribute("src")!, sourceUrl).toString() === target;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function ReaderLeadImage({ src }: { src: string }) {
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
+
+  return (
+    <figure className="reader-lead-image">
+      <img
+        alt=""
+        referrerPolicy="no-referrer"
+        src={src}
+        onError={() => setHidden(true)}
+      />
+    </figure>
+  );
+}
+
 export function ReaderDocument({
   header,
   title,
   sourceUrl,
+  imageUrl,
   siteName,
   author,
   publishedDate,
@@ -844,6 +881,7 @@ export function ReaderDocument({
   header: ReactNode;
   title: string;
   sourceUrl: string;
+  imageUrl?: string | null;
   siteName?: string | null;
   author?: string | null;
   publishedDate?: string | null;
@@ -912,7 +950,10 @@ export function ReaderDocument({
     };
   }, [preferencesMenuOpen]);
 
-  const html = contentHtml ? sanitizeArticleHtml(contentHtml, API_ORIGIN) : null;
+  const html = useMemo(
+    () => contentHtml ? sanitizeArticleHtml(contentHtml, API_ORIGIN) : null,
+    [contentHtml],
+  );
   const resolvedPublishedDate = formatOptionalDate(publishedDate);
   const readMinutes = wordCount ? estimateReadMinutes(wordCount) : null;
   const sourceHref = toReadableBookmarkUrl(sourceUrl);
@@ -925,6 +966,14 @@ export function ReaderDocument({
     cleanedSiteName && cleanedAuthor && normalizedAuthor !== normalizedSiteName
       ? cleanedAuthor
       : null;
+  const showLeadImage = useMemo(
+    () => Boolean(
+      imageUrl
+      && html
+      && !articleContainsImage(html, imageUrl, sourceUrl),
+    ),
+    [html, imageUrl, sourceUrl],
+  );
 
   return (
     <>
@@ -1031,6 +1080,10 @@ export function ReaderDocument({
             {resolvedPublishedDate ? <span className="reader-meta-item">{resolvedPublishedDate}</span> : null}
           </div>
         </header>
+
+        {showLeadImage && imageUrl ? (
+          <ReaderLeadImage key={imageUrl} src={imageUrl} />
+        ) : null}
 
         {extractionStatus === "complete" && html ? (
           <div
@@ -2358,6 +2411,7 @@ function ReaderPage() {
               {!offline.online ? <span className="offline-badge">offline</span> : null}
             </>
           )}
+          imageUrl={bookmark.image_url}
           publishedDate={article?.published_date}
           shareAction={{
             busy: shareBusy,
@@ -2475,6 +2529,7 @@ function PublicSharePage() {
           header={(
             <span className="reader-page-label">url-keep</span>
           )}
+          imageUrl={article.image_url}
           publishedDate={article.published_date}
           shareAction={{
             busy: shareBusy,

@@ -108,6 +108,7 @@ describe("api", () => {
     token: string,
     url: string,
     options: Partial<{
+      image_url: string;
       title: string;
       saved_via: "web" | "extension" | "mobile_web" | "ios_shortcut";
     }> = {},
@@ -121,6 +122,7 @@ describe("api", () => {
       body: JSON.stringify({
         url,
         saved_via: options.saved_via ?? "web",
+        ...(options.image_url ? { image_url: options.image_url } : {}),
         ...(options.title ? { title: options.title } : {}),
       }),
     });
@@ -277,7 +279,10 @@ describe("api", () => {
         "Content-Type": "text/html; charset=utf-8",
       },
       body: `
-        <html><head><title>Captured title</title></head><body><article>
+        <html><head>
+          <title>Captured title</title>
+          <meta property="og:image" content="/captured-lead.jpg">
+        </head><body><article>
           <h1>Captured title</h1>
           <p>${"Private client-rendered article content remains available offline. ".repeat(8)}</p>
           <a href="/relative" onclick="steal()">relative link</a>
@@ -289,6 +294,8 @@ describe("api", () => {
     const mutation = await json<BookmarkMutationResponse>(capture);
     expect(mutation.item.bookmark.title).toBe("Captured title");
     expect(mutation.item.bookmark.title_source).toBe("client");
+    expect(mutation.item.bookmark.image_url)
+      .toBe("https://example.com/captured-lead.jpg");
     expect(mutation.item.article).toMatchObject({ status: "complete", content_source: "client" });
     expect(mutation.item.article).not.toHaveProperty("content_html");
 
@@ -529,7 +536,9 @@ describe("api", () => {
 
   it("publishes metadata and HTML separately, idempotently, and revokes on replacement", async () => {
     const { token } = await login();
-    const created = await createBookmark(token, "https://example.com/shareable");
+    const created = await createBookmark(token, "https://example.com/shareable", {
+      image_url: "https://cdn.example.com/shareable.jpg",
+    });
     const id = created.item.bookmark.id;
     await extractBookmark(token, id);
     const revisionBeforeShare = (await json<{ revision: number }>(await request(
@@ -554,11 +563,18 @@ describe("api", () => {
 
     const metadataResponse = await request(`http://localhost/public/shares/${tokenPart}`);
     const metadata = await json<{
-      item: { article_id: string; title: string; url: string; content_html?: string };
+      item: {
+        article_id: string;
+        title: string;
+        url: string;
+        image_url: string | null;
+        content_html?: string;
+      };
     }>(metadataResponse);
     expect(metadata.item).toMatchObject({
       title: "example.com",
       url: "https://example.com/shareable",
+      image_url: "https://cdn.example.com/shareable.jpg",
     });
     expect(metadata.item.content_html).toBeUndefined();
     expect(metadataResponse.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");

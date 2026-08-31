@@ -787,6 +787,17 @@ input[type="checkbox"] {
   text-wrap: pretty;
 }
 
+.reader-lead-image {
+  margin: 0;
+}
+
+.reader-lead-image img {
+  border: 1px solid var(--subtle-border);
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
 .reader-content > :first-child {
   margin-top: 0;
 }

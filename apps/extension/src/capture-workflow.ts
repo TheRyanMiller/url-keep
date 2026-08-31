@@ -1,22 +1,21 @@
 import type { UrlKeepClient } from "@url-keep/api-client";
 import type { ArticleMetadata } from "@url-keep/shared";
-import type { CaptureResult } from "./capture";
 
 export type CaptureWorkflowDependencies = {
   client: UrlKeepClient;
-  injectCapture: () => Promise<CaptureResult | null>;
+  injectCapture: () => Promise<string | null>;
 };
 
 export async function runCaptureWorkflow(
   bookmarkId: string,
   existingArticle: ArticleMetadata | null,
   dependencies: CaptureWorkflowDependencies,
-): Promise<"uploaded" | "preserved" | "fallback"> {
+): Promise<"captured" | "preserved" | "fallback"> {
   const captured = await dependencies.injectCapture().catch(() => null);
-  if (captured?.content_html) {
+  if (captured) {
     try {
-      await dependencies.client.uploadBookmarkContent(bookmarkId, captured);
-      return "uploaded";
+      await dependencies.client.captureBookmark(bookmarkId, captured);
+      return "captured";
     } catch {
       // Check whether an earlier complete client capture is still canonical.
     }

@@ -1,6 +1,5 @@
 import { classifyBookmarkUrl, type ArticleMetadata } from "@url-keep/shared";
 import { createStoredClient } from "./settings";
-import type { CaptureResult } from "./capture";
 import { runCaptureWorkflow } from "./capture-workflow";
 
 async function handleCapture(
@@ -19,7 +18,7 @@ async function handleCapture(
         target: { tabId },
         files: ["capture.js"],
       });
-      return (result?.result as CaptureResult | null) ?? null;
+      return (result?.result as string | null) ?? null;
     },
   });
 }

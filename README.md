@@ -80,9 +80,11 @@ The tests cover immutable replacement, content preservation, metadata/body separ
 
 Saving a URL creates bookmark metadata only. Article content then comes from one explicit path:
 
-- the extension runs Readability in the active tab and uploads sanitized readable content, falling back once to server extraction;
+- the extension submits a bounded live DOM for canonical server extraction, falling back once to server URL extraction;
 - the Safari Shortcut posts bookmark metadata, then sends the bounded live DOM as a separate raw `text/html` request, falling back to server extraction when capture is unavailable;
 - the PWA can request bounded server extraction.
+
+Captured DOM and fetched HTML converge on the same API-owned Readability, metadata, URL-resolution, and sanitization pipeline. Capture clients do not select or persist article content themselves.
 
 Raw DOM is transport-only. Publisher cookies never leave the browser tab.
 
