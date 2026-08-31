@@ -6,6 +6,7 @@ import {
   ARTICLE_SITE_NAME_MAX_CHARS,
   ARTICLE_TITLE_MAX_CHARS,
   CAPTURE_REQUEST_MAX_BYTES,
+  scopeDocumentToSingleArticle,
   toHackmdMarkdownUrl,
 } from "@url-keep/shared";
 import { parseHTML } from "linkedom";
@@ -178,6 +179,7 @@ function parseReadableDocument(html: string): {
   }
 
   const metadata = readExtractionMetadata(document);
+  scopeDocumentToSingleArticle(document);
 
   try {
     const readable = new Readability(document).parse();

@@ -9,6 +9,24 @@ export const ARTICLE_AUTHOR_MAX_CHARS = 300;
 export const ARTICLE_PUBLISHED_DATE_MAX_CHARS = 100;
 export const MANIFEST_MAX_LIMIT = 100;
 
+const SCOPED_ARTICLE_MIN_TEXT_CHARS = 500;
+
+// Prefer an unambiguous semantic article boundary over scoring the entire page shell.
+// Ambiguous and short documents keep the existing whole-document Readability path.
+export function scopeDocumentToSingleArticle(document: Document): boolean {
+  const candidates = [...document.querySelectorAll("article")].filter((article) => (
+    article.querySelector("h1")
+    && (article.textContent?.trim().length ?? 0) >= SCOPED_ARTICLE_MIN_TEXT_CHARS
+  ));
+
+  if (candidates.length !== 1 || !document.body) {
+    return false;
+  }
+
+  document.body.replaceChildren(candidates[0].cloneNode(true));
+  return true;
+}
+
 export const ARTICLE_SANITIZER_POLICY = {
   allowedTags: [
     "p",

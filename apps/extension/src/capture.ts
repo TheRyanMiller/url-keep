@@ -1,4 +1,5 @@
 import { Readability } from "@mozilla/readability";
+import { scopeDocumentToSingleArticle } from "@url-keep/shared";
 
 export type CaptureResult = {
   content_html: string;
@@ -29,6 +30,7 @@ function resolveUrls(html: string, baseUrl: string): string {
 
 export function capture(): CaptureResult | null {
   const clone = document.cloneNode(true) as Document;
+  scopeDocumentToSingleArticle(clone);
   const readable = new Readability(clone).parse();
 
   if (!readable?.content) return null;
