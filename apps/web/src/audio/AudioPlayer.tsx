@@ -64,15 +64,17 @@ export function AudioPlayer({
   identity,
   title,
   artist,
+  playOnMount = false,
   reveal = false,
 }: {
   audioUrl: string;
   identity: string;
   title: string;
   artist?: string | null;
+  playOnMount?: boolean;
   reveal?: boolean;
 }) {
-  const [playerOpen, setPlayerOpen] = useState(reveal);
+  const [playerOpen, setPlayerOpen] = useState(reveal || playOnMount);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -82,6 +84,7 @@ export function AudioPlayer({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastSavedTimeRef = useRef(0);
   const restoredPositionRef = useRef(false);
+  const attemptedInitialPlayRef = useRef(false);
   const speedControlRef = useRef<HTMLSpanElement | null>(null);
   const speedButtonRef = useRef<HTMLButtonElement | null>(null);
   const playerId = useId();
@@ -166,7 +169,7 @@ export function AudioPlayer({
     persistPosition(true);
   }
 
-  async function playAudio() {
+  async function playAudio(failureMessage = "Audio could not be played.") {
     const audio = audioRef.current;
     if (!audio) return;
     requestPlaybackAudioSession();
@@ -175,7 +178,7 @@ export function AudioPlayer({
       await audio.play();
       setMessage("");
     } catch {
-      setMessage("Audio could not be played.");
+      setMessage(failureMessage);
     }
   }
 
@@ -218,6 +221,13 @@ export function AudioPlayer({
   useEffect(() => {
     if (reveal) setPlayerOpen(true);
   }, [reveal]);
+
+  useEffect(() => {
+    if (!playOnMount || attemptedInitialPlayRef.current) return;
+    attemptedInitialPlayRef.current = true;
+    setPlayerOpen(true);
+    void playAudio("Ready—press play.");
+  }, [playOnMount]);
 
   useEffect(() => {
     if (!speedMenuOpen) return;

@@ -970,7 +970,6 @@ input[type="checkbox"] {
   color: var(--fg);
 }
 
-.article-audio-feedback,
 .article-audio-overlay {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -980,12 +979,14 @@ input[type="checkbox"] {
   z-index: 20;
 }
 
-.article-audio-feedback {
+.article-audio-label {
   color: var(--muted);
   font-size: 12px;
-  line-height: 1.4;
-  max-width: min(300px, calc(100vw - 32px));
-  padding: 8px 10px;
+  line-height: 1.2;
+  max-width: min(150px, 34vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .article-audio-overlay {

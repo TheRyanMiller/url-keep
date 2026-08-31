@@ -2,6 +2,7 @@ import type { UrlKeepClient } from "@url-keep/api-client";
 import type { ReadyNarrationSummary } from "@url-keep/shared";
 import {
   getOfflineDb,
+  isPrivateStorageGenerationCurrent,
   OFFLINE_AUDIO_LIMITS,
   type AudioSettings,
   type OfflineAudioRecord,
@@ -10,7 +11,7 @@ import {
 const AUDIO_CACHE = "url-keep-audio";
 const DEFAULT_SETTINGS: AudioSettings = {
   key: "audio",
-  enabled: false,
+  enabled: true,
   byte_limit: OFFLINE_AUDIO_LIMITS[1],
 };
 
@@ -23,6 +24,25 @@ async function sha256Hex(value: ArrayBuffer): Promise<string> {
   return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+async function verifiedAudioBytes(
+  response: Response,
+  narration: ReadyNarrationSummary,
+): Promise<ArrayBuffer> {
+  const declaredSize = Number(response.headers.get("content-length"));
+  if (
+    response.status !== 200
+    || response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "audio/mpeg"
+    || declaredSize !== narration.byte_size
+    || response.headers.get("x-content-sha256") !== narration.sha256
+  ) throw new Error("invalid audio response");
+
+  const bytes = await response.arrayBuffer();
+  if (bytes.byteLength !== narration.byte_size || await sha256Hex(bytes) !== narration.sha256) {
+    throw new Error("invalid audio response");
+  }
+  return bytes;
 }
 
 export async function getAudioSettings(): Promise<AudioSettings> {
@@ -77,83 +97,139 @@ async function enforceAudioLimit(limit: number, incomingBytes = 0): Promise<bool
   return total + incomingBytes <= limit;
 }
 
-export async function getCachedAudio(
-  narrationId: string,
-  sha256: string,
-): Promise<Response | null> {
-  const db = await getOfflineDb();
-  const record = await db.get("offline_audio", narrationId);
-  if (!record) return null;
-  if (record.sha256 !== sha256) {
-    await deleteRecord(record);
+export async function readVerifiedCachedAudio(
+  narration: ReadyNarrationSummary,
+  signal?: AbortSignal,
+  storageGeneration?: number,
+): Promise<ArrayBuffer | null> {
+  let db: Awaited<ReturnType<typeof getOfflineDb>>;
+  let record: OfflineAudioRecord | undefined;
+  try {
+    db = await getOfflineDb();
+    record = await db.get("offline_audio", narration.id);
+  } catch {
     return null;
   }
-  const response = await (await caches.open(AUDIO_CACHE)).match(record.cache_key);
+  if (!record) return null;
+  if (record.article_id !== narration.article_id || record.sha256 !== narration.sha256) {
+    await deleteRecord(record).catch(() => undefined);
+    return null;
+  }
+  let response: Response | undefined;
+  try {
+    response = await (await caches.open(AUDIO_CACHE)).match(record.cache_key);
+  } catch {
+    return null;
+  }
   if (!response) {
-    await db.delete("offline_audio", narrationId);
+    await db.delete("offline_audio", narration.id).catch(() => undefined);
     return null;
   }
-  record.last_accessed_at = new Date().toISOString();
-  await db.put("offline_audio", record);
-  return response;
+  let bytes: ArrayBuffer;
+  try {
+    bytes = await verifiedAudioBytes(response, narration);
+  } catch {
+    await deleteRecord(record).catch(() => undefined);
+    return null;
+  }
+  const canTouch = !signal?.aborted
+    && (storageGeneration === undefined
+      || isPrivateStorageGenerationCurrent(storageGeneration));
+  if (canTouch) {
+    await db.put("offline_audio", {
+      ...record,
+      last_accessed_at: new Date().toISOString(),
+    }).catch(() => undefined);
+    if (
+      signal?.aborted
+      || (storageGeneration !== undefined
+        && !isPrivateStorageGenerationCurrent(storageGeneration))
+    ) await db.delete("offline_audio", narration.id).catch(() => undefined);
+  }
+  return bytes;
 }
 
-export async function getCachedAudioForArticle(articleId: string): Promise<{
-  record: OfflineAudioRecord;
-  response: Response;
-} | null> {
-  const db = await getOfflineDb();
-  const record = await db.getFromIndex("offline_audio", "by-article", articleId);
-  if (!record) return null;
-  const response = await getCachedAudio(record.narration_id, record.sha256);
-  return response ? { record, response } : null;
-}
-
-export async function cacheNarrationAudio(
+export async function downloadVerifiedAudio(
   client: UrlKeepClient,
   bookmarkId: string,
   narration: ReadyNarrationSummary,
   signal?: AbortSignal,
-): Promise<boolean> {
-  const settings = await getAudioSettings();
-  if (!settings.enabled) return false;
-
-  const existing = await getCachedAudio(narration.id, narration.sha256);
-  if (existing) return true;
-  if (!(await enforceAudioLimit(settings.byte_limit, narration.byte_size))) return false;
-
+): Promise<ArrayBuffer> {
   const response = await client.getNarrationAudio(bookmarkId, signal);
-  const declaredSize = Number(response.headers.get("content-length"));
+  return verifiedAudioBytes(response, narration);
+}
+
+function persistenceActive(signal: AbortSignal, storageGeneration: number): boolean {
+  return !signal.aborted && isPrivateStorageGenerationCurrent(storageGeneration);
+}
+
+export async function persistVerifiedAudio(
+  narration: ReadyNarrationSummary,
+  bytes: ArrayBuffer,
+  signal: AbortSignal,
+  storageGeneration: number,
+): Promise<boolean> {
+  if (!persistenceActive(signal, storageGeneration)) return false;
+  let settings;
+  try {
+    settings = await getAudioSettings();
+  } catch {
+    return false;
+  }
+  if (!settings.enabled || !persistenceActive(signal, storageGeneration)) return false;
   if (
-    response.status !== 200
-    || response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "audio/mpeg"
-    || declaredSize !== narration.byte_size
-    || response.headers.get("x-content-sha256") !== narration.sha256
-  ) {
-    return false;
-  }
-  const bytes = await response.arrayBuffer();
-  if (bytes.byteLength !== narration.byte_size || await sha256Hex(bytes) !== narration.sha256) {
-    return false;
-  }
+    bytes.byteLength !== narration.byte_size
+    || await sha256Hex(bytes) !== narration.sha256
+    || !persistenceActive(signal, storageGeneration)
+  ) return false;
+
+  const db = await getOfflineDb().catch(() => null);
+  if (!db || !persistenceActive(signal, storageGeneration)) return false;
+  const existing = await db.get("offline_audio", narration.id).catch(() => undefined);
+  if (!persistenceActive(signal, storageGeneration)) return false;
+  if (existing) await deleteRecord(existing).catch(() => undefined);
+  if (
+    !persistenceActive(signal, storageGeneration)
+    || !(await enforceAudioLimit(settings.byte_limit, narration.byte_size).catch(() => false))
+  ) return false;
 
   const key = cacheKey(narration.id, narration.sha256);
-  const cache = await caches.open(AUDIO_CACHE);
-  await cache.put(key, new Response(bytes, {
-    headers: {
-      "Content-Type": "audio/mpeg",
-      "Content-Length": String(bytes.byteLength),
-      "X-Content-SHA256": narration.sha256,
-    },
-  }));
-  await (await getOfflineDb()).put("offline_audio", {
-    narration_id: narration.id,
-    article_id: narration.article_id,
-    cache_key: key,
-    sha256: narration.sha256,
-    byte_size: narration.byte_size,
-    last_accessed_at: new Date().toISOString(),
-  });
+  let cache;
+  try {
+    cache = await caches.open(AUDIO_CACHE);
+    await cache.put(key, new Response(bytes, {
+      headers: {
+        "Content-Type": "audio/mpeg",
+        "Content-Length": String(bytes.byteLength),
+        "X-Content-SHA256": narration.sha256,
+      },
+    }));
+  } catch {
+    return false;
+  }
+  if (!persistenceActive(signal, storageGeneration)) {
+    await cache.delete(key).catch(() => undefined);
+    return false;
+  }
+
+  try {
+    await db.put("offline_audio", {
+      narration_id: narration.id,
+      article_id: narration.article_id,
+      cache_key: key,
+      sha256: narration.sha256,
+      byte_size: narration.byte_size,
+      last_accessed_at: new Date().toISOString(),
+    });
+  } catch {
+    await cache.delete(key).catch(() => undefined);
+    return false;
+  }
+  if (!persistenceActive(signal, storageGeneration)) {
+    await cache.delete(key).catch(() => undefined);
+    await db.delete("offline_audio", narration.id).catch(() => undefined);
+    return false;
+  }
   return true;
 }
 

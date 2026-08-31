@@ -94,4 +94,22 @@ describe("AudioPlayer", () => {
     expect(audio?.playbackRate).toBe(1.5);
     expect(window.localStorage.getItem("url_keep_audio_rate")).toBe("1.5");
   });
+
+  it("keeps the loaded player open when initial playback is rejected", async () => {
+    vi.mocked(HTMLMediaElement.prototype.play).mockRejectedValueOnce(
+      new DOMException("Playback requires interaction", "NotAllowedError"),
+    );
+    render(
+      <AudioPlayer
+        audioUrl="blob:example"
+        identity="narration-3:sha"
+        playOnMount
+        title="Example Article"
+      />,
+    );
+
+    expect(await screen.findByText("Ready—press play.")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Article audio player" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play article audio" })).toBeInTheDocument();
+  });
 });

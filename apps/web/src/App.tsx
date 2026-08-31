@@ -51,6 +51,7 @@ import { detectStandaloneMode, shareLink } from "./pwa";
 import {
   clearOfflineData,
   getOfflineReadableBookmarkIds,
+  type OfflineArticle,
 } from "./offline/db";
 import { SyncManager } from "./offline/sync";
 import { ArticleAudio } from "./audio/ArticleAudio";
@@ -2134,7 +2135,7 @@ function ReaderPage() {
   const location = useLocation();
   const state = (location.state as ReaderLocationState | null) ?? null;
   const [bookmark, setBookmark] = useState<Bookmark | null>(state?.bookmark ?? null);
-  const [article, setArticle] = useState<ArticleContent | null>(null);
+  const [article, setArticle] = useState<OfflineArticle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<{ id: number; message: string } | null>(null);
@@ -2288,6 +2289,7 @@ function ReaderPage() {
                 artist={article.author ?? bookmark.site_name}
                 bookmarkId={bookmark.id}
                 client={auth.client}
+                initialNarration={article.narration}
                 key={article.id}
                 reveal={location.hash === "#audio"}
                 title={article.title ?? bookmark.title}

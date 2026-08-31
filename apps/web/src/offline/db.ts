@@ -25,6 +25,7 @@ export type OfflineArticleBody = {
 
 export type OfflineArticle = ArticleContent & {
   synced_at: string | null;
+  narration: ReadyNarrationSummary | null;
 };
 
 export type OfflineSyncState = {
@@ -92,6 +93,15 @@ interface OfflineDBSchema extends DBSchema {
 }
 
 let dbPromise: Promise<IDBPDatabase<OfflineDBSchema>> | null = null;
+let privateStorageGeneration = 0;
+
+export function getPrivateStorageGeneration(): number {
+  return privateStorageGeneration;
+}
+
+export function isPrivateStorageGenerationCurrent(generation: number): boolean {
+  return generation === privateStorageGeneration;
+}
 
 function notifyBlockedUpgrade() {
   if (typeof window !== "undefined") {
@@ -207,6 +217,7 @@ export async function getOfflineArticle(bookmarkId: string): Promise<OfflineArti
     extracted_at: meta.updated_at,
     content_source: meta.content_source,
     synced_at: body?.synced_at ?? null,
+    narration: meta.narration,
   };
 }
 
@@ -308,6 +319,7 @@ export async function getReadyNarrations(): Promise<ReadyNarrationSummary[]> {
 }
 
 export async function clearOfflineData() {
+  privateStorageGeneration += 1;
   const db = await getOfflineDb();
   const tx = db.transaction(
     ["bookmarks", "article_meta", "article_bodies", "sync_meta", "offline_audio"],

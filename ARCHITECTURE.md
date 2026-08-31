@@ -71,7 +71,7 @@ pending ─────► ready
 
 Create and retry derive bounded NFC plaintext, hash its exact UTF-8 bytes, commit a pending D1 row, and synchronously issue the idempotent service `PUT`. Every service `PUT` attempt—including an ambiguous transport failure—is followed by a D1 identity check. If the narration row no longer belongs to the same current article generation, URL Keep upserts the service job into `narration_cleanup_jobs`, returns `409 article_changed`, and never recreates the deleted narration row.
 
-Each narration status GET performs at most one service GET. Service absence returns `submission_required`; a visible client may issue the idempotent PUT once. The PWA polls after 5, 10, then repeated 15-second delays and aborts while hidden.
+Each narration status GET performs at most one service GET. Service absence returns `submission_required`; a visible client may issue the idempotent PUT once per article/narration lifecycle. The PWA seeds ready state from its synced narration summary. Unknown and pending states poll after 5, 10, then repeated 15-second delays; their timers and status requests abort while hidden. User-initiated create and retry requests, verified audio downloads, and loaded players are not visibility-owned.
 
 Article replacement and deletion cascade the D1 narration row and enqueue the service job for cleanup. Retry also enqueues the superseded job. Sync and relevant mutation requests attempt at most one due cleanup DELETE. Success removes the outbox entry; failure increments bounded backoff state.
 
@@ -81,7 +81,9 @@ Bearer authentication protects every private bookmark, article, narration, and a
 
 The audio route authorizes through the current bookmark/article relationship and streams the service response without buffering it. It forwards only `Range`, `If-Range`, and `If-None-Match`, validates identity, checksum, duration, byte size, and engine fingerprint against D1, and returns bounded response headers. Missing or invalid canonical audio demotes the narration to retryable `audio_missing`.
 
-The browser never receives the service token or a direct service URL. Offline audio is accepted only after declared and computed SHA-256 plus byte length match. The cache entry is written before its ledger row; playback always uses a revocable Blob URL.
+The browser never receives the service token or a direct service URL. A reader fetches the full authenticated MP3 only after Listen intent (or a ready `#audio` deep link), requires HTTP 200, validates its declared and computed SHA-256 plus byte length, and then plays a revocable Blob URL. The loaded player and Blob URL survive browser visibility and connectivity changes for the mounted reader session.
+
+Offline persistence is an optional best-effort consumer of the same verified bytes and never causes a second download. Cached responses pass the same verifier before playback. The cache entry is written before its ledger row; a failed ledger write removes the orphaned cache entry. Private-storage generation checks before and after asynchronous writes prevent an older request from repopulating storage after logout.
 
 ## Public sharing
 
