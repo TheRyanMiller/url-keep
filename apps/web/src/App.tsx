@@ -201,16 +201,14 @@ const IOS_SHORTCUT_URL = normalizeOptionalAbsoluteUrl(
 type AuthState = {
   token: string | null;
   user: User | null;
-  loading: boolean;
   client: UrlKeepClient;
-  setToken: (token: string | null) => void;
-  refreshMe: () => Promise<void>;
+  setSession: (session: LoginResponse) => void;
   logout: () => Promise<void>;
 };
 
 type OfflineState = {
   online: boolean;
-  syncing: boolean;
+  initialized: boolean;
   syncVersion: number;
   manager: SyncManager;
   refresh: (force?: boolean) => Promise<void>;
@@ -299,7 +297,12 @@ async function copyToClipboard(value: string) {
 }
 
 function useStandaloneMode() {
-  const [standalone, setStandalone] = useState(false);
+  const getStandaloneMode = () => {
+    const media = window.matchMedia("(display-mode: standalone)");
+    const iosStandalone = (navigator as Navigator & { standalone?: boolean }).standalone === true;
+    return detectStandaloneMode(iosStandalone, media.matches);
+  };
+  const [standalone, setStandalone] = useState(getStandaloneMode);
 
   useEffect(() => {
     const media = window.matchMedia("(display-mode: standalone)");
@@ -532,7 +535,13 @@ function BrandLogo() {
       className="brand-mark"
       to="/"
     >
-      <img alt="url-keep" className="brand-logo" src={BRAND_LOGO_URL} />
+      <img
+        alt="url-keep"
+        className="brand-logo"
+        height={360}
+        src={BRAND_LOGO_URL}
+        width={1400}
+      />
     </Link>
   );
 }
@@ -559,7 +568,6 @@ function Nav() {
 function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setTokenState] = useState<string | null>(() => readStoredToken());
   const [user, setUser] = useState<User | null>(() => readStoredUser());
-  const [loading, setLoading] = useState(true);
 
   const clearLocalAuth = useCallback(() => {
     setTokenState(null);
@@ -579,34 +587,11 @@ function AuthProvider({ children }: { children: ReactNode }) {
     [token, clearLocalAuth],
   );
 
-  const setToken = (value: string | null) => {
-    if (value) {
-      setTokenState(value);
-      writeStoredToken(value);
-    } else {
-      clearLocalAuth();
-    }
-  };
-
-  const refreshMe = async () => {
-    if (!token) {
-      setUser(null);
-      writeStoredUser(null);
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const response = await client.me();
-      setUser(response.user);
-      writeStoredUser(response.user);
-    } catch (caught) {
-      if (caught instanceof ApiError && caught.status === 401) {
-        setToken(null);
-      }
-    } finally {
-      setLoading(false);
-    }
+  const setSession = (session: LoginResponse) => {
+    setTokenState(session.token);
+    setUser(session.user);
+    writeStoredToken(session.token);
+    writeStoredUser(session.user);
   };
 
   const logout = async () => {
@@ -615,18 +600,36 @@ function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // Local auth still needs clearing even if the network request fails.
     } finally {
-      setToken(null);
+      clearLocalAuth();
     }
   };
 
   useEffect(() => {
-    setLoading(true);
-    void refreshMe();
-  }, [token]);
+    let active = true;
+    if (!token) {
+      setUser(null);
+      writeStoredUser(null);
+      return;
+    }
+
+    void client.me().then((response) => {
+      if (!active) return;
+      setUser(response.user);
+      writeStoredUser(response.user);
+    }).catch((caught) => {
+      if (active && caught instanceof ApiError && caught.status === 401) {
+        clearLocalAuth();
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [client, token, clearLocalAuth]);
 
   const value = useMemo<AuthState>(
-    () => ({ token, user, loading, client, setToken, refreshMe, logout }),
-    [token, user, loading, client],
+    () => ({ token, user, client, setSession, logout }),
+    [token, user, client],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -635,14 +638,13 @@ function AuthProvider({ children }: { children: ReactNode }) {
 function OfflineProvider({ children }: { children: ReactNode }) {
   const auth = useAuth();
   const online = useOnlineStatus();
-  const [syncing, setSyncing] = useState(false);
+  const [initialized, setInitialized] = useState(false);
   const [syncVersion, setSyncVersion] = useState(0);
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
 
   const manager = useMemo(
     () => new SyncManager(
       auth.client,
-      API_ORIGIN,
       (partial) => setStorageNotice(partial ? "offline article coverage is partial" : null),
     ),
     [auth.client],
@@ -650,6 +652,10 @@ function OfflineProvider({ children }: { children: ReactNode }) {
 
   const managerRef = useRef(manager);
   managerRef.current = manager;
+
+  useEffect(() => {
+    setInitialized(false);
+  }, [manager]);
 
   useEffect(() => {
     void auditOfflineAudio();
@@ -674,24 +680,22 @@ function OfflineProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    setSyncing(true);
     try {
       await managerRef.current.syncOnce();
       setSyncVersion((current) => current + 1);
     } catch {
       // Foreground state remains usable; the next foreground trigger retries.
-    } finally {
-      setSyncing(false);
     }
   }, [auth.token, online]);
 
   // Mount sync
   useEffect(() => {
     if (!auth.token || !online) {
+      setInitialized(true);
       return;
     }
 
-    void refresh(true);
+    void refresh(true).finally(() => setInitialized(true));
   }, [auth.token, online, manager]);
 
   // Visibility change sync
@@ -713,12 +717,12 @@ function OfflineProvider({ children }: { children: ReactNode }) {
   const value = useMemo<OfflineState>(
     () => ({
       online,
-      syncing,
+      initialized,
       syncVersion,
       manager,
       refresh,
     }),
-    [online, syncing, syncVersion, manager, refresh],
+    [online, initialized, syncVersion, manager, refresh],
   );
 
   return (
@@ -732,10 +736,6 @@ function OfflineProvider({ children }: { children: ReactNode }) {
 function RequireAuth({ children }: { children: ReactNode }) {
   const auth = useAuth();
   const location = useLocation();
-
-  if (auth.loading) {
-    return <div className="page"><p>loading</p></div>;
-  }
 
   if (!auth.token) {
     const redirect = `${location.pathname}${location.search}`;
@@ -764,8 +764,7 @@ function LoginPage() {
         password,
         client_name: "web app",
       });
-      auth.setToken(response.token);
-      writeStoredUser(response.user);
+      auth.setSession(response);
       navigate(redirect, { replace: true });
     } catch (caught) {
       setError(formatError(caught, "login failed"));
@@ -810,14 +809,15 @@ function LoginPage() {
 
 function BookmarkImage({ src, alt }: { src?: string | null; alt: string }) {
   const [hidden, setHidden] = useState(false);
-  if (!src || hidden) {
+  if (!src) {
     return null;
   }
 
   return (
     <img
-      alt={alt}
-      className="bookmark-image"
+      alt={hidden ? "" : alt}
+      aria-hidden={hidden || undefined}
+      className={`bookmark-image${hidden ? " is-hidden" : ""}`}
       loading="lazy"
       referrerPolicy="no-referrer"
       src={src}
@@ -873,15 +873,10 @@ export function ReaderDocument({
 
   useLayoutEffect(() => {
     const root = document.documentElement;
-    const previousTheme = root.dataset.readerTheme;
     root.dataset.readerTheme = theme;
 
     return () => {
-      if (previousTheme) {
-        root.dataset.readerTheme = previousTheme;
-      } else {
-        delete root.dataset.readerTheme;
-      }
+      delete root.dataset.readerTheme;
     };
   }, [theme]);
 
@@ -973,10 +968,7 @@ export function ReaderDocument({
                       aria-pressed={textSize === option.value}
                       className={`reader-preference-option${textSize === option.value ? " is-active" : ""}`}
                       key={option.value}
-                      onClick={() => {
-                        setTextSize(option.value);
-                        setPreferencesMenuOpen(false);
-                      }}
+                      onClick={() => setTextSize(option.value)}
                       type="button"
                     >
                       {option.label}
@@ -987,10 +979,7 @@ export function ReaderDocument({
                 <button
                   aria-label={`Switch to ${theme === "light" ? "dark" : "light"} reader theme`}
                   className="reader-preference-option"
-                  onClick={() => {
-                    setTheme((current) => (current === "light" ? "dark" : "light"));
-                    setPreferencesMenuOpen(false);
-                  }}
+                  onClick={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
                   title={`Switch to ${theme === "light" ? "dark" : "light"} theme`}
                   type="button"
                 >
@@ -1063,6 +1052,57 @@ export function ReaderDocument({
   );
 }
 
+export function DeleteConfirmation({
+  bookmark,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  bookmark: Bookmark;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    dialog?.showModal();
+    return () => {
+      if (dialog?.open) dialog.close();
+    };
+  }, []);
+
+  return (
+    <dialog
+      aria-labelledby="delete-bookmark-title"
+      className="confirm-dialog"
+      onCancel={(event) => {
+        event.preventDefault();
+        if (!busy) onCancel();
+      }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget && !busy) onCancel();
+      }}
+      ref={dialogRef}
+    >
+      <h2 id="delete-bookmark-title">delete bookmark?</h2>
+      <p>&ldquo;{bookmark.title}&rdquo; will be removed from your reading list.</p>
+      {error ? <p className="error" role="alert">{error}</p> : null}
+      <div className="confirm-dialog-actions">
+        <button autoFocus className="button secondary-button" disabled={busy} onClick={onCancel} type="button">
+          cancel
+        </button>
+        <button className="button button-danger" disabled={busy} onClick={onConfirm} type="button">
+          {busy ? "deleting…" : "delete"}
+        </button>
+      </div>
+    </dialog>
+  );
+}
+
 function BookmarkRow({
   bookmark,
   availableOffline,
@@ -1075,7 +1115,7 @@ function BookmarkRow({
   bookmark: Bookmark;
   availableOffline: boolean;
   online: boolean;
-  onDelete: (bookmark: Bookmark) => Promise<void>;
+  onDelete: (bookmark: Bookmark) => void;
   onShareNotice: (message: string) => void;
   onTitleUpdated: (bookmark: Bookmark, title: string) => Promise<void>;
   onRetryExtraction: (bookmark: Bookmark) => Promise<void>;
@@ -1087,7 +1127,6 @@ function BookmarkRow({
   const destination = resolveBookmarkDestination(bookmark, online, availableOffline);
   const primaryActionLabel = classification.defaultAction ?? (canRead ? "read" : "open");
   const [editing, setEditing] = useState(false);
-  const [deleteArmed, setDeleteArmed] = useState(false);
   const [title, setTitle] = useState(bookmark.title);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1098,15 +1137,6 @@ function BookmarkRow({
   useEffect(() => {
     setTitle(bookmark.title);
   }, [bookmark.title]);
-
-  useEffect(() => {
-    if (!deleteArmed) {
-      return;
-    }
-
-    const id = setTimeout(() => setDeleteArmed(false), 3000);
-    return () => clearTimeout(id);
-  }, [deleteArmed]);
 
   const saveEdit = async () => {
     if (!title.trim()) {
@@ -1126,7 +1156,6 @@ function BookmarkRow({
   };
   const copyArticleLink = async () => {
     setShareBusy(true);
-    setDeleteArmed(false);
     try {
       await copyPreferredArticleLink({
         client: auth.client,
@@ -1243,7 +1272,11 @@ function BookmarkRow({
               </>
             )}
           </div>
-          <BookmarkImage alt={bookmark.title} src={bookmark.image_url} />
+          <BookmarkImage
+            alt={bookmark.title}
+            key={bookmark.image_url ?? "no-image"}
+            src={bookmark.image_url}
+          />
         </div>
         {error ? <p className="error">{error}</p> : null}
       </div>
@@ -1298,7 +1331,6 @@ function BookmarkRow({
                 className="icon-action"
                 disabled={!online}
                 onClick={() => {
-                  setDeleteArmed(false);
                   setEditing(true);
                 }}
                 title={online ? "Edit title" : "Editing requires a connection"}
@@ -1323,20 +1355,14 @@ function BookmarkRow({
               </button>
             ) : (
               <button
-                aria-label={deleteArmed ? "confirm delete" : "delete bookmark"}
-                className={`icon-action${deleteArmed ? " icon-action--danger" : ""}`}
+                aria-label="delete bookmark"
+                className="icon-action"
                 disabled={!online}
-                onClick={() => {
-                  if (deleteArmed) {
-                    void onDelete(bookmark);
-                  } else {
-                    setDeleteArmed(true);
-                  }
-                }}
-                title={online ? (deleteArmed ? "Confirm delete" : "Delete bookmark") : "Deleting requires a connection"}
+                onClick={() => onDelete(bookmark)}
+                title={online ? "Delete bookmark" : "Deleting requires a connection"}
                 type="button"
               >
-                <Trash2 aria-hidden="true" size={16} strokeWidth={deleteArmed ? 2.25 : 1.75} />
+                <Trash2 aria-hidden="true" size={16} strokeWidth={1.75} />
               </button>
             )}
           </div>
@@ -1355,33 +1381,32 @@ function MainPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ id: number; message: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [deleteTarget, setDeleteTarget] = useState<Bookmark | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const activeTab = parseMainTab(searchParams.get("tab"));
   const query = searchParams.get("q") ?? "";
   const hasQuery = query.trim().length > 0;
 
-  const loadOfflineBookmarks = async () => {
-    const [items, readableIds] = await Promise.all([
+  useEffect(() => {
+    let active = true;
+    setError(null);
+    void Promise.all([
       offline.manager.getBookmarks(),
       getOfflineReadableBookmarkIds(),
-    ]);
-    setBookmarks(filterBookmarksByTab(items, query, activeTab));
-    setOfflineReadableIds(readableIds);
-  };
+    ]).then(([items, readableIds]) => {
+      if (!active) return;
+      setBookmarks(filterBookmarksByTab(items, query, activeTab));
+      setOfflineReadableIds(readableIds);
+    }).catch((caught) => {
+      if (active) setError(formatError(caught, "load failed"));
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
 
-  const loadBookmarks = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      await loadOfflineBookmarks();
-    } catch (caught) {
-      setError(formatError(caught, "load failed"));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void loadBookmarks();
+    return () => {
+      active = false;
+    };
   }, [activeTab, query, offline.online, offline.syncVersion]);
 
   useEffect(() => {
@@ -1403,18 +1428,23 @@ function MainPage() {
     });
   };
 
-  const onDeleteConfirm = async (bookmark: Bookmark) => {
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
     if (!offline.online) {
-      setError("deleting requires a connection");
+      setDeleteError("deleting requires a connection");
       return;
     }
-
+    setDeleteBusy(true);
+    setDeleteError(null);
     try {
-      await auth.client.deleteBookmarkByUrl(bookmark.url);
-      setBookmarks((current) => current.filter((item) => item.id !== bookmark.id));
+      await auth.client.deleteBookmarkByUrl(deleteTarget.url);
+      setBookmarks((current) => current.filter((item) => item.id !== deleteTarget.id));
+      setDeleteTarget(null);
       void offline.refresh(true);
     } catch (caught) {
-      setError(formatError(caught, "delete failed"));
+      setDeleteError(formatError(caught, "delete failed"));
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -1487,9 +1517,6 @@ function MainPage() {
         {!offline.online ? (
           <p className="muted block-muted">offline mode is read-only</p>
         ) : null}
-        {offline.syncing ? (
-          <p className="muted block-muted">syncing offline cache</p>
-        ) : null}
         <div className="toolbar-main">
           <nav aria-label="bookmark filters" className="list-tabs">
             {([
@@ -1517,25 +1544,39 @@ function MainPage() {
       </section>
 
       {error ? <p className="error">{error}</p> : null}
-      {loading ? <p>loading</p> : null}
-      {!loading && !error && bookmarks.length === 0 ? (
+      {!loading && offline.initialized && !error && bookmarks.length === 0 ? (
         <p className="muted block-muted">{getEmptyStateMessage(activeTab, hasQuery)}</p>
       ) : null}
 
-      <section className="bookmark-list">
+      <section aria-busy={loading || !offline.initialized} aria-label="bookmarks" className="bookmark-list">
         {bookmarks.map((bookmark) => (
           <BookmarkRow
             key={bookmark.id}
             availableOffline={offlineReadableIds.has(bookmark.id)}
             bookmark={bookmark}
             online={offline.online}
-            onDelete={onDeleteConfirm}
+            onDelete={(item) => {
+              setDeleteError(null);
+              setDeleteTarget(item);
+            }}
             onRetryExtraction={onRetryExtraction}
             onShareNotice={showNotice}
             onTitleUpdated={onTitleUpdated}
           />
         ))}
       </section>
+      {deleteTarget ? (
+        <DeleteConfirmation
+          bookmark={deleteTarget}
+          busy={deleteBusy}
+          error={deleteError}
+          onCancel={() => {
+            setDeleteError(null);
+            setDeleteTarget(null);
+          }}
+          onConfirm={() => void confirmDelete()}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1545,27 +1586,34 @@ function AddPage() {
   const offline = useOffline();
   const [urlInput, setUrlInput] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success">("idle");
+
+  useEffect(() => {
+    if (saveStatus !== "success") return;
+    const timeoutId = window.setTimeout(() => setSaveStatus("idle"), 2200);
+    return () => window.clearTimeout(timeoutId);
+  }, [saveStatus]);
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError(null);
-    setSaved(false);
 
     if (!offline.online) {
       setError("saving requires a connection");
       return;
     }
 
+    setSaveStatus("saving");
     try {
       await saveBookmarkWithReader(auth.client, {
         url: urlInput,
         saved_via: "web",
       });
-      setSaved(true);
+      setSaveStatus("success");
       setUrlInput("");
       void offline.refresh(true);
     } catch (caught) {
+      setSaveStatus("idle");
       setError(formatError(caught, "save failed"));
     }
   };
@@ -1584,15 +1632,19 @@ function AddPage() {
             value={urlInput}
             onChange={(event) => {
               setUrlInput(event.target.value);
-              setSaved(false);
+              setSaveStatus("idle");
             }}
           />
         </label>
-        <button className="button" disabled={!offline.online} type="submit">
-          save
+        <button
+          aria-live="polite"
+          className={`button${saveStatus === "success" ? " button-success" : ""}`}
+          disabled={!offline.online || saveStatus !== "idle"}
+          type="submit"
+        >
+          {saveStatus === "idle" ? "save" : saveStatus === "saving" ? "saving…" : "success"}
         </button>
         {!offline.online ? <p className="muted">saving requires a connection</p> : null}
-        {saved ? <p>saved</p> : null}
         {error ? <p className="error">{error}</p> : null}
       </form>
     </div>
@@ -1717,8 +1769,6 @@ function AutoSave({
 function MobileSavePage() {
   const auth = useAuth();
   const offline = useOffline();
-  const navigate = useNavigate();
-  const location = useLocation();
   const [searchParams] = useSearchParams();
 
   const sharedUrl = resolveSharedUrl(searchParams);
@@ -1727,13 +1777,6 @@ function MobileSavePage() {
   const [urlInput, setUrlInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!auth.loading && !auth.token) {
-      const redirect = `${location.pathname}${location.search}`;
-      navigate(`/login?redirect=${encodeURIComponent(redirect)}`, { replace: true });
-    }
-  }, [auth.loading, auth.token, location.pathname, location.search, navigate]);
 
   if (sharedUrl) {
     return <AutoSave url={sharedUrl} title={sharedTitle} />;
@@ -2170,7 +2213,11 @@ function ReaderPage() {
         return;
       }
 
-      setLoading(true);
+      if (bookmark?.id !== id) {
+        setBookmark(state?.bookmark?.id === id ? state.bookmark : null);
+        setArticle(null);
+        setLoading(true);
+      }
       setError(null);
 
       const [cachedBookmark, cachedArticle] = await Promise.all([
@@ -2185,15 +2232,19 @@ function ReaderPage() {
       if (cachedBookmark) {
         setBookmark(cachedBookmark);
       }
-      if (cachedArticle) {
+      const cachedArticleIsUsable = Boolean(
+        cachedArticle
+        && (cachedArticle.extraction_status !== "complete" || cachedArticle.content_html),
+      );
+      if (cachedArticleIsUsable) {
         setArticle(cachedArticle);
       }
 
       if (!offline.online) {
         if (
           !cachedBookmark
+          || !cachedArticleIsUsable
           || cachedArticle?.extraction_status !== "complete"
-          || !cachedArticle.content_html
         ) {
           setError("article not available offline");
           setArticle(null);
@@ -2217,12 +2268,12 @@ function ReaderPage() {
         }
         if (!active) return;
         setArticle(currentArticle);
-        if (!currentArticle || currentArticle.extraction_status !== "complete") {
+        if (!currentArticle) {
           setError("article content is not available");
         }
       } catch (caught) {
         if (caught instanceof ApiError && caught.status === 0) {
-          if (!cachedArticle) {
+          if (!cachedArticleIsUsable) {
             setError("article not available offline");
           }
         } else {
@@ -2271,16 +2322,15 @@ function ReaderPage() {
   };
 
   return (
-    <div className="page reader-page">
+    <div aria-busy={loading} className="page reader-page">
       {notice ? (
         <div aria-live="polite" className="app-notice" role="status">
           {notice.message}
         </div>
       ) : null}
-      {loading ? <p>loading</p> : null}
       {error ? <p className="error">{error}</p> : null}
 
-      {bookmark ? (
+      {bookmark && bookmark.id === id && article ? (
         <ReaderDocument
           audioControl={
             article?.id && article.extraction_status === "complete" && article.content_html ? (
@@ -2410,13 +2460,12 @@ function PublicSharePage() {
   };
 
   return (
-    <div className="page reader-page">
+    <div aria-busy={loading} className="page reader-page">
       {notice ? (
         <div aria-live="polite" className="app-notice" role="status">
           {notice.message}
         </div>
       ) : null}
-      {loading ? <p>loading</p> : null}
       {error ? <p className="error">{error}</p> : null}
       {article ? (
         <ReaderDocument
@@ -2444,6 +2493,14 @@ function PublicSharePage() {
 }
 
 function AppRoutes() {
+  const location = useLocation();
+
+  useLayoutEffect(() => {
+    if (!/^\/(?:read|s)\//.test(location.pathname)) {
+      delete document.documentElement.dataset.readerTheme;
+    }
+  }, [location.pathname]);
+
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />

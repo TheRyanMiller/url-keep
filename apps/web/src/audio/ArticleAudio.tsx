@@ -399,7 +399,7 @@ export function ArticleAudio({
       reveal
       && view.kind === "ready"
       && view.asset.kind === "unloaded"
-    ) void loadReadyAudio(view.summary, false);
+    ) void loadReadyAudio(view.summary, true);
   }, [loadReadyAudio, reveal, view]);
 
   useEffect(() => () => {
@@ -470,7 +470,6 @@ export function ArticleAudio({
         >
           <Volume2 aria-hidden="true" size={17} strokeWidth={1.8} />
         </button>
-        <span className="article-audio-label">Listen</span>
       </span>
     );
   }
@@ -552,9 +551,6 @@ export function ArticleAudio({
           <Volume2 aria-hidden="true" size={17} strokeWidth={1.8} />
         </button>
       ) : null}
-      <span className="article-audio-label">
-        {online ? "Generate audio" : "Generate audio when online"}
-      </span>
     </span>
   );
 }

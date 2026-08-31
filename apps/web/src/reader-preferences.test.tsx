@@ -43,13 +43,15 @@ describe("reader preferences", () => {
     fireEvent.click(screen.getByRole("button", { name: "Switch to dark reader theme" }));
     expect(document.documentElement.dataset.readerTheme).toBe("dark");
     expect(localStorage.getItem("url_keep_reader_theme")).toBe("dark");
-
-    fireEvent.click(screen.getByRole("button", { name: "Reading preferences" }));
     expect(screen.getByRole("button", { name: "Switch to light reader theme" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "L text size" }));
     expect(localStorage.getItem("url_keep_reader_text_size")).toBe("l");
     expect(document.querySelector(".reader-content")).toHaveClass("reader-content-size-l");
+    expect(screen.getByRole("group", { name: "Reading preferences" })).toBeVisible();
+
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("group", { name: "Reading preferences" })).not.toBeInTheDocument();
   });
 
   it("restores the application theme when the reader closes", () => {

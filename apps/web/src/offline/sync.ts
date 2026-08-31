@@ -28,7 +28,6 @@ export class SyncManager {
 
   constructor(
     private readonly client: UrlKeepClient,
-    _legacyApiOrigin?: string,
     private readonly onPartialCoverage: (partial: boolean) => void = () => {},
   ) {}
 

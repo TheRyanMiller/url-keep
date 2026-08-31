@@ -25,9 +25,15 @@ export function OfflineAudioSettings() {
     void refresh();
   }, []);
 
-  if (!settings) return <p className="muted">loading audio settings</p>;
+  if (!settings) {
+    return (
+      <section aria-busy="true" className="profile-section offline-audio-settings">
+        <h2 className="section-title">offline audio</h2>
+      </section>
+    );
+  }
   return (
-    <section className="profile-section">
+    <section className="profile-section offline-audio-settings">
       <h2 className="section-title">offline audio</h2>
       <label className="settings-row">
         <span>download requested audio on this device</span>

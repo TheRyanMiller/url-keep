@@ -10,9 +10,19 @@
     <link rel="icon" type="image/png" href="/url-keep-favicon.png" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <title>url-keep</title>
+    <script>
+      try {
+        if (
+          /^\/(?:read|s)\//.test(window.location.pathname)
+          && window.localStorage.getItem("url_keep_reader_theme") === "dark"
+        ) {
+          document.documentElement.dataset.readerTheme = "dark";
+        }
+      } catch {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
-  </html>
+</html>
