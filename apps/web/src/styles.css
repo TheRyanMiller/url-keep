@@ -1015,6 +1015,63 @@ input[type="checkbox"] {
   justify-content: space-between;
 }
 
+.settings-label-with-help {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-help {
+  display: inline-flex;
+  flex: 0 0 auto;
+  position: relative;
+}
+
+.settings-help-trigger {
+  align-items: center;
+  border-color: var(--subtle-border);
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 10px;
+  height: 18px;
+  justify-content: center;
+  min-height: 18px;
+  padding: 0;
+  width: 18px;
+}
+
+.settings-help-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.4;
+  max-width: min(280px, calc(100vw - 32px));
+  opacity: 0;
+  padding: 8px 10px;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  transform: translateY(-2px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease,
+    visibility 0.14s ease;
+  visibility: hidden;
+  width: 280px;
+  z-index: 20;
+}
+
+.settings-help:hover .settings-help-card,
+.settings-help:focus-within .settings-help-card {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
 .settings-page .page-header {
   margin-bottom: 0;
 }

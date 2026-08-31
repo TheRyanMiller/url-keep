@@ -36,17 +36,34 @@ export function OfflineAudioSettings() {
     <section className="profile-section offline-audio-settings">
       <h2 className="section-title">offline audio</h2>
       <div className="settings-section-body">
-        <label className="settings-row">
-          <span>keep requested audio on this device</span>
+        <div className="settings-row">
+          <span className="settings-label-with-help">
+            <label htmlFor="offline-audio-enabled">keep requested audio on this device</label>
+            <span className="settings-help">
+              <button
+                aria-describedby="offline-audio-help"
+                aria-label="About offline audio storage"
+                className="settings-help-trigger"
+                type="button"
+              >
+                ?
+              </button>
+              <span className="settings-help-card" id="offline-audio-help" role="tooltip">
+                Requested narration downloads to this device for offline listening and counts
+                toward the storage limit below.
+              </span>
+            </span>
+          </span>
           <input
             checked={settings.enabled}
+            id="offline-audio-enabled"
             onChange={async (event) => {
               setSettings(await updateAudioSettings({ enabled: event.target.checked }));
               await refresh();
             }}
             type="checkbox"
           />
-        </label>
+        </div>
         <div className="settings-inline-row">
           <p className="muted settings-note">
             {megabytes(usage.bytes)} used of {megabytes(settings.byte_limit)} · {usage.count} files
