@@ -51,8 +51,8 @@ describe("reader lead image", () => {
 
   it("does not duplicate another rendition of the retained lead image", () => {
     const reader = renderReader(
-      '<figure><img src="https://static01.nyt.com/images/story/story-articleLarge.jpg?quality=75" alt="Lead"></figure>',
-      "https://static01.nyt.com/images/story/story-facebookJumbo.jpg",
+      '<figure><img src="https://static01.nyt.com/images/2026/08/27/multimedia/00dc-trump-econ-bhwg/00dc-trump-econ-bhwg-articleLarge.jpg?quality=75" alt="Lead"></figure>',
+      "https://static01.nyt.com/images/2026/08/27/multimedia/00dc-trump-econ-bhwg/00dc-trump-econ-bhwg-facebookJumbo.jpg",
     );
 
     expect(reader.container.querySelector(".reader-lead-image")).not.toBeInTheDocument();

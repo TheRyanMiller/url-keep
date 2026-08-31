@@ -826,53 +826,29 @@ function BookmarkImage({ src, alt }: { src?: string | null; alt: string }) {
   );
 }
 
-const IMAGE_RENDITION_SUFFIX = /[-_](?:\d{2,5}x\d{2,5}|(?:article|desktop|facebook|featured|hero|jumbo|landscape|large|lead|master|medium|mobile|og|portrait|small|social|square|thumb|thumbnail|twitter|video|wide)[a-z0-9]*)$/i;
+const IMAGE_RENDITION_SUFFIX = /[-_](?:\d{2,5}x\d{2,5}|(?:article|desktop|facebook|featured|hero|jumbo|landscape|large|lead|master|medium|mobile|og|portrait|small|social|square|thumb|thumbnail|twitter|video|wide)[a-z0-9]*)(?=\.[^./]+$|$)/i;
 
-function parseImageUrl(value: string, sourceUrl: string): URL | null {
+function imageAssetKey(value: string, sourceUrl: string): string | null {
   try {
     const url = new URL(value, sourceUrl);
     url.hash = "";
     url.search = "";
-    return url;
+    url.pathname = url.pathname.replace(IMAGE_RENDITION_SUFFIX, "");
+    return url.href;
   } catch {
     return null;
   }
-}
-
-function imageRenditionBase(url: URL): string | null {
-  const slash = url.pathname.lastIndexOf("/");
-  const filename = url.pathname.slice(slash + 1);
-  const dot = filename.lastIndexOf(".");
-  const stem = dot > 0 ? filename.slice(0, dot) : filename;
-  const base = stem.replace(IMAGE_RENDITION_SUFFIX, "");
-  return base === stem ? null : base;
-}
-
-function isSameImageAsset(left: URL, right: URL): boolean {
-  if (left.href === right.href) return true;
-  if (left.origin !== right.origin) return false;
-
-  const leftSlash = left.pathname.lastIndexOf("/");
-  const rightSlash = right.pathname.lastIndexOf("/");
-  if (left.pathname.slice(0, leftSlash) !== right.pathname.slice(0, rightSlash)) {
-    return false;
-  }
-
-  const leftBase = imageRenditionBase(left);
-  return Boolean(leftBase && leftBase === imageRenditionBase(right));
 }
 
 function articleContainsImage(html: string, imageUrl: string, sourceUrl: string): boolean {
   const template = document.createElement("template");
   template.innerHTML = html;
 
-  const target = parseImageUrl(imageUrl, sourceUrl);
+  const target = imageAssetKey(imageUrl, sourceUrl);
   if (!target) return false;
 
-  return [...template.content.querySelectorAll("img[src]")].some((image) => {
-    const candidate = parseImageUrl(image.getAttribute("src")!, sourceUrl);
-    return candidate ? isSameImageAsset(target, candidate) : false;
-  });
+  return [...template.content.querySelectorAll("img[src]")]
+    .some((image) => imageAssetKey(image.getAttribute("src")!, sourceUrl) === target);
 }
 
 function ReaderLeadImage({ src }: { src: string }) {
