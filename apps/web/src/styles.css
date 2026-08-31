@@ -439,11 +439,12 @@ input[type="checkbox"] {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--fg);
+  font-size: 13px;
   max-height: calc(100dvh - 32px);
   max-width: calc(100vw - 32px);
   overflow: auto;
-  padding: 20px;
-  width: 420px;
+  padding: 16px;
+  width: 340px;
 }
 
 .confirm-dialog::backdrop {
@@ -451,21 +452,26 @@ input[type="checkbox"] {
 }
 
 .confirm-dialog h2 {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 500;
-  margin: 0 0 12px;
+  margin: 0 0 10px;
 }
 
 .confirm-dialog p {
-  line-height: 1.5;
-  margin: 0 0 20px;
+  line-height: 1.4;
+  margin: 0 0 16px;
   overflow-wrap: anywhere;
 }
 
 .confirm-dialog-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   justify-content: flex-end;
+}
+
+.confirm-dialog-actions .button {
+  min-height: 36px;
+  padding: 0 10px;
 }
 
 .nav {

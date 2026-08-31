@@ -1142,7 +1142,7 @@ export function DeleteConfirmation({
       ref={dialogRef}
     >
       <h2 id="delete-bookmark-title">delete bookmark?</h2>
-      <p>&ldquo;{bookmark.title}&rdquo; will be removed from your reading list.</p>
+      <p>&ldquo;{bookmark.title}&rdquo;</p>
       {error ? <p className="error" role="alert">{error}</p> : null}
       <div className="confirm-dialog-actions">
         <button autoFocus className="button secondary-button" disabled={busy} onClick={onCancel} type="button">
