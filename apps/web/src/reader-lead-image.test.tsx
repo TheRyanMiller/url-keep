@@ -39,4 +39,37 @@ describe("reader lead image", () => {
     expect(reader.container.querySelector(".reader-lead-image")).not.toBeInTheDocument();
     expect(reader.container.querySelectorAll(`img[src="${imageUrl}"]`)).toHaveLength(1);
   });
+
+  it("ignores delivery parameters when matching a retained lead image", () => {
+    const reader = renderReader(
+      '<figure><img src="https://publisher.example/lead.jpg?width=1200" alt="Lead"></figure>',
+      "https://publisher.example/lead.jpg?width=3000",
+    );
+
+    expect(reader.container.querySelector(".reader-lead-image")).not.toBeInTheDocument();
+  });
+
+  it("does not duplicate another rendition of the retained lead image", () => {
+    const reader = renderReader(
+      '<figure><img src="https://static01.nyt.com/images/story/story-articleLarge.jpg?quality=75" alt="Lead"></figure>',
+      "https://static01.nyt.com/images/story/story-facebookJumbo.jpg",
+    );
+
+    expect(reader.container.querySelector(".reader-lead-image")).not.toBeInTheDocument();
+    expect(reader.container.querySelectorAll("img")).toHaveLength(1);
+  });
+
+  it("keeps distinct images from the same article", () => {
+    const reader = renderReader(
+      '<figure><img src="https://publisher.example/images/story-photo-02-articleLarge.jpg" alt="Body"></figure>',
+      "https://publisher.example/images/story-photo-01-facebookJumbo.jpg",
+    );
+
+    expect(reader.container.querySelector(".reader-lead-image img"))
+      .toHaveAttribute(
+        "src",
+        "https://publisher.example/images/story-photo-01-facebookJumbo.jpg",
+      );
+    expect(reader.container.querySelectorAll("img")).toHaveLength(2);
+  });
 });
