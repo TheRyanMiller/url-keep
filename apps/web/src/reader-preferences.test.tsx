@@ -36,16 +36,17 @@ describe("reader preferences", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "Light reader theme" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    expect(screen.getByRole("button", { name: "Switch to dark reader theme" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Switch to light reader theme" }))
+      .not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Dark reader theme" }));
+    fireEvent.click(screen.getByRole("button", { name: "Switch to dark reader theme" }));
     expect(document.documentElement.dataset.readerTheme).toBe("dark");
     expect(localStorage.getItem("url_keep_reader_theme")).toBe("dark");
 
     fireEvent.click(screen.getByRole("button", { name: "Reading preferences" }));
+    expect(screen.getByRole("button", { name: "Switch to light reader theme" })).toBeVisible();
+
     fireEvent.click(screen.getByRole("button", { name: "L text size" }));
     expect(localStorage.getItem("url_keep_reader_text_size")).toBe("l");
     expect(document.querySelector(".reader-content")).toHaveClass("reader-content-size-l");
@@ -54,7 +55,7 @@ describe("reader preferences", () => {
   it("restores the application theme when the reader closes", () => {
     const reader = renderReader();
     fireEvent.click(screen.getByRole("button", { name: "Reading preferences" }));
-    fireEvent.click(screen.getByRole("button", { name: "Dark reader theme" }));
+    fireEvent.click(screen.getByRole("button", { name: "Switch to dark reader theme" }));
 
     reader.unmount();
 

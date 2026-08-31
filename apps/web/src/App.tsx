@@ -983,34 +983,20 @@ export function ReaderDocument({
                   ))}
                 </span>
                 <span aria-hidden="true" className="reader-preferences-divider" />
-                <span aria-label="Reader theme" className="reader-preferences-options" role="group">
-                  <button
-                    aria-label="Light reader theme"
-                    aria-pressed={theme === "light"}
-                    className={`reader-preference-option${theme === "light" ? " is-active" : ""}`}
-                    onClick={() => {
-                      setTheme("light");
-                      setPreferencesMenuOpen(false);
-                    }}
-                    title="Light"
-                    type="button"
-                  >
-                    <Sun aria-hidden="true" size={14} strokeWidth={1.8} />
-                  </button>
-                  <button
-                    aria-label="Dark reader theme"
-                    aria-pressed={theme === "dark"}
-                    className={`reader-preference-option${theme === "dark" ? " is-active" : ""}`}
-                    onClick={() => {
-                      setTheme("dark");
-                      setPreferencesMenuOpen(false);
-                    }}
-                    title="Dark"
-                    type="button"
-                  >
-                    <Moon aria-hidden="true" size={14} strokeWidth={1.8} />
-                  </button>
-                </span>
+                <button
+                  aria-label={`Switch to ${theme === "light" ? "dark" : "light"} reader theme`}
+                  className="reader-preference-option"
+                  onClick={() => {
+                    setTheme((current) => (current === "light" ? "dark" : "light"));
+                    setPreferencesMenuOpen(false);
+                  }}
+                  title={`Switch to ${theme === "light" ? "dark" : "light"} theme`}
+                  type="button"
+                >
+                  {theme === "light"
+                    ? <Moon aria-hidden="true" size={14} strokeWidth={1.8} />
+                    : <Sun aria-hidden="true" size={14} strokeWidth={1.8} />}
+                </button>
               </span>
             ) : null}
           </span>
