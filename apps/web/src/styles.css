@@ -270,6 +270,10 @@ input[type="checkbox"] {
   border-color: var(--subtle-border);
 }
 
+.add-url-form {
+  max-width: 560px;
+}
+
 .button-success,
 .button-success:disabled {
   background: #e8f7ed;
@@ -592,10 +596,6 @@ input[type="checkbox"] {
 
 .retry-button:hover {
   opacity: 1;
-}
-
-.reader-page {
-  max-width: 760px;
 }
 
 .reader-page-header {

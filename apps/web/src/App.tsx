@@ -1677,7 +1677,7 @@ function AddPage() {
         <BrandLogo />
         <Nav />
       </header>
-      <form className="stack" onSubmit={onSubmit}>
+      <form className="stack add-url-form" onSubmit={onSubmit}>
         <label className="field">
           <span>url</span>
           <input
