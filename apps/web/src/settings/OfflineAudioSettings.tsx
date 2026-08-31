@@ -35,50 +35,56 @@ export function OfflineAudioSettings() {
   return (
     <section className="profile-section offline-audio-settings">
       <h2 className="section-title">offline audio</h2>
-      <label className="settings-row">
-        <span>download requested audio on this device</span>
-        <input
-          checked={settings.enabled}
-          onChange={async (event) => {
-            setSettings(await updateAudioSettings({ enabled: event.target.checked }));
-            await refresh();
-          }}
-          type="checkbox"
-        />
-      </label>
-      <p className="muted">
-        {megabytes(usage.bytes)} of {megabytes(settings.byte_limit)} · {usage.count} audio
-      </p>
-      <label className="field settings-limit">
-        <span>storage limit</span>
-        <select
-          value={settings.byte_limit}
-          onChange={async (event) => {
-            setSettings(await updateAudioSettings({ byte_limit: Number(event.target.value) }));
-            await refresh();
-          }}
-        >
-          {OFFLINE_AUDIO_LIMITS.map((limit) => (
-            <option key={limit} value={limit}>{megabytes(limit)}</option>
-          ))}
-        </select>
-      </label>
-      <button
-        className={clearArmed ? "text-action text-action--danger" : "text-action"}
-        onClick={async () => {
-          if (!clearArmed) {
-            setClearArmed(true);
-            window.setTimeout(() => setClearArmed(false), 3_000);
-            return;
-          }
-          await clearOfflineAudio();
-          setClearArmed(false);
-          await refresh();
-        }}
-        type="button"
-      >
-        {clearArmed ? "confirm clear offline audio" : "clear offline audio"}
-      </button>
+      <div className="settings-section-body">
+        <label className="settings-row">
+          <span>keep requested audio on this device</span>
+          <input
+            checked={settings.enabled}
+            onChange={async (event) => {
+              setSettings(await updateAudioSettings({ enabled: event.target.checked }));
+              await refresh();
+            }}
+            type="checkbox"
+          />
+        </label>
+        <div className="settings-inline-row">
+          <p className="muted settings-note">
+            {megabytes(usage.bytes)} used of {megabytes(settings.byte_limit)} · {usage.count} files
+          </p>
+          <label className="settings-inline-field">
+            <span>limit</span>
+            <select
+              value={settings.byte_limit}
+              onChange={async (event) => {
+                setSettings(await updateAudioSettings({ byte_limit: Number(event.target.value) }));
+                await refresh();
+              }}
+            >
+              {OFFLINE_AUDIO_LIMITS.map((limit) => (
+                <option key={limit} value={limit}>{megabytes(limit)}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {usage.count > 0 ? (
+          <button
+            className={`button secondary-button settings-button${clearArmed ? " button-danger" : ""}`}
+            onClick={async () => {
+              if (!clearArmed) {
+                setClearArmed(true);
+                window.setTimeout(() => setClearArmed(false), 3_000);
+                return;
+              }
+              await clearOfflineAudio();
+              setClearArmed(false);
+              await refresh();
+            }}
+            type="button"
+          >
+            {clearArmed ? "confirm clear" : "clear audio"}
+          </button>
+        ) : null}
+      </div>
     </section>
   );
 }

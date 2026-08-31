@@ -2069,133 +2069,105 @@ function SettingsPage() {
   };
 
   return (
-    <div className="page">
+    <div className="page settings-page">
       <header className="page-header row-between">
         <BrandLogo />
         <Nav />
       </header>
 
-      {!offline.online ? (
-        <p className="muted block-muted">online settings require a connection</p>
-      ) : null}
-
-      <OfflineAudioSettings />
-
-      <section className="profile-section">
-        <h2 className="section-title">account</h2>
-        <p>{auth.user?.email ?? "signed in"}</p>
-        <button
-          className="text-action"
-          onClick={() => {
-            setShowPasswordForm((value) => !value);
-            setPasswordError(null);
-            setPasswordSuccess(false);
-          }}
-          type="button"
-        >
-          {showPasswordForm ? "cancel" : "change password"}
-        </button>
-        {showPasswordForm ? (
-          <form className="stack" onSubmit={onChangePassword}>
-            <label className="field">
-              <span>current password</span>
-              <input
-                autoComplete="current-password"
-                type="password"
-                value={currentPassword}
-                onChange={(event) => setCurrentPassword(event.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>new password</span>
-              <input
-                autoComplete="new-password"
-                type="password"
-                value={newPassword}
-                onChange={(event) => setNewPassword(event.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>confirm new password</span>
-              <input
-                autoComplete="new-password"
-                type="password"
-                value={confirmPassword}
-                onChange={(event) => setConfirmPassword(event.target.value)}
-              />
-            </label>
-            <button className="button" disabled={!offline.online} type="submit">
-              update password
-            </button>
-            {passwordSuccess ? <p>password updated</p> : null}
-            {passwordError ? <p className="error">{passwordError}</p> : null}
-          </form>
+      <main className="settings-sections">
+        {!offline.online ? (
+          <p className="muted block-muted settings-offline-notice">
+            online settings require a connection
+          </p>
         ) : null}
-      </section>
 
-      <section className="profile-section">
-        <h2 className="section-title">save from your phone</h2>
+        <OfflineAudioSettings />
 
-        <div className="shortcut-setup stack">
-          <p className="muted block-muted">
-            install url-keep to your home screen for one-tap saving from the
-            share sheet. on iphone, tap the share button in safari then
-            &ldquo;add to home screen.&rdquo;
-          </p>
-        </div>
-      </section>
-
-      <section className="profile-section">
-        <h2 className="section-title">tokens</h2>
-
-        <div className="shortcut-setup stack">
-          <p className="muted block-muted">
-            alternatively, use an ios shortcut for silent background saves.
-            create a token, copy it, then install the shortcut.
-          </p>
-          <div className="inline-actions">
-            <button className="button" disabled={!offline.online} onClick={() => void onCreateShortcutToken()} type="button">
-              create iphone token
-            </button>
-            {IOS_SHORTCUT_URL ? (
-              <a
-                className="button secondary-button"
-                href={IOS_SHORTCUT_URL}
-                rel="noreferrer noopener"
-                target="_blank"
+        <section className="profile-section">
+          <h2 className="section-title">account</h2>
+          <div className="settings-section-body">
+            <div className="settings-account-row">
+              <p className="settings-account-email">{auth.user?.email ?? "signed in"}</p>
+              <button
+                className="button secondary-button settings-button"
+                onClick={() => {
+                  setShowPasswordForm((value) => !value);
+                  setPasswordError(null);
+                  setPasswordSuccess(false);
+                }}
+                type="button"
               >
-                install shortcut
-              </a>
+                {showPasswordForm ? "cancel" : "change password"}
+              </button>
+            </div>
+            {showPasswordForm ? (
+              <form className="stack settings-form" onSubmit={onChangePassword}>
+                <label className="field">
+                  <span>current password</span>
+                  <input
+                    autoComplete="current-password"
+                    type="password"
+                    value={currentPassword}
+                    onChange={(event) => setCurrentPassword(event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>new password</span>
+                  <input
+                    autoComplete="new-password"
+                    type="password"
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  <span>confirm new password</span>
+                  <input
+                    autoComplete="new-password"
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                  />
+                </label>
+                <button className="button settings-button" disabled={!offline.online} type="submit">
+                  update password
+                </button>
+                {passwordSuccess ? <p className="settings-note">password updated</p> : null}
+                {passwordError ? <p className="error">{passwordError}</p> : null}
+              </form>
             ) : null}
           </div>
-          <p className="muted block-muted">
-            {IOS_SHORTCUT_URL
-              ? "after install, run the shortcut once and paste the token when asked"
-              : "add VITE_IOS_SHORTCUT_URL to show an install shortcut link here"}
-          </p>
-        </div>
+        </section>
 
-        <form className="stack" onSubmit={onCreateToken}>
-          <label className="field">
-            <span>name</span>
-            <input value={tokenName} onChange={(event) => setTokenName(event.target.value)} />
-          </label>
-          <button className="button" disabled={!offline.online} type="submit">
-            create token
-          </button>
-        </form>
+        <section className="profile-section">
+          <h2 className="section-title">save from iphone</h2>
+          <div className="settings-section-body">
+            <p className="muted settings-note">
+              install url-keep from safari for one-tap saving from the share sheet.
+              tap share, then &ldquo;add to home screen.&rdquo;
+            </p>
+          </div>
+        </section>
 
-        {createdToken ? (
-          <section className="token-output">
-            <p>copy this token now. it is shown once.</p>
-            <code>{createdToken}</code>
+        <section className="profile-section">
+          <h2 className="section-title">access tokens</h2>
+          <div className="settings-section-body">
+            <p className="muted settings-note">
+              use an ios shortcut for silent background saves.
+            </p>
             <div className="inline-actions">
-              <button className="button" onClick={() => void onCopyToken()} type="button">
-                {copied ? "copied" : "copy token"}
+              <button
+                className="button settings-button"
+                disabled={!offline.online}
+                onClick={() => void onCreateShortcutToken()}
+                type="button"
+              >
+                create iphone token
               </button>
               {IOS_SHORTCUT_URL ? (
                 <a
-                  className="button secondary-button"
+                  className="button secondary-button settings-button"
                   href={IOS_SHORTCUT_URL}
                   rel="noreferrer noopener"
                   target="_blank"
@@ -2204,27 +2176,65 @@ function SettingsPage() {
                 </a>
               ) : null}
             </div>
-          </section>
-        ) : null}
+            {IOS_SHORTCUT_URL ? (
+              <p className="muted settings-note">
+                run the shortcut once and paste the token when asked.
+              </p>
+            ) : null}
 
-        {tokenError ? <p className="error">{tokenError}</p> : null}
+            {createdToken ? (
+              <section className="token-output">
+                <p className="settings-note">copy this token now. it is shown once.</p>
+                <code>{createdToken}</code>
+                <div className="inline-actions">
+                  <button className="button settings-button" onClick={() => void onCopyToken()} type="button">
+                    {copied ? "copied" : "copy token"}
+                  </button>
+                  {IOS_SHORTCUT_URL ? (
+                    <a
+                      className="button secondary-button settings-button"
+                      href={IOS_SHORTCUT_URL}
+                      rel="noreferrer noopener"
+                      target="_blank"
+                    >
+                      install shortcut
+                    </a>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
 
-        <button
-          className="text-action"
-          onClick={() => setShowTokenList((value) => !value)}
-          type="button"
-        >
-          {showTokenList ? "hide tokens" : `show all tokens (${tokens.length})`}
-        </button>
+            {tokenError ? <p className="error">{tokenError}</p> : null}
 
-        {showTokenList ? (
-          <section className="token-list">
-            {tokens.map((token) => (
-              <TokenRow key={token.id} online={offline.online} token={token} onRevoke={onRevoke} />
-            ))}
-          </section>
-        ) : null}
-      </section>
+            <button
+              className="button secondary-button settings-button"
+              onClick={() => setShowTokenList((value) => !value)}
+              type="button"
+            >
+              {showTokenList ? "close token manager" : `manage tokens (${tokens.length})`}
+            </button>
+
+            {showTokenList ? (
+              <div className="token-manager">
+                <form className="settings-token-form" onSubmit={onCreateToken}>
+                  <label className="field">
+                    <span>token name</span>
+                    <input value={tokenName} onChange={(event) => setTokenName(event.target.value)} />
+                  </label>
+                  <button className="button settings-button" disabled={!offline.online} type="submit">
+                    create token
+                  </button>
+                </form>
+                <section className="token-list">
+                  {tokens.map((token) => (
+                    <TokenRow key={token.id} online={offline.online} token={token} onRevoke={onRevoke} />
+                  ))}
+                </section>
+              </div>
+            ) : null}
+          </div>
+        </section>
+      </main>
     </div>
   );
 }
