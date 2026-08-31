@@ -1672,7 +1672,7 @@ function AddPage() {
   };
 
   return (
-    <div className="page narrow">
+    <div className="page">
       <header className="page-header row-between">
         <BrandLogo />
         <Nav />
@@ -2064,7 +2064,7 @@ function SettingsPage() {
   };
 
   return (
-    <div className="page narrow">
+    <div className="page">
       <header className="page-header row-between">
         <BrandLogo />
         <Nav />
